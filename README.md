@@ -1,12 +1,5 @@
 # CS532 — AUTONOMOUS JETBOT NAVIGATION & PERCEPTION SYSTEM
-### Trường Đại học Công nghệ Thông tin (UIT) — ĐHQG-HCM
 
-> **Đồ án:** Robot Di động Tự hành trong nhà (Autonomous Mobile Robot)  
-> **Nền tảng mục tiêu:** NVIDIA JetBot (Jetson Nano 4GB, Ubuntu 18.04 / JetPack 4.5)  
-> **Cảm biến:** LiDAR D500 (360° DToF @ 230400 baud, 10Hz, cao 16cm so với sàn), Camera CSI Sony IMX219 (160° FOV)  
-> **Mô hình AI:** YOLOv8n TensorRT FP16 (Nhận diện đối tượng & Phân đoạn mặt sàn bù góc mù LiDAR)
-
----
 
 ## 📂 1. Cấu Trúc Dự Án (Repository Structure)
 
