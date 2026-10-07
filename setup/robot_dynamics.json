@@ -1,0 +1,14 @@
+{
+    "hardware": "JetBot-GA25-370",
+    "floor_surface": "glossy_ceramic_tile",
+    "tested_arena": "2m_x_1m",
+    "min_drive_speed": 0.22,
+    "cruise_speed": 0.28,
+    "trim_factor": 1.0,
+    "turn_speed": 0.22,
+    "turn_time_90_deg_sec": 0.95,
+    "turn_time_180_deg_sec": 1.90,
+    "soft_start_ramp_sec": 0.4,
+    "max_safe_speed_mps": 0.18,
+    "note": "Gia tri mac dinh an toan cho san gach va dong co GA25 hop so kim loai"
+}

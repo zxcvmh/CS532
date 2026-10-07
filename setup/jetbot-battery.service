@@ -1,0 +1,16 @@
+[Unit]
+Description=JetBot Battery Monitoring Daemon (CS532)
+After=network.target
+
+[Service]
+Type=simple
+User=jetbot
+WorkingDirectory=/home/jetbot/CS532
+ExecStart=/usr/bin/python3 /home/jetbot/CS532/setup/battery.py --loop --interval 2.0 --export-json /tmp/jetbot_battery.json
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

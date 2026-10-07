@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <title>JetBot Realtime Dashboard</title>
+  <style>
+    body { font-family: sans-serif; background: #1e1e24; color: #fff; margin: 0; padding: 20px; }
+    .container { display: flex; gap: 20px; justify-content: center; }
+    .card { background: #2b2b36; border-radius: 8px; padding: 15px; }
+    canvas, img { border-radius: 4px; background: #000; }
+  </style>
+</head>
+<body>
+  <h2>🤖 JetBot Autonomous Dashboard</h2>
+  <div class="container">
+    <!-- Camera View -->
+    <div class="card">
+      <h3>Camera Realtime (YOLO + Lidar Distance)</h3>
+      <img src="/video_feed" width="640" height="480" alt="Camera Stream" />
+    </div>
+
+    <!-- 2D SLAM Map View -->
+    <div class="card">
+      <h3>Bản đồ 2D SLAM (LiDAR)</h3>
+      <canvas id="mapCanvas" width="500" height="500"></canvas>
+      <p id="poseInfo">Tọa độ: X: 0, Y: 0, Yaw: 0°</p>
+    </div>
+  </div>
+
+  <script>
+    const canvas = document.getElementById('mapCanvas');
+    const ctx = canvas.getContext('2d');
+    const ws = new WebSocket(`ws://${location.host}/ws/telemetry`);
+
+    ws.onmessage = (event) => {
+      const msg = JSON.parse(event.data);
+      renderMap(msg.map, msg.robot_pose);
+    };
+
+    function renderMap(map, pose) {
+      if (!map || !map.data || map.data.length === 0) return;
+
+      const w = map.width;
+      const h = map.height;
+      const imgData = ctx.createImageData(w, h);
+
+      // Render từng pixel Occupancy Grid
+      for (let i = 0; i < map.data.length; i++) {
+        const val = map.data[i];
+        let color = 128; // Chưa rõ: Xám
+        if (val === 0) color = 255;      // Trống: Trắng
+        else if (val > 50) color = 0;    // Vật cản: Đen
+
+        const idx = i * 4;
+        imgData.data[idx] = color;     // R
+        imgData.data[idx + 1] = color; // G
+        imgData.data[idx + 2] = color; // B
+        imgData.data[idx + 3] = 255;   // Alpha
+      }
+
+      // Scale và đưa lên Canvas
+      createImageBitmap(imgData).then(bitmap => {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+
+        // Vẽ Robot (chấm tròn đỏ và hướng quay)
+        drawRobot(pose, map);
+      });
+    }
+
+    function drawRobot(pose, map) {
+      if (!pose) return;
+      // Chuyển đổi tọa độ thế giới (m) sang tọa độ Canvas (pixel)
+      const scaleX = canvas.width / map.width;
+      const scaleY = canvas.height / map.height;
+      const rx = (pose.x / map.resolution + map.width / 2) * (canvas.width / map.width);
+      const ry = (-pose.y / map.resolution + map.height / 2) * (canvas.height / map.height);
+
+      ctx.save();
+      ctx.translate(rx, ry);
+      ctx.rotate(-pose.yaw);
+
+      // Vẽ hình mũi tên đại diện cho robot
+      ctx.fillStyle = '#ff3333';
+      ctx.beginPath();
+      ctx.arc(0, 0, 6, 0, 2 * Math.PI);
+      ctx.fill();
+
+      ctx.strokeStyle = '#00ffcc';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(0, 0);
+      ctx.lineTo(15, 0); // Hướng nhìn của robot
+      ctx.stroke();
+      ctx.restore();
+
+      document.getElementById('poseInfo').innerText = 
+        `Tọa độ: X: ${pose.x.toFixed(2)}m, Y: ${pose.y.toFixed(2)}m, Yaw: ${(pose.yaw * 180 / Math.PI).toFixed(1)}°`;
+    }
+  </script>
+</body>
+</html>

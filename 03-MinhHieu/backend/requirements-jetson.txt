@@ -1,0 +1,6 @@
+# Requirements specifically pinned for Jetson Nano (Ubuntu 18.04, Python 3.6.9)
+typing-extensions<=4.1.1
+pydantic<2.0.0
+fastapi<0.70.0
+uvicorn<0.17.0
+websockets<10.0
