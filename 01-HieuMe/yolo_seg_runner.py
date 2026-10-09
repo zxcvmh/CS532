@@ -60,6 +60,7 @@ class YoloSegRunner:
         
         self.model = None
         self.model_type = "mock"
+        self.frame_count = 0
         self._init_model()
 
     def _init_model(self):
@@ -180,11 +181,13 @@ class YoloSegRunner:
                 "bbox": [180, 180, 250, 340]
             })
 
+        self.frame_count += 1
         pipeline_latency_ms = (time.time() - t0) * 1000.0
 
         # Đóng gói đúng Hợp đồng agents-doc/INTERFACE.md
         payload = {
             "timestamp": round(time.time(), 3),
+            "frame_id": self.frame_count,
             "detections": detections,
             "low_obstacles": low_obstacles,
             "latency_ms": round(pipeline_latency_ms, 2)

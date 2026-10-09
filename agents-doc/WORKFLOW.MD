@@ -27,18 +27,18 @@ Tài liệu này là "hiến pháp" của team khi làm việc với AI agent. M
 
 ---
 
-## 2. Cấu trúc 5 Agent & Phân công Trách nhiệm
+## 2. Cấu trúc Đội ngũ Agent & Phân công Trách nhiệm
 
-| # | Agent | File cấu hình (`agents-doc/` & `.claude/`) | Phạm vi thư mục | Trách nhiệm chính với LiDAR D500 & Camera |
+| # | Agent | File cấu hình (`agents-doc/agents/`) | Phạm vi thư mục | Trách nhiệm chính trong hệ thống |
 |---|---|---|---|---|
-| 0 | Robot Setup Agent | `agents-doc/agents/robot-setup-agent.md` | `setup/` | Cấu hình & kiểm tra phần cứng: Camera CSI, Động cơ I2C, TensorRT YOLOv8n và **giao tiếp UART LiDAR D500** (`setup/healthcheck.py`). |
-| 1 | Perception Agent | `agents-doc/agents/perception-agent.md` | `perception/` | Chạy inference YOLOv8n TensorRT FP16, phát hiện người/vật cản, tính góc phương vị và bounding box gửi sang Planning. |
-| 2 | Planning & Control Agent | `agents-doc/agents/planning-control-agent.md` | `planning/` | Bộ não điều hướng: Đọc LaserScan 360°, xây dựng Occupancy Grid 2D, lập đường đi A*, điều khiển Pure Pursuit + PID, phanh khẩn cấp & dynamic replanning. |
-| 3 | Interface & Comms Agent | `agents-doc/agents/interface-comms-agent.md` | `web/` | Web Dashboard: Stream video camera, render bản đồ lưới 2D và tia LiDAR thời gian thực, cho phép click chọn điểm đích, gửi lệnh điều khiển và dừng khẩn cấp. |
-| 4 | Integration Reviewer Agent | `agents-doc/agents/integration-reviewer-agent.md` | Toàn repo (chỉ đọc + test) | Ghép nối 4 module, kiểm tra hợp đồng dữ liệu `INTERFACES.md`, đo đạc latency vòng lặp điều khiển, viết integration test. |
-| + | Simulation & Digital Twin Agent | `agents-doc/agents/simulation-agent.md` | `simulation/` | Môi trường mô phỏng 2D (Software-in-the-Loop), tạo chùm tia LiDAR ảo (Raycasting) & mô phỏng động học xe bánh vi sai khi chưa có giá đỡ phần cứng. |
+| **👑** | **Lead Supervisor Agent** *(Phiên hiện tại)* | `agents-doc/agents/lead-supervisor-agent.md` | Toàn bộ dự án | Trưởng nhóm Kỹ thuật kiêm Kiến trúc sư Trưởng: Quản lý tiến độ tổng thể, phân rã micro-tickets, điều phối Specialist Agents, kiểm soát hợp đồng `INTERFACE.md` và bảo vệ an toàn phần cứng. |
+| 1 | **Motion Planning Algorithm Agent** *(Phiên algorithm trùm)* | `agents-doc/agents/motion-planning-algorithm-agent.md` | `02-DuyHieu/planning/` | Bộ não thuật toán điều hướng: Tối ưu Bresenham raycasting (< 30ms), gom cụm 1D Range Jump O(N), né vật cản hình thang Plateau (khoảng hở ≥ 0.22m), điều tốc vào cua Curvature-Aware Scaling. |
+| 2 | **Perception Agent** *(Hiếu me)* | `agents-doc/agents/perception-agent.md` | `01-HieuMe/` | Thị giác máy tính: Chạy YOLOv8n TensorRT FP16, phân đoạn mặt sàn bù điểm mù 16cm LiDAR, xuất mảng `low_obstacles` và Social Bubble người. |
+| 3 | **Interface & Comms Agent** *(Minh Hiếu)* | `agents-doc/agents/interface-comms-agent.md` | `03-MinhHieu/` | Web Dashboard: Stream camera MJPEG, hiển thị Occupancy Grid Canvas 2D thời gian thực, truyền nhận WebSocket 10Hz, điều khiển thủ công và E-stop. |
+| 4 | **Robot Setup & Hardware Agent** *(Team Lead)* | `agents-doc/agents/robot-setup-agent.md` | `setup/` | Phần cứng JetBot: Kiểm tra Camera CSI, động cơ I2C, pin INA219, cổng UART LiDAR D500 (`setup/healthcheck.py`). |
+| + | **Simulation & Digital Twin Agent** | `agents-doc/agents/simulation-agent.md` | `simulation/` | Môi trường mô phỏng 2D (Software-in-the-Loop), tạo chùm tia LiDAR ảo (Raycasting) & mô phỏng động học xe bánh vi sai khi chưa có giá đỡ cơ khí. |
 
-Nguyên tắc chung: **Một agent — một thư mục — một người chịu trách nhiệm hiểu code**.
+Nguyên tắc chung: **Một agent — một thư mục — một người chịu trách nhiệm hiểu code**.  
 Không agent nào được sửa file ngoài phạm vi của mình. Mọi trao đổi dữ liệu phải tuân thủ nghiêm ngặt theo `agents-doc/INTERFACE.md`.
 
 ---

@@ -6,26 +6,24 @@
 
 ## 1. Trạng thái Tổng quan Vòng đời Dự án (Current Phase)
 
-- **Giai đoạn hiện tại:** **Tuần 2–3 — Kích hoạt Planning & Control và Tinh chỉnh Web Dashboard / Perception.**
+- **Giai đoạn hiện tại:** **Tuần 3–4 — Chuyển giao Tích hợp: Hoàn tất Perception, Đột phá Thuật toán Điều hướng & Né tránh.**
 - **Tiến độ tổng thể:**
   - `[0] Robot Setup`: **HOÀN THÀNH (100%)** — JetBot boot OK, TensorRT FP16 YOLOv8n ~19.7 FPS, chuẩn bị giao tiếp LiDAR D500.
-  - `[1] Perception`: **ĐANG TRIỂN KHAI (50%)** — Đã có luồng nhận diện cơ bản, cần chuẩn hóa output góc phương vị $\theta_{\text{azimuth}}$ và format `SemanticDetections`.
-  - `[2] Planning & Control`: **ĐANG KÍCH HOẠT (35%)** — Bạn trong nhóm đã phác thảo thuật toán tìm đường (Path Finding) nhưng còn lỗi; cần fix thuật toán A*, làm mượt đường và tích hợp dữ liệu quét LiDAR D500.
-  - `[3] Interface & Comms`: **HOÀN THÀNH (100%)** — Đã tái thiết kế toàn bộ Dashboard theo phong cách Apple visionOS / macOS Glassmorphism, tích hợp macOS Control Center, triệt tiêu lag giật 60fps qua Offscreen Canvas, tách video MJPEG khỏi WebSocket.
-  - `[4] Integration Review`: **CHỜ PILOT (0%)** — Sẵn sàng kiểm định khi 3 module hoàn thành pilot đầu tiên.
+  - `[1] Perception (Hiếu me)`: **HOÀN THÀNH (100%)** — Đã hoàn tất pipeline Computer Vision: trích xuất `SemanticDetections` với bán kính an toàn động `safety_margin_m`, giải quyết điểm mù LiDAR 16cm qua phân đoạn mặt sàn IPM xuất danh sách `low_obstacles`.
+  - `[2] Planning & Control (Team Lead & Duy Hiếu)`: **ĐANG TÍCH HỢP NÂNG CAO (75%)** — Đã chuẩn bị bộ test PC pass 4/4 tiêu chí; Team Lead tiếp quản phiên `algorithm trùm` để tích hợp dữ liệu cản từ CV vào Costmap, tối ưu quỹ đạo né hình thang Plateau và điều tốc vào cua.
+  - `[3] Interface & Comms`: **HOÀN THÀNH (100%)** — Dashboard đạt 60fps mượt mà, phong cách Apple visionOS, WebSocket/MJPEG ổn định.
+  - `[4] Integration Review`: **ĐANG TRIỂN KHAI** — Đã tổ chức repository module độc lập, chuẩn bị sẵn sàng cho kiểm thử tích hợp khép kín.
 
 ---
 
 ## 2. Bảng Theo dõi Trạng thái Chi tiết Từng Module
 
-| Module / Thư mục | Agent phụ trách | Trạng thái hiện tại | Vấn đề tồn đọng (Active Blockers) | Bước tiếp theo cần làm |
+| Module / Thư mục | Phụ trách | Trạng thái hiện tại | Vấn đề tồn đọng | Bước tiếp theo cần làm |
 |---|---|---|---|---|
-| **setup/** | `robot-setup-agent` | ✅ Stable | Cần kiểm tra cắm thực tế cổng `/dev/ttyUSB0` khi có phần cứng trên tay. | Chạy `python3 setup/healthcheck.py` khi cắm LiDAR D500. |
-| **perception/** | `perception-agent` | 🟡 In Progress | Chưa đóng gói output theo schema `SemanticDetections` trong `INTERFACES.md`. | Tính góc lệch tâm $\theta_{\text{azimuth}} \in [-80^\circ, +80^\circ]$ của bounding box. |
-| **planning/** | `planning-control-agent` | 🔴 Blocked/Buggy | **Thuật toán Path Finding bị lỗi** (cần chẩn đoán: sai hệ trục tọa độ, rẽ góc $90^\circ$, hoặc rò rỉ ô vật cản). | Thu thập mã nguồn path finding hiện tại, debug và chuẩn hóa thuật toán A* trên NumPy. |
-| **web/** | `interface-comms-agent` | ✅ Stable | **Đã giải quyết hoàn toàn Blocker B02:** Dashboard đạt 60fps mượt mà, giao diện Apple visionOS hiện đại. | Tích hợp thử nghiệm với luồng LiDAR thực tế khi kết nối JetBot. |
-| **simulation/** | `simulation-agent` | ⚪ Ready to Build | **Chưa có giá đỡ LiDAR cơ khí** $\to$ Cần SIL 2D để test thuật toán và web không cần phần cứng. | Viết `simulation/lidar_simulator.py` và `simulation/virtual_world.py` theo TK-05. |
-| **root / tests** | `integration-reviewer-agent` | ⚪ Waiting | Chưa có integration test tự động cho luồng giả lập end-to-end. | Tạo kịch bản mock-test tích hợp các module. |
+| **01-HieuMe/** | Hiếu me | ✅ Hoàn thành | Cần Team Lead chụp 5-10 ảnh mẫu camera CSI trên sàn thật để calibrate ma trận IPM. | Bàn giao file `yolov8n-seg.onnx` cho Team Lead build TRT. |
+| **02-DuyHieu/** | Team Lead (`algorithm trùm`) & Duy Hiếu | 🟡 In Progress | Cần ghép mảng `low_obstacles` vào Costmap và làm mượt đường né tránh Plateau. | Tinh chỉnh `controller.py` và `occupancy_grid.py` tại phiên `algorithm trùm`. |
+| **03-MinhHieu/** | Minh Hiếu / Team Lead | ✅ Stable | Đã sẵn sàng kết nối WebSocket với module Planning. | Chờ ghép nối vòng lặp điều khiển kín. |
+| **task-team/** | Team Lead | ✅ Stable | Đã xuất 2 bản kế hoạch chi tiết cho Duy Hiếu & Hiếu me. | Theo dõi nghiệm thu theo các tiêu chí đã đề ra. |
 
 ---
 
@@ -52,5 +50,6 @@
 ---
 
 ## 4. Nhật ký Cập nhật Gần nhất (Changelog)
+- **2026-10-09 (Phiên 3):** Hoàn tất phân rã nhiệm vụ và bàn giao độc lập: Hiếu me hoàn thành pipeline Computer Vision (YOLOv8n-seg + IPM bù mù 16cm LiDAR). Đóng gói toàn bộ repository module độc lập, kiểm thử pass 4/4 bộ test PC cho Duy Hiếu. Team Lead tiếp quản phát triển thuật toán né tránh tại phiên `algorithm trùm`.
 - **2026-10-02 (Phiên 2):** Tiếp thu phản hồi về phân tầng tác nhân, rạch ròi ranh giới `planning-control-agent` (chỉ tập trung thuật toán điều hướng A* / Pure Pursuit). Nghiên cứu chuẩn IEEE/ROS 2 và hoàn thiện hồ sơ cho `simulation-agent` phụ trách Software-in-the-Loop (SIL) giải quyết Blocker B03.
 - **2026-10-02 (Phiên 1):** Thiết lập hệ thống Harness State, tạo bảng theo dõi tiến độ và phân loại 2 blocker trọng tâm (Path Finding bug & Web Dashboard lag).
