@@ -24,8 +24,12 @@ async def startup_event():
     asyncio.ensure_future(robot.update())
     asyncio.ensure_future(ws_manager.broadcaster_task())
 
-    # Auto-start hardware bridge if running on JetBot and not explicitly disabled
-    if os.environ.get("AUTO_START_BRIDGE", "1") != "0":
+    # Auto-start hardware bridge if running on actual JetBot hardware and not disabled
+    is_tegra = os.path.exists("/etc/nv_tegra_release") or (hasattr(os, "uname") and os.uname().machine == "aarch64")
+    auto_bridge = os.environ.get("AUTO_START_BRIDGE")
+    should_start_bridge = (auto_bridge == "1") or (auto_bridge is None and is_tegra)
+
+    if should_start_bridge:
         bridge_candidates = [
             os.path.abspath(os.path.join(os.path.dirname(__file__), "../../jetbot_bridge.py")),
             os.path.abspath(os.path.join(os.path.dirname(__file__), "../jetbot_bridge.py")),

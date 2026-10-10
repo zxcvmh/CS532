@@ -24,13 +24,22 @@ def check_dependencies():
 def main():
     missing = check_dependencies()
     if missing:
+        # Check if local virtualenv has dependencies before failing
+        venv_candidates = [
+            os.path.join(current_dir, ".venv/bin/python3"),
+            os.path.join(current_dir, "../../.venv/bin/python3"),
+            os.path.join(current_dir, "../.venv/bin/python3"),
+        ]
+        for venv_py in venv_candidates:
+            if os.path.exists(venv_py) and os.path.abspath(sys.executable) != os.path.abspath(venv_py):
+                os.execv(venv_py, [venv_py] + sys.argv)
+
         print("=" * 60)
         print("[!] THIẾU THƯ VIỆN ĐỂ CHẠY BACKEND:")
         print(f"    Các gói còn thiếu: {', '.join(missing)}")
-        print("\n👉 Hãy chạy lệnh sau trên terminal JetBot để cài đặt:")
-        print(f"    pip3 install --user {' '.join(missing)}")
-        print("\n(Nếu Jetson Nano dùng Python 3.6 và báo lỗi phiên bản, hãy chạy:)")
-        print('    pip3 install --user "uvicorn<0.17" "fastapi<0.70" "pydantic<2.0" "websockets<11.0"')
+        print("\n👉 Hãy chạy lệnh sau để kích hoạt môi trường ảo hoặc cài đặt:")
+        print("    source .venv/bin/activate")
+        print(f"    pip install {' '.join(missing)}")
         print("=" * 60)
         sys.exit(1)
 

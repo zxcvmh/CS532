@@ -36,6 +36,7 @@ Tài liệu này là "hiến pháp" của team khi làm việc với AI agent. M
 | 2 | **Perception Agent** *(Hiếu me)* | `agents-doc/agents/perception-agent.md` | `01-HieuMe/` | Thị giác máy tính: Chạy YOLOv8n TensorRT FP16, phân đoạn mặt sàn bù điểm mù 16cm LiDAR, xuất mảng `low_obstacles` và Social Bubble người. |
 | 3 | **Interface & Comms Agent** *(Minh Hiếu)* | `agents-doc/agents/interface-comms-agent.md` | `03-MinhHieu/` | Web Dashboard: Stream camera MJPEG, hiển thị Occupancy Grid Canvas 2D thời gian thực, truyền nhận WebSocket 10Hz, điều khiển thủ công và E-stop. |
 | 4 | **Robot Setup & Hardware Agent** *(Team Lead)* | `agents-doc/agents/robot-setup-agent.md` | `setup/` | Phần cứng JetBot: Kiểm tra Camera CSI, động cơ I2C, pin INA219, cổng UART LiDAR D500 (`setup/healthcheck.py`). |
+| 5 | **System Debug & Helpdesk Agent** | `agents-doc/agents/system-debug-helpdesk-agent.md` | Toàn hệ thống | Hỗ trợ kỹ thuật & Gỡ lỗi tức thời: Chẩn đoán lỗi môi trường Python/.venv, giải quyết xung đột cổng mạng, khắc phục sự cố kết nối cảm biến camera/LiDAR/I2C. |
 | + | **Simulation & Digital Twin Agent** | `agents-doc/agents/simulation-agent.md` | `simulation/` | Môi trường mô phỏng 2D (Software-in-the-Loop), tạo chùm tia LiDAR ảo (Raycasting) & mô phỏng động học xe bánh vi sai khi chưa có giá đỡ cơ khí. |
 
 Nguyên tắc chung: **Một agent — một thư mục — một người chịu trách nhiệm hiểu code**.  
