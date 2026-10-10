@@ -11,6 +11,7 @@ class Config:
         "camera_frame": 0,       # 0 = Disabled in WS (Using native MJPEG HTTP /video_feed to prevent lag)
         "trajectory": 2,         # 2Hz
         "planned_path": 2,       # 2Hz
+        "motion_xai": 5,         # 5Hz Explainable Motion & Obstacle telemetry
     }
 
     # Robot parameters

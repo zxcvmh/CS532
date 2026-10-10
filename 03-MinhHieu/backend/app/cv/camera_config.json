@@ -1,0 +1,35 @@
+{
+  "camera": {
+    "width": 640,
+    "height": 480,
+    "fov_deg": 160.0,
+    "mount_height_m": 0.12,
+    "pitch_angle_deg": 20.0
+  },
+  "ipm": {
+    "source_points": [
+      [128.0, 408.0],
+      [512.0, 408.0],
+      [608.0, 470.0],
+      [32.0, 470.0]
+    ],
+    "bev_size": [300, 300],
+    "ground_rect_real_m": {
+      "width_m": 0.50,
+      "length_m": 0.50,
+      "distance_from_base_m": 0.15
+    }
+  },
+  "safety_margins_m": {
+    "person": 0.90,
+    "chair": 0.35,
+    "backpack": 0.25,
+    "bottle": 0.20,
+    "default": 0.30
+  },
+  "low_obstacle_filter": {
+    "max_ground_height_cm": 16.0,
+    "min_contour_area_px": 50,
+    "max_contour_area_px": 8000
+  }
+}

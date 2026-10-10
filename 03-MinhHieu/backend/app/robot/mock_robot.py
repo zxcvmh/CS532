@@ -19,6 +19,8 @@ from app.config import Config
 from app.planning.occupancy_grid import OccupancyGridMap
 from app.planning.astar_planner import AStarPlanner
 from app.planning.controller import PurePursuitController
+from app.planning.obstacle_clustering import cluster_lidar_obstacles, DynamicObstacleTracker
+from app.cv.floor_ipm import FloorIPMTransformer
 
 
 def line_intersection(p1, p2, p3, p4):
@@ -137,13 +139,33 @@ class MockRobot(RobotController, SensorProvider, MapProvider, NavigationManager,
         )
         self.planner = AStarPlanner(self.grid_map)
         self.controller = PurePursuitController(
-            lookahead_dist=0.30,
+            lookahead_dist=0.32,
             max_linear_speed=Config.MAX_SPEED * 0.6,
             max_angular_speed=Config.MAX_ANGULAR_SPEED,
             track_width=0.115,
-            reflex_dist_threshold=0.20
+            goal_tolerance=0.12,
+            reflex_dist_threshold=0.18,
+            warning_dist_threshold=0.70,
+            curvature_scale_k=1.0,
+            lateral_detour_offset=0.52
         )
+        self.obstacle_tracker = DynamicObstacleTracker(assoc_dist_m=0.45)
+        self.floor_ipm = FloorIPMTransformer()
         self.latest_raw_ranges = [0.0] * 360
+        self.latest_clusters = []
+        self.latest_clusters_dict = []
+        self.latest_low_obstacles = []
+        self.latest_social_bubbles = []
+        self.motion_xai_info = {
+            "status": "IDLE",
+            "speed_scale": 1.0,
+            "curvature_w": 0.0,
+            "evasion_active": False,
+            "evasion_reason": "",
+            "lookahead_target": None
+        }
+        self._last_evasion_active = False
+        self._last_curv_log_time = 0.0
         self._last_map_update_time = 0.0
         
         self.map_data = [-1] * (Config.MAP_WIDTH * Config.MAP_HEIGHT)
@@ -212,12 +234,65 @@ class MockRobot(RobotController, SensorProvider, MapProvider, NavigationManager,
             except Exception:
                 pass
 
+    def _process_lidar_clusters(self, ranges: List[float]):
+        """Runs 1D Range Jump O(N) obstacle clustering & dynamic threat tracking."""
+        if not ranges or len(ranges) < 180:
+            return
+        clusters = cluster_lidar_obstacles(ranges, min_dist=0.12, max_dist=2.4)
+        tracked = self.obstacle_tracker.update(clusters)
+        self.latest_clusters = tracked
+        
+        c_th = math.cos(self.pose.theta)
+        s_th = math.sin(self.pose.theta)
+        out_list = []
+        for cl in tracked:
+            cd = cl.to_dict()
+            cd["centroid_world"] = [
+                round(self.pose.x + cl.centroid[0] * c_th - cl.centroid[1] * s_th, 3),
+                round(self.pose.y + cl.centroid[0] * s_th + cl.centroid[1] * c_th, 3)
+            ]
+            cd["bounding_box_world"] = [
+                [
+                    round(self.pose.x + px * c_th - py * s_th, 3),
+                    round(self.pose.y + px * s_th + py * c_th, 3)
+                ]
+                for px, py in cl.bounding_box_2d
+            ]
+            out_list.append(cd)
+        self.latest_clusters_dict = out_list
+
+    async def get_motion_xai(self) -> dict:
+        """Returns explainable motion and obstacle metrics for Web Dashboard."""
+        return {
+            "status": self.motion_xai_info.get("status", "IDLE"),
+            "speed_scale": self.motion_xai_info.get("speed_scale", 1.0),
+            "curvature_w": self.motion_xai_info.get("curvature_w", 0.0),
+            "evasion_active": self.motion_xai_info.get("evasion_active", False),
+            "evasion_reason": self.motion_xai_info.get("evasion_reason", ""),
+            "lookahead_target": self.motion_xai_info.get("lookahead_target", None),
+            "clusters": getattr(self, "latest_clusters_dict", []),
+            "low_obstacles": getattr(self, "latest_low_obstacles", []),
+            "social_bubbles": getattr(self, "latest_social_bubbles", [])
+        }
+
     async def reset_map(self):
         """Clear map data and trajectory completely."""
         self.grid_map.reset()
         self.map_data = self.grid_map.to_dashboard_data()
         self.trajectory.clear()
         self.current_scan = LidarScan(points=[])
+        self.latest_clusters = []
+        self.latest_clusters_dict = []
+        self.latest_low_obstacles = []
+        self.latest_social_bubbles = []
+        self.motion_xai_info = {
+            "status": "IDLE",
+            "speed_scale": 1.0,
+            "curvature_w": 0.0,
+            "evasion_active": False,
+            "evasion_reason": "",
+            "lookahead_target": None
+        }
         self._add_event("WARNING", "2D SLAM Map reset by user!")
 
     async def reset_pose(self):
@@ -285,6 +360,9 @@ class MockRobot(RobotController, SensorProvider, MapProvider, NavigationManager,
 
             # Store latest raw ranges for 10Hz Safety Reflex in controller.py
             self.latest_raw_ranges = ranges
+            
+            # Process 1D Range Jump O(N) Obstacle Clusters & Threat Levels
+            self._process_lidar_clusters(ranges)
 
             if scan_points:
                 self.current_scan = LidarScan(points=scan_points)
@@ -333,6 +411,17 @@ class MockRobot(RobotController, SensorProvider, MapProvider, NavigationManager,
                 robot_theta=self.pose.theta,
                 bubble_radius_m=0.9
             )
+            self.latest_social_bubbles = [
+                {"x": round(px, 3), "y": round(py, 3), "radius": round(rad, 2)}
+                for px, py, rad in getattr(self.grid_map, "social_bubbles", [])
+            ]
+            self.map_data = self.grid_map.to_dashboard_data()
+
+        # 5. Real CV Floor IPM Low-Obstacles (< 16cm blind-spot compensation)
+        raw_low_obs = data.get("low_obstacles")
+        if raw_low_obs and isinstance(raw_low_obs, list) and len(raw_low_obs) > 0:
+            self.latest_low_obstacles = raw_low_obs
+            self.grid_map.insert_low_obstacles(raw_low_obs, self.pose.x, self.pose.y, self.pose.theta)
             self.map_data = self.grid_map.to_dashboard_data()
 
     # ─── RobotController ───
@@ -534,22 +623,56 @@ class MockRobot(RobotController, SensorProvider, MapProvider, NavigationManager,
                 if self.battery < 0:
                     self.battery = 0
             
-            # Autonomous navigation control via Pure Pursuit + 10Hz Reflex Safety Brake
+            # Autonomous navigation control via Pure Pursuit + Curvature Scaling + Plateau Detour + 10Hz Reflex
             if (self.mode == ModeEnum.AUTONOMOUS and 
                 self.nav_status.status == NavigationStatusEnum.NAVIGATING):
                 
                 v, w, info = self.controller.compute_command(
                     self.pose.x, self.pose.y, self.pose.theta,
-                    lidar_ranges=self.latest_raw_ranges
+                    lidar_ranges=self.latest_raw_ranges,
+                    clusters=self.latest_clusters,
+                    grid_map=self.grid_map,
+                    auto_evade=True
                 )
                 
                 status_str = info.get("status")
+                evasion_active = info.get("evasion_active", False)
+                evasion_reason = info.get("evasion_reason", "")
+                target_pt = info.get("target")
+
+                # Dynamic path update when Plateau Detour is spliced
+                if evasion_active and self.controller.current_path:
+                    self.planned_path.points = [LidarPoint(x=p[0], y=p[1]) for p in self.controller.current_path]
+                    if not self._last_evasion_active:
+                        self._add_event("WARNING", f"🛡️ [XAI Plateau Detour] {evasion_reason or 'Evading obstacle with 0.52m offset'}")
+                self._last_evasion_active = evasion_active
+
+                # Curvature velocity scaling XAI logging
+                base_v = self.controller.max_linear_speed
+                curv_scale = round(v / max(0.01, base_v), 2) if v > 0 else 0.0
+                if abs(w) > 0.6 and curv_scale < 0.7:
+                    now_t = time.time()
+                    if now_t - self._last_curv_log_time > 4.0:
+                        pct_down = int(round((1.0 - curv_scale) * 100))
+                        self._add_event("INFO", f"⚡ [XAI Curvature Scaling] -{pct_down}% speed for sharp turn (w={round(w, 2)} rad/s)")
+                        self._last_curv_log_time = now_t
+
+                # Update Motion XAI info for Dashboard
+                self.motion_xai_info = {
+                    "status": status_str,
+                    "speed_scale": curv_scale,
+                    "curvature_w": round(w, 2),
+                    "evasion_active": evasion_active,
+                    "evasion_reason": evasion_reason,
+                    "lookahead_target": [round(target_pt[0], 3), round(target_pt[1], 3)] if target_pt else None
+                }
+
                 if status_str == "EMERGENCY_STOP":
                     self.linear_vel = 0.0
                     self.angular_vel = 0.0
                     await self.send_hardware_stop()
                     self.nav_status.status = NavigationStatusEnum.BLOCKED
-                    self._add_event("ERROR", f"🚨 10Hz SAFETY REFLEX: {info.get('reason')}")
+                    self._add_event("ERROR", f"🚨 [10Hz Reflex Brake] {info.get('reason', 'Obstacle in immediate front cone!')}")
                 elif status_str == "GOAL_REACHED":
                     self.linear_vel = 0.0
                     self.angular_vel = 0.0
@@ -558,6 +681,7 @@ class MockRobot(RobotController, SensorProvider, MapProvider, NavigationManager,
                     self.nav_status.progress = 100.0
                     self.nav_status.distance_remaining = 0.0
                     self.planned_path.points = []
+                    self.motion_xai_info["status"] = "GOAL_REACHED"
                     self._add_event("SUCCESS", "🎯 Target Goal Reached Successfully!")
                 else:
                     self.linear_vel = v
@@ -568,6 +692,12 @@ class MockRobot(RobotController, SensorProvider, MapProvider, NavigationManager,
                     if self._initial_goal_distance > 0:
                         self.nav_status.progress = max(0.0, min(100.0, (1.0 - rem_dist / self._initial_goal_distance) * 100.0))
                     await self.send_hardware_cmd_vel(v, w)
+            else:
+                self.motion_xai_info["status"] = "IDLE"
+                self.motion_xai_info["evasion_active"] = False
+                self.motion_xai_info["speed_scale"] = 1.0
+                self.motion_xai_info["curvature_w"] = 0.0
+                self.motion_xai_info["lookahead_target"] = None
             
             # Update physics
             self.pose.theta += self.angular_vel * self._dt
@@ -588,9 +718,11 @@ class MockRobot(RobotController, SensorProvider, MapProvider, NavigationManager,
             is_hardware_active = self.is_real_connected and (time.time() - self._last_real_data_time < 3.0)
             if not is_hardware_active:
                 scan_points = []
+                sim_ranges = []
                 for i in range(Config.NUM_RAYS):
                     angle = self.pose.theta + (i * 2 * math.pi / Config.NUM_RAYS)
                     dist = self._raycast(angle)
+                    sim_ranges.append(dist)
                     hit_x = self.pose.x + math.cos(angle) * dist
                     hit_y = self.pose.y + math.sin(angle) * dist
                     scan_points.append(LidarPoint(x=hit_x, y=hit_y))
@@ -606,6 +738,8 @@ class MockRobot(RobotController, SensorProvider, MapProvider, NavigationManager,
                         self._update_map(free_x, free_y, False)
                     
                 self.current_scan = LidarScan(points=scan_points)
+                self.latest_raw_ranges = sim_ranges
+                self._process_lidar_clusters(sim_ranges)
             
             # YOLO detections (Only simulate if NO real hardware connected)
             if not is_hardware_active:
@@ -634,6 +768,33 @@ class MockRobot(RobotController, SensorProvider, MapProvider, NavigationManager,
                                 bbox=[x1, y1, x2, y2],
                                 distance=round(dist, 2)
                             ))
-                self.current_detections = DetectionList(objects=dets)
+                if self.mock_objects:
+                    self.current_detections = DetectionList(objects=dets)
+
+                # Social bubbles from person detections (Simulation & CV)
+                sim_person_dets = [
+                    {
+                        "class_name": d.class_name,
+                        "distance": d.distance,
+                        "azimuth_deg": getattr(d, "azimuth_deg", 0.0)
+                    }
+                    for d in self.current_detections.objects
+                    if d.class_name.lower() == "person" and d.distance and d.distance > 0
+                ]
+                if sim_person_dets:
+                    self.grid_map.update_social_bubbles_from_detections(
+                        detections=sim_person_dets,
+                        robot_x=self.pose.x,
+                        robot_y=self.pose.y,
+                        robot_theta=self.pose.theta,
+                        bubble_radius_m=0.9
+                    )
+                    self.latest_social_bubbles = [
+                        {"x": round(px, 3), "y": round(py, 3), "radius": round(rad, 2)}
+                        for px, py, rad in getattr(self.grid_map, "social_bubbles", [])
+                    ]
+                elif getattr(self.grid_map, "social_bubbles", None):
+                    self.grid_map.social_bubbles = []
+                    self.latest_social_bubbles = []
             
             await asyncio.sleep(self._dt)

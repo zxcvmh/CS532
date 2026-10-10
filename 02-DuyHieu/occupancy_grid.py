@@ -301,23 +301,15 @@ class OccupancyGridMap:
         for det in detections:
             cname = det.get("class") or det.get("class_name") if isinstance(det, dict) else getattr(det, "class_name", "")
             if cname == "person":
-                dist = float(det.get("estimated_dist", det.get("distance", 0.0)) if isinstance(det, dict) else getattr(det, "estimated_dist", getattr(det, "distance", 0.0)))
+                dist = float(det.get("distance", 0.0) if isinstance(det, dict) else getattr(det, "distance", 0.0))
                 if 0.15 < dist < 5.0:
-                    if isinstance(det, dict) and "azimuth_deg" in det:
-                        # In CV: dx = cx - 320 -> right is +, left is -
-                        # In Robot Frame {R}: left is +theta, right is -theta
-                        azimuth_rad = -math.radians(float(det["azimuth_deg"]))
-                    elif hasattr(det, "azimuth_deg"):
-                        azimuth_rad = -math.radians(float(det.azimuth_deg))
-                    else:
-                        bbox = det.get("bbox", [320, 240, 320, 240]) if isinstance(det, dict) else getattr(det, "bbox", [320, 240, 320, 240])
-                        cx = (bbox[0] + bbox[2]) / 2.0
-                        azimuth_rad = math.radians(((320.0 - cx) / 320.0) * 80.0)
+                    bbox = det.get("bbox", [320, 240, 320, 240]) if isinstance(det, dict) else getattr(det, "bbox", [320, 240, 320, 240])
+                    cx = (bbox[0] + bbox[2]) / 2.0
+                    azimuth_rad = math.radians(((320.0 - cx) / 320.0) * 30.0)
                     abs_theta = robot_theta + azimuth_rad
                     px = robot_x + dist * math.cos(abs_theta)
                     py = robot_y + dist * math.sin(abs_theta)
-                    margin = float(det.get("safety_margin_m", bubble_radius_m) if isinstance(det, dict) else getattr(det, "safety_margin_m", bubble_radius_m))
-                    self.social_bubbles.append((px, py, margin))
+                    self.social_bubbles.append((px, py, bubble_radius_m))
 
         for px, py, rad in self.social_bubbles:
             self.add_social_bubble(px, py, radius_m=rad)

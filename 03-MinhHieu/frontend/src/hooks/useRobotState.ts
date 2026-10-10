@@ -3,8 +3,20 @@ import { useWebSocket } from './useWebSocket';
 import { RobotPose, SensorHealth } from '../types/robot';
 import { MapData, LidarPoint } from '../types/map';
 import { Detection } from '../types/detection';
-import { NavigationStatus } from '../types/navigation';
+import { NavigationStatus, MotionXaiInfo } from '../types/navigation';
 import { EventLogEntry } from '../types/events';
+
+const defaultXaiInfo: MotionXaiInfo = {
+  status: 'IDLE',
+  speed_scale: 1.0,
+  curvature_w: 0.0,
+  evasion_active: false,
+  evasion_reason: '',
+  lookahead_target: null,
+  clusters: [],
+  low_obstacles: [],
+  social_bubbles: []
+};
 
 export function useRobotState() {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -29,6 +41,7 @@ export function useRobotState() {
   const [sensors, setSensors] = useState<SensorHealth[]>([]);
   const [events, setEvents] = useState<EventLogEntry[]>([]);
   const [cameraFrame, setCameraFrame] = useState<string>('');
+  const [motionXaiState, setMotionXaiState] = useState<MotionXaiInfo>(defaultXaiInfo);
   
   // Refs for high-frequency data (avoids re-rendering the whole app)
   const pose = useRef<RobotPose>({ x: 0, y: 0, theta: 0 });
@@ -37,6 +50,7 @@ export function useRobotState() {
   const detections = useRef<Detection[]>([]);
   const trajectory = useRef<LidarPoint[]>([]);
   const plannedPath = useRef<LidarPoint[]>([]);
+  const motionXai = useRef<MotionXaiInfo>(defaultXaiInfo);
 
   // Trigger for components that need to know detections changed (for CameraView)
   const [detectionsVersion, setDetectionsVersion] = useState(0);
@@ -125,6 +139,22 @@ export function useRobotState() {
       case 'camera_frame':
         setCameraFrame(lastMessage.data);
         break;
+      case 'motion_xai': {
+        const nextXai: MotionXaiInfo = {
+          status: lastMessage.status || 'IDLE',
+          speed_scale: lastMessage.speed_scale ?? 1.0,
+          curvature_w: lastMessage.curvature_w ?? 0.0,
+          evasion_active: !!lastMessage.evasion_active,
+          evasion_reason: lastMessage.evasion_reason || '',
+          lookahead_target: lastMessage.lookahead_target || null,
+          clusters: lastMessage.clusters || [],
+          low_obstacles: lastMessage.low_obstacles || [],
+          social_bubbles: lastMessage.social_bubbles || []
+        };
+        motionXai.current = nextXai;
+        setMotionXaiState(nextXai);
+        break;
+      }
     }
   }, [lastMessage]);
 
@@ -185,6 +215,8 @@ export function useRobotState() {
     detectionsVersion,
     trajectory,
     plannedPath,
+    motionXai,
+    motionXaiState,
     sendGoal,
     cancelGoal,
     emergencyStop,

@@ -1,4 +1,4 @@
-import { NavigationStatus, NavigationState } from '../types/navigation';
+import { NavigationStatus, NavigationState, MotionXaiInfo } from '../types/navigation';
 import { Navigation, MapPin, Clock, XCircle } from 'lucide-react';
 import { Language, translations } from '../i18n/translations';
 
@@ -8,6 +8,7 @@ interface NavigationPanelProps {
   cancelGoal: () => void;
   emergencyStop: () => void;
   language?: Language;
+  motionXai?: MotionXaiInfo;
 }
 
 export default function NavigationPanel({
@@ -15,7 +16,8 @@ export default function NavigationPanel({
   mode,
   cancelGoal,
   emergencyStop,
-  language = 'vi'
+  language = 'vi',
+  motionXai
 }: NavigationPanelProps) {
   const t = translations[language];
 
@@ -153,9 +155,21 @@ export default function NavigationPanel({
 
       {/* Action Footer */}
       <div className="flex items-center justify-between pt-2 border-t border-gray-100 dark:border-[#262626]">
-        <span className="text-xs text-[#6e6e73] dark:text-[#9ca3af]">
-          {t.modeLabel}: <strong className={mode === 'AUTONOMOUS' ? 'text-[#0071e3] dark:text-[#f97316]' : 'text-[#1d1d1f] dark:text-[#f4f4f5]'}>{mode}</strong>
-        </span>
+        <div className="flex items-center gap-1.5 flex-wrap">
+          <span className="text-xs text-[#6e6e73] dark:text-[#9ca3af]">
+            {t.modeLabel}: <strong className={mode === 'AUTONOMOUS' ? 'text-[#0071e3] dark:text-[#f97316]' : 'text-[#1d1d1f] dark:text-[#f4f4f5]'}>{mode}</strong>
+          </span>
+          {motionXai?.evasion_active && (
+            <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/30 animate-pulse">
+              {motionXai.evasion_reason || 'Né tránh'}
+            </span>
+          )}
+          {motionXai && motionXai.speed_scale < 0.98 && (
+            <span className="px-1.5 py-0.5 rounded text-[10px] font-mono text-[#0071e3] dark:text-[#f97316] bg-blue-500/10 border border-blue-500/20 font-semibold" title="Curvature Speed Scaling">
+              Cua: {Math.round(motionXai.speed_scale * 100)}%
+            </span>
+          )}
+        </div>
 
         {isNavigating && (
           <button

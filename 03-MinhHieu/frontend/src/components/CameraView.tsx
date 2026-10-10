@@ -120,6 +120,9 @@ export default function CameraView({
       let label = `${det.className} ${Math.round(det.confidence * 100)}%`;
       if (showDistanceTags && det.distance) {
         label += ` • ${det.distance.toFixed(2)}m`;
+        if (isPerson) {
+          label += ` (Bubble: 0.9m)`;
+        }
       }
       if (det.azimuth_deg) {
         label += ` • ${det.azimuth_deg > 0 ? '+' : ''}${det.azimuth_deg.toFixed(0)}°`;

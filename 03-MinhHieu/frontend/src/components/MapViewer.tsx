@@ -1,11 +1,12 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { RobotPose } from '../types/robot';
 import { MapData, LidarPoint, MapTransform } from '../types/map';
-import { NavigationStatus } from '../types/navigation';
+import { NavigationStatus, MotionXaiInfo } from '../types/navigation';
 import { mapToScreen, screenToMap } from '../utils/mapTransform';
 import { 
   Plus, Minus, RotateCcw, Target, X, Trash2, 
-  Compass, Maximize2, Minimize2, Navigation2, Layers, Info, HelpCircle
+  Compass, Maximize2, Minimize2, Navigation2, Layers, Info, HelpCircle,
+  Sparkles, ShieldAlert
 } from 'lucide-react';
 import { Theme } from '../hooks/useUiPreferences';
 import { translations, Language } from '../i18n/translations';
@@ -16,6 +17,7 @@ interface MapViewerProps {
   lidarPoints: React.MutableRefObject<LidarPoint[]>;
   trajectory: React.MutableRefObject<LidarPoint[]>;
   plannedPath: React.MutableRefObject<LidarPoint[]>;
+  motionXai?: React.MutableRefObject<MotionXaiInfo>;
   navigationStatus: NavigationStatus;
   mode: 'MANUAL' | 'AUTONOMOUS';
   sendGoal: (x: number, y: number) => void;
@@ -38,6 +40,7 @@ export default function MapViewer({
   lidarPoints, 
   trajectory, 
   plannedPath, 
+  motionXai,
   navigationStatus, 
   mode, 
   sendGoal, 
@@ -63,6 +66,9 @@ export default function MapViewer({
   const lastMousePos = useRef({ x: 0, y: 0 });
   const [cursorMapPos, setCursorMapPos] = useState({ x: 0, y: 0 });
   
+  // Explainable AI & Detection Layer state
+  const [showXai, setShowXai] = useState(true);
+
   // Legend state
   const [showLegend, setShowLegend] = useState(true);
 
@@ -238,6 +244,165 @@ export default function MapViewer({
       }
     }
 
+    // ── 5b. CV Floor IPM Low-Obstacles (< 16cm Blind-Spot Compensations) ──
+    if (showXai && motionXai && motionXai.current) {
+      const lowObs = motionXai.current.low_obstacles;
+      if (lowObs && lowObs.length > 0) {
+        const rPose = pose.current;
+        const c_th = Math.cos(rPose.theta);
+        const s_th = Math.sin(rPose.theta);
+        for (let i = 0; i < lowObs.length; i++) {
+          const pt = lowObs[i];
+          const xw = rPose.x + pt[0] * c_th - pt[1] * s_th;
+          const yw = rPose.y + pt[0] * s_th + pt[1] * c_th;
+          const p = mapToScreen(xw, yw, transform, width, height, mData);
+          
+          ctx.save();
+          ctx.translate(p.x, p.y);
+          ctx.rotate(Math.PI / 4);
+          ctx.fillStyle = '#f59e0b'; // amber diamond
+          ctx.fillRect(-3.5, -3.5, 7, 7);
+          ctx.strokeStyle = '#ffffff';
+          ctx.lineWidth = 1;
+          ctx.strokeRect(-3.5, -3.5, 7, 7);
+          ctx.restore();
+        }
+      }
+    }
+
+    // ── 5c. Hall's Proxemics Social Safety Bubbles (0.9m around Humans) ──
+    if (showXai && motionXai && motionXai.current) {
+      const bubbles = motionXai.current.social_bubbles;
+      if (bubbles && bubbles.length > 0) {
+        for (let i = 0; i < bubbles.length; i++) {
+          const b = bubbles[i];
+          const p = mapToScreen(b.x, b.y, transform, width, height, mData);
+          const screenRad = b.radius * transform.scale;
+          
+          // Soft blue aura
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, screenRad, 0, Math.PI * 2);
+          ctx.fillStyle = isDark ? 'rgba(59, 130, 246, 0.12)' : 'rgba(59, 130, 246, 0.08)';
+          ctx.fill();
+          
+          // Dotted safety boundary
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, screenRad, 0, Math.PI * 2);
+          ctx.strokeStyle = isDark ? 'rgba(96, 165, 250, 0.75)' : 'rgba(37, 99, 235, 0.65)';
+          ctx.lineWidth = 1.5;
+          ctx.setLineDash([5, 4]);
+          ctx.stroke();
+          ctx.setLineDash([]);
+          
+          // Center dot
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, 4.5, 0, Math.PI * 2);
+          ctx.fillStyle = isDark ? '#60a5fa' : '#2563eb';
+          ctx.fill();
+          ctx.strokeStyle = '#ffffff';
+          ctx.lineWidth = 1.2;
+          ctx.stroke();
+          
+          // Label pill
+          ctx.font = '600 10px -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif';
+          const tag = `Social Bubble (${b.radius}m)`;
+          const tw = ctx.measureText(tag).width;
+          ctx.fillStyle = isDark ? '#141414' : '#ffffff';
+          ctx.beginPath();
+          ctx.roundRect ? ctx.roundRect(p.x + 8, p.y - 12, tw + 8, 16, 4) : ctx.rect(p.x + 8, p.y - 12, tw + 8, 16);
+          ctx.fill();
+          ctx.strokeStyle = isDark ? '#3b82f6' : '#2563eb';
+          ctx.lineWidth = 0.8;
+          ctx.stroke();
+          ctx.fillStyle = isDark ? '#93c5fd' : '#1d4ed8';
+          ctx.fillText(tag, p.x + 12, p.y);
+        }
+      }
+    }
+
+    // ── 5d. 1D Range Jump OBB Obstacle Clusters & TTC Threat Levels ──
+    if (showXai && motionXai && motionXai.current) {
+      const clusters = motionXai.current.clusters;
+      if (clusters && clusters.length > 0) {
+        const rPose = pose.current;
+        const c_th = Math.cos(rPose.theta);
+        const s_th = Math.sin(rPose.theta);
+        
+        for (let i = 0; i < clusters.length; i++) {
+          const cl = clusters[i];
+          let boxPts: { x: number; y: number }[] = [];
+          if (cl.bounding_box_world && cl.bounding_box_world.length === 4) {
+            boxPts = cl.bounding_box_world.map(pt => mapToScreen(pt[0], pt[1], transform, width, height, mData));
+          } else if (cl.bounding_box_2d && cl.bounding_box_2d.length === 4) {
+            boxPts = cl.bounding_box_2d.map(pt => {
+              const xw = rPose.x + pt[0] * c_th - pt[1] * s_th;
+              const yw = rPose.y + pt[0] * s_th + pt[1] * c_th;
+              return mapToScreen(xw, yw, transform, width, height, mData);
+            });
+          }
+          
+          if (boxPts.length === 4) {
+            ctx.beginPath();
+            ctx.moveTo(boxPts[0].x, boxPts[0].y);
+            for (let k = 1; k < 4; k++) {
+              ctx.lineTo(boxPts[k].x, boxPts[k].y);
+            }
+            ctx.closePath();
+            
+            const isCrit = (cl.threat_level || '').includes('CRITICAL');
+            const isWarn = (cl.threat_level || '').includes('WARNING');
+            
+            const strokeCol = isCrit ? '#ef4444' : isWarn ? '#f59e0b' : '#10b981';
+            const fillCol = isCrit ? 'rgba(239, 68, 68, 0.16)' : isWarn ? 'rgba(245, 158, 11, 0.10)' : 'rgba(16, 185, 129, 0.08)';
+            
+            ctx.fillStyle = fillCol;
+            ctx.fill();
+            ctx.strokeStyle = strokeCol;
+            ctx.lineWidth = isCrit ? 2 : 1.5;
+            ctx.stroke();
+            
+            // Top-most vertex for label pill
+            const topPt = boxPts.reduce((min, p) => p.y < min.y ? p : min, boxPts[0]);
+            const label = isCrit && cl.ttc < 5
+              ? `TTC: ${cl.ttc.toFixed(1)}s`
+              : `${cl.obstacle_type === 'CYLINDER_LEG' ? 'Leg' : 'Box'} (${cl.min_distance.toFixed(2)}m)`;
+              
+            ctx.font = '600 10px -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif';
+            const textW = ctx.measureText(label).width;
+            const pillW = textW + 10;
+            const pillH = 16;
+            const pillX = topPt.x - pillW / 2;
+            const pillY = topPt.y - pillH - 3;
+            
+            ctx.fillStyle = isDark ? '#141414' : '#ffffff';
+            ctx.beginPath();
+            ctx.roundRect ? ctx.roundRect(pillX, pillY, pillW, pillH, 4) : ctx.rect(pillX, pillY, pillW, pillH);
+            ctx.fill();
+            ctx.strokeStyle = strokeCol;
+            ctx.lineWidth = 1;
+            ctx.stroke();
+            
+            ctx.fillStyle = isDark ? '#f4f4f5' : '#1d1d1f';
+            ctx.fillText(label, pillX + 5, pillY + 11);
+          }
+        }
+      }
+    }
+
+    // ── 5e. Pure Pursuit Lookahead Target Pin ──
+    if (showXai && motionXai && motionXai.current && motionXai.current.lookahead_target && 
+        ['NAVIGATING', 'PLANNING'].includes(navigationStatus.status)) {
+      const tgt = motionXai.current.lookahead_target;
+      const tp = mapToScreen(tgt[0], tgt[1], transform, width, height, mData);
+      ctx.beginPath();
+      ctx.arc(tp.x, tp.y, 4.5, 0, Math.PI * 2);
+      ctx.fillStyle = isDark ? '#f97316' : '#0071e3';
+      ctx.fill();
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+    }
+
     // ── 6. Active Navigation Goal Marker (Apple Maps Pulse Pin) ──
     const navGoalX = navigationStatus.goalX;
     const navGoalY = navigationStatus.goalY;
@@ -375,7 +540,7 @@ export default function MapViewer({
     ctx.restore();
 
     requestRef.current = requestAnimationFrame(renderFrame);
-  }, [transform, navigationStatus, pendingGoal, showLidarScan, showTrajectory, showPlannedPath, showFovCone, showGrid, pose, mapData, lidarPoints, trajectory, plannedPath]);
+  }, [transform, navigationStatus, pendingGoal, showLidarScan, showTrajectory, showPlannedPath, showFovCone, showGrid, pose, mapData, lidarPoints, trajectory, plannedPath, motionXai, showXai]);
 
   // Start 60fps render loop
   useEffect(() => {
@@ -495,9 +660,7 @@ export default function MapViewer({
           <div className="hidden sm:flex items-center gap-1.5 px-3 py-1 rounded-full bg-gray-50 dark:bg-[#1c1c1c] border border-gray-200/60 dark:border-[#262626] text-xs font-mono text-[#6e6e73] dark:text-[#9ca3af]">
             <span>{t.cursor}:</span>
             <span className="text-[#1d1d1f] dark:text-[#f4f4f5] font-semibold">{cursorMapPos.x.toFixed(2)}, {cursorMapPos.y.toFixed(2)}m</span>
-          </div>
-
-          {/* Toggle Legend Button */}
+          </div>           {/* Toggle Legend Button */}
           <button
             onClick={() => setShowLegend(prev => !prev)}
             className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold border transition-all apple-btn shadow-xs ${
@@ -509,6 +672,28 @@ export default function MapViewer({
             <Info className="w-3.5 h-3.5 text-[#0071e3] dark:text-[#f97316]" />
             <span className="hidden md:inline">{t.legendTitle}</span>
           </button>
+
+          {/* Toggle XAI Layers Button */}
+          <button
+            onClick={() => setShowXai(prev => !prev)}
+            title="Bật/Tắt hiển thị XAI (Hộp bao OBB, TTC, Social Bubble, CV Sàn)"
+            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold border transition-all apple-btn shadow-xs ${
+              showXai
+                ? 'bg-amber-500/10 dark:bg-[#262626] text-amber-600 dark:text-[#f97316] border-amber-500/30 dark:border-[#f97316]/30'
+                : 'bg-gray-50 dark:bg-[#1c1c1c] text-[#6e6e73] dark:text-[#9ca3af] border-gray-200/60 dark:border-[#262626] hover:text-[#1d1d1f] dark:hover:text-[#f4f4f5]'
+            }`}
+          >
+            <Sparkles className="w-3.5 h-3.5 text-amber-500 dark:text-[#f97316]" />
+            <span className="hidden md:inline">XAI Layers</span>
+          </button>
+
+          {/* Active Plateau Detour Evasion Alert Badge */}
+          {motionXai?.current?.evasion_active && (
+            <div className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-rose-500/15 text-rose-500 dark:text-rose-400 border border-rose-500/30 text-xs font-semibold shadow-xs animate-pulse">
+              <ShieldAlert className="w-3.5 h-3.5" />
+              <span>Né Plateau (0.52m)</span>
+            </div>
+          )}
         </div>
 
         {/* Maximize Toggle */}
@@ -547,7 +732,7 @@ export default function MapViewer({
               onClick={() => setShowLegend(false)}
               className="w-5 h-5 rounded-full hover:bg-gray-100 dark:hover:bg-[#262626] flex items-center justify-center text-gray-400 dark:text-[#9ca3af] hover:text-gray-700 dark:hover:text-white"
             >
-              <X className="w-3 h-3" />
+              <X className="w-3.5 h-3.5" />
             </button>
           </div>
 
@@ -597,8 +782,35 @@ export default function MapViewer({
               </div>
             </div>
 
-            {/* Robot */}
+            {/* XAI: OBB Clusters */}
+            <div className="flex items-start gap-2 pt-1 border-t border-gray-100 dark:border-[#262626]">
+              <span className="w-3.5 h-3.5 rounded-sm border-2 border-red-500 bg-red-500/20 shrink-0 mt-0.5"></span>
+              <div className="flex flex-col">
+                <strong className="text-[#1d1d1f] dark:text-[#f4f4f5]">Hộp bao OBB & TTC</strong>
+                <span className="text-[10px] text-gray-500 dark:text-[#9ca3af]">Vật cản định hướng & thời gian va chạm</span>
+              </div>
+            </div>
+
+            {/* XAI: Social Bubble */}
             <div className="flex items-start gap-2">
+              <span className="w-3.5 h-3.5 rounded-full border border-dashed border-blue-500 bg-blue-500/15 shrink-0 mt-0.5"></span>
+              <div className="flex flex-col">
+                <strong className="text-[#1d1d1f] dark:text-[#f4f4f5]">Social Bubble (0.9m)</strong>
+                <span className="text-[10px] text-gray-500 dark:text-[#9ca3af]">Vùng an toàn quanh người (CV)</span>
+              </div>
+            </div>
+
+            {/* XAI: CV Low Obstacles */}
+            <div className="flex items-start gap-2">
+              <span className="w-3 h-3 rotate-45 bg-amber-500 border border-white shrink-0 mt-0.5 ml-0.5"></span>
+              <div className="flex flex-col">
+                <strong className="text-[#1d1d1f] dark:text-[#f4f4f5]">Vật cản sàn CV (&lt;16cm)</strong>
+                <span className="text-[10px] text-gray-500 dark:text-[#9ca3af]">Bù điểm mù LiDAR qua Camera IPM</span>
+              </div>
+            </div>
+
+            {/* Robot */}
+            <div className="flex items-start gap-2 pt-1 border-t border-gray-100 dark:border-[#262626]">
               <span className="w-3.5 h-3.5 rounded-sm bg-blue-100 dark:bg-[#1c1c1c] border border-[#0071e3] dark:border-[#262626] shrink-0 mt-0.5 flex items-center justify-center text-[8px] font-bold text-[#0071e3] dark:text-[#f97316]">▲</span>
               <div className="flex flex-col">
                 <strong className="text-[#1d1d1f] dark:text-[#f4f4f5]">{t.robotHeading}</strong>

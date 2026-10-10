@@ -68,6 +68,7 @@ export default function App() {
           cancelGoal={robotState.cancelGoal}
           emergencyStop={robotState.emergencyStop}
           language={prefs.language}
+          motionXai={robotState.motionXaiState}
         />
       </div>
     ),
@@ -171,6 +172,7 @@ export default function App() {
                 showPlannedPath={prefs.showPlannedPath}
                 showFovCone={prefs.showFovCone}
                 showGrid={prefs.showGrid}
+                motionXai={robotState.motionXai}
                 isMaximized={true}
                 onToggleMaximize={() => handleSelectView('OVERVIEW')}
                 theme={prefs.theme}
@@ -209,6 +211,7 @@ export default function App() {
                   showPlannedPath={prefs.showPlannedPath}
                   showFovCone={prefs.showFovCone}
                   showGrid={prefs.showGrid}
+                  motionXai={robotState.motionXai}
                   theme={prefs.theme}
                   language={prefs.language}
                 />
@@ -280,6 +283,7 @@ export default function App() {
                       showPlannedPath={prefs.showPlannedPath}
                       showFovCone={prefs.showFovCone}
                       showGrid={prefs.showGrid}
+                      motionXai={robotState.motionXai}
                       isMaximized={false}
                       onToggleMaximize={() => handleSelectView('MAP')}
                       theme={prefs.theme}

@@ -251,6 +251,15 @@ class WebSocketManager:
                                 "timestamp": time.time()
                             })
                             
+                        elif key == "motion_xai":
+                            if hasattr(self.robot, "get_motion_xai"):
+                                xai = await self.robot.get_motion_xai()
+                                await self.broadcast({
+                                    "type": "motion_xai",
+                                    **xai,
+                                    "timestamp": time.time()
+                                })
+                            
                     except Exception as e:
                         pass  # Don't crash on broadcast errors
                         
