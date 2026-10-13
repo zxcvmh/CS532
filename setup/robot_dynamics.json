@@ -2,13 +2,15 @@
     "hardware": "JetBot-GA25-370",
     "floor_surface": "glossy_ceramic_tile",
     "tested_arena": "2m_x_1m",
-    "min_drive_speed": 0.22,
-    "cruise_speed": 0.28,
+    "min_drive_speed": 0.08,
+    "cruise_speed": 0.10,
     "trim_factor": 1.0,
-    "turn_speed": 0.22,
-    "turn_time_90_deg_sec": 0.95,
-    "turn_time_180_deg_sec": 1.90,
+    "turn_speed": 0.10,
+    "turn_time_90_deg_sec": 1.50,
+    "turn_time_180_deg_sec": 3.00,
     "soft_start_ramp_sec": 0.4,
-    "max_safe_speed_mps": 0.18,
-    "note": "Gia tri mac dinh an toan cho san gach va dong co GA25 hop so kim loai"
+    "max_safe_speed_mps": 0.10,
+    "max_angular_speed_rads": 0.28,
+    "lidar_yaw_offset_deg": 0.0,
+    "note": "Cau hinh chuan an toan san gach men: toc do cham 0.10 m/s, goc quay em max 0.28 rad/s giup lidar odometry va planning luon theo kip"
 }

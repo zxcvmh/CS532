@@ -176,6 +176,45 @@ def test_4_curvature_velocity_scaling():
     print("  ✅ PASS 4: Xe tự động hãm tốc mượt mà khi bẻ lái góc lớn, chống trượt lật bánh vi sai!")
 
 
+def test_5_cluster_injection_and_any_angle_smoothing():
+    print("\n" + "=" * 65)
+    print(" [TEST 5/5] Tiêm Cụm Chân Bàn Vào Costmap & Nắn Thẳng Theta* Any-Angle")
+    print("=" * 65)
+
+    grid = OccupancyGridMap(width=100, height=100, resolution=0.05, origin_x=-2.5, origin_y=-2.5)
+
+    # 1. Giả lập một chân bàn tại (0.8m, 0.0m)
+    from types import SimpleNamespace
+    leg_cluster = SimpleNamespace(centroid=(0.8, 0.0), length_m=0.15, width_m=0.15)
+    grid.insert_obstacle_clusters([leg_cluster], robot_x=0.0, robot_y=0.0, robot_theta=0.0)
+
+    c, r = grid.world_to_grid(0.8, 0.0)
+    print(f"-> Chi phí ô lưới tâm chân bàn: {grid.costmap[r, c]} (Kỳ vọng: 254 Lethal)")
+    assert grid.costmap[r, c] == 254, "❌ Chân bàn chưa được đánh dấu là Lethal 254 trong costmap!"
+    print("  ✅ PASS 5.1: Chân bàn đã được tiêm thành công vào Costmap với chi phí chết (254)!")
+
+    # 2. Kiểm tra A* né chân bàn và Any-Angle String Pulling
+    planner = AStarPlanner(grid)
+    # Robot đang chúi đầu về hướng Nam (-1.57 rad), Goal ở phía Đông (1.6m, 0.0m)
+    path = planner.plan((0.0, 0.0), (1.6, 0.0), smooth=True, robot_theta=-1.57)
+    assert path is not None and len(path) >= 2, "❌ A* không tìm được đường né chân bàn!"
+
+    # Đo khoảng cách gần nhất từ quỹ đạo tới tâm chân bàn
+    min_dist_to_leg = min(math.hypot(px - 0.8, py - 0.0) for px, py in path)
+    print(f"-> Khoảng cách an toàn nhỏ nhất tới chân bàn: {min_dist_to_leg:.3f} m")
+    assert min_dist_to_leg >= 0.18, f"❌ Quỹ đạo cắt quá sát hoặc đâm xuyên chân bàn: {min_dist_to_leg:.3f}m < 0.18m!"
+    print("  ✅ PASS 5.2: Quỹ đạo né tránh hoàn toàn chân bàn, triệt tiêu việc đâm xuyên chướng ngại vật!")
+
+    # 3. Kiểm tra hành lang trắng thông thoáng: Robot quay đầu đi thẳng trực tiếp
+    grid_free = OccupancyGridMap(width=100, height=100, resolution=0.05, origin_x=-2.5, origin_y=-2.5)
+    planner_free = AStarPlanner(grid_free)
+    path_free = planner_free.plan((0.0, 0.0), (1.5, 0.5), smooth=True, robot_theta=-1.57)
+    assert path_free is not None, "❌ A* không tìm được đường trong hành lang mở!"
+    print(f"-> Số điểm chặng trên hành lang mở: {len(path_free)} (Kỳ vọng: 2 điểm đường thẳng Theta*)")
+    assert len(path_free) == 2, f"❌ Đường đi trong khoảng trắng bị gấp khúc ({len(path_free)} điểm)!"
+    print("  ✅ PASS 5.3: Thuật toán Theta* String Pulling nắn thẳng 100% đường đi qua khoảng trắng!")
+
+
 def main():
     print("\n" + "#" * 65)
     print("   BỘ KIỂM THỬ THUẬT TOÁN ĐIỀU HƯỚNG & ĐIỀU KHIỂN (PC-FIRST)")
@@ -186,9 +225,10 @@ def main():
     path = test_2_clustering_and_astar(grid)
     detour = test_3_detour_plateau_clearance(path)
     test_4_curvature_velocity_scaling()
+    test_5_cluster_injection_and_any_angle_smoothing()
 
     print("\n" + "#" * 65)
-    print("  🎉 XUẤT SẮC! TOÀN BỘ 4/4 TIÊU CHÍ KỸ THUẬT ĐÃ ĐẠT CHUẨN PASS!")
+    print("  🎉 XUẤT SẮC! TOÀN BỘ 5/5 TIÊU CHÍ KỸ THUẬT ĐÃ ĐẠT CHUẨN PASS!")
     print("  SẴN SÀNG ĐÓNG GÓI BÀN GIAO CHO TEAM LEAD NGHIỆM THU TRÊN JETBOT!")
     print("#" * 65 + "\n")
 

@@ -3,7 +3,7 @@ class Config:
     WS_RATES = {
         "robot_pose": 10,        # 10Hz synchronized with LiDAR
         "lidar_scan": 10,        # 10Hz
-        "map_update": 2,         # 2Hz (sufficient for grid map changes)
+        "map_update": 5,         # 5Hz (Synchronized with LiDAR & non-blocking CPU)
         "detections": 10,        # 10Hz
         "navigation_status": 5,  # 5Hz
         "battery": 0.5,          # 0.5Hz (every 2s)
@@ -15,8 +15,8 @@ class Config:
     }
 
     # Robot parameters
-    MAX_SPEED = 0.5            # m/s
-    MAX_ANGULAR_SPEED = 1.0    # rad/s
+    MAX_SPEED = 0.10           # m/s (safe gentle cruise speed on ceramic tile, reduced from 0.14)
+    MAX_ANGULAR_SPEED = 0.28   # rad/s (anti-slip gentle turn rate, reduced from 0.50 to let odometry & planning keep up)
     ROBOT_UPDATE_RATE = 20     # Hz
 
     # Map parameters

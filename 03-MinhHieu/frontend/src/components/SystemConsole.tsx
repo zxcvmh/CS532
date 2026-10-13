@@ -52,12 +52,12 @@ export default function SystemConsole({
   const sensorItems = isRealConnected ? [
     { name: 'Camera CSI (IMX219)', status: 'ACTIVE', rate: '15 FPS', note: language === 'vi' ? 'Video stream Jetson OK' : 'Jetson Video stream OK', color: 'emerald' },
     { name: 'LiDAR D500 (UART)', status: 'ACTIVE', rate: '10 Hz', note: language === 'vi' ? 'Quét 360° UART ttyUSB0' : '360° UART ttyUSB0 Scan', color: 'emerald' },
-    { name: 'YOLOv8n TensorRT', status: 'ACTIVE', rate: 'FP16', note: language === 'vi' ? 'Jetson GPU Inference' : 'Jetson GPU Inference', color: 'emerald' },
+    { name: 'YOLO26-n TensorRT', status: 'ACTIVE', rate: 'FP16', note: language === 'vi' ? 'Jetson GPU Inference' : 'Jetson GPU Inference', color: 'emerald' },
     { name: 'Motor I2C (PCA9685)', status: 'ACTIVE', rate: '100 Hz', note: language === 'vi' ? 'I2C Bus 1 OK' : 'I2C Bus 1 OK', color: 'emerald' },
   ] : [
     { name: 'Camera CSI (IMX219)', status: 'OFFLINE', rate: '--', note: language === 'vi' ? 'Chưa nối cáp CSI (Mô phỏng)' : 'No CSI ribbon (Simulated)', color: 'rose' },
     { name: 'LiDAR D500 (UART)', status: 'OFFLINE', rate: '--', note: language === 'vi' ? 'Chưa cắm USB UART (Mô phỏng)' : 'No USB UART (Simulated)', color: 'rose' },
-    { name: 'YOLOv8n TensorRT', status: 'SIMULATED', rate: '~15 FPS', note: language === 'vi' ? 'Mô phỏng trên Host PC' : 'Simulated on Host PC', color: 'amber' },
+    { name: 'YOLO26-n TensorRT', status: 'SIMULATED', rate: '~15 FPS', note: language === 'vi' ? 'Mô phỏng trên Host PC' : 'Simulated on Host PC', color: 'amber' },
     { name: 'Motor I2C (PCA9685)', status: 'OFFLINE', rate: '--', note: language === 'vi' ? 'Chưa nối bus I2C (Mô phỏng)' : 'No I2C bus (Simulated)', color: 'rose' },
   ];
 

@@ -20,6 +20,7 @@ from app.planning.occupancy_grid import OccupancyGridMap
 from app.planning.astar_planner import AStarPlanner
 from app.planning.controller import PurePursuitController
 from app.planning.obstacle_clustering import cluster_lidar_obstacles, DynamicObstacleTracker
+from app.planning.lidar_odometry import Lidar2DOdometry
 from app.cv.floor_ipm import FloorIPMTransformer
 
 
@@ -120,6 +121,13 @@ def _create_minimal_jpeg(width: int = 640, height: int = 480) -> bytes:
     return b'\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x01\x00H\x00H\x00\x00\xff\xdb\x00C\x00\x08\x06\x06\x07\x06\x05\x08\x07\x07\x07\t\t\x08\n\x0c\x14\r\x0c\x0b\x0b\x0c\x19\x12\x13\x0f\x14\x1d\x1a\x1f\x1e\x1d\x1a\x1c\x1c $.\' \",#\x1c\x1c(7),01444\x1f\'9=82<.342\xff\xc0\x00\x0b\x08\x00\x01\x00\x01\x01\x01\x11\x00\xff\xc4\x00\x1f\x00\x00\x01\x05\x01\x01\x01\x01\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x01\x02\x03\x04\x05\x06\x07\x08\t\n\x0b\xff\xda\x00\x08\x01\x01\x00\x00?\x00\xbf\x00\xff\xd9'
 
 
+async def _async_run_in_thread(func, *args):
+    """Compatible thread runner for Python 3.6 (JetPack 4.5) through Python 3.14"""
+    if hasattr(asyncio, "to_thread"):
+        return await asyncio.to_thread(func, *args)
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, func, *args)
+
 
 class MockRobot(RobotController, SensorProvider, MapProvider, NavigationManager, DetectionProvider):
     def __init__(self):
@@ -139,17 +147,22 @@ class MockRobot(RobotController, SensorProvider, MapProvider, NavigationManager,
         )
         self.planner = AStarPlanner(self.grid_map)
         self.controller = PurePursuitController(
-            lookahead_dist=0.32,
-            max_linear_speed=Config.MAX_SPEED * 0.6,
+            lookahead_dist=0.28,
+            max_linear_speed=Config.MAX_SPEED,
             max_angular_speed=Config.MAX_ANGULAR_SPEED,
             track_width=0.115,
-            goal_tolerance=0.12,
-            reflex_dist_threshold=0.18,
-            warning_dist_threshold=0.70,
-            curvature_scale_k=1.0,
-            lateral_detour_offset=0.52
+            goal_tolerance=0.10,
+            reflex_dist_threshold=0.14,
+            warning_dist_threshold=0.45,
+            curvature_scale_k=1.5,
+            lateral_detour_offset=0.20
         )
         self.obstacle_tracker = DynamicObstacleTracker(assoc_dist_m=0.45)
+        self.lidar_odometry = Lidar2DOdometry(
+            min_range_m=0.15,
+            max_range_m=3.5,
+            decimation_step=2
+        )
         self.floor_ipm = FloorIPMTransformer()
         self.latest_raw_ranges = [0.0] * 360
         self.latest_clusters = []
@@ -239,7 +252,10 @@ class MockRobot(RobotController, SensorProvider, MapProvider, NavigationManager,
         if not ranges or len(ranges) < 180:
             return
         clusters = cluster_lidar_obstacles(ranges, min_dist=0.12, max_dist=2.4)
-        tracked = self.obstacle_tracker.update(clusters)
+        tracked = self.obstacle_tracker.update(
+            clusters,
+            robot_pose=(self.pose.x, self.pose.y, self.pose.theta)
+        )
         self.latest_clusters = tracked
         
         c_th = math.cos(self.pose.theta)
@@ -280,11 +296,17 @@ class MockRobot(RobotController, SensorProvider, MapProvider, NavigationManager,
         self.grid_map.reset()
         self.map_data = self.grid_map.to_dashboard_data()
         self.trajectory.clear()
+        if hasattr(self, "lidar_odometry"):
+            self.lidar_odometry.reset_pose(self.pose.x, self.pose.y, self.pose.theta)
+            self._last_odom_scan_time = time.time()
         self.current_scan = LidarScan(points=[])
         self.latest_clusters = []
         self.latest_clusters_dict = []
         self.latest_low_obstacles = []
         self.latest_social_bubbles = []
+        self.controller.clear_path()
+        self._stop_start_time = 0.0
+        self._replan_attempts = 0
         self.motion_xai_info = {
             "status": "IDLE",
             "speed_scale": 1.0,
@@ -299,6 +321,13 @@ class MockRobot(RobotController, SensorProvider, MapProvider, NavigationManager,
         """Reset robot pose to origin (0, 0, 0)"""
         self.pose = RobotPose(x=0.0, y=0.0, theta=0.0)
         self.trajectory.clear()
+        if hasattr(self, "lidar_odometry"):
+            self.lidar_odometry.reset_pose(0.0, 0.0, 0.0)
+            self._last_odom_scan_time = time.time()
+        self.grid_map.clear_footprint(0.0, 0.0, radius=0.18)
+        self.controller.clear_path()
+        self._stop_start_time = 0.0
+        self._replan_attempts = 0
         self._add_event("INFO", "Robot pose reset to (0, 0, 0)")
 
     async def handle_real_telemetry(self, data: dict):
@@ -308,6 +337,9 @@ class MockRobot(RobotController, SensorProvider, MapProvider, NavigationManager,
             self.grid_map.reset()
             self.map_data = self.grid_map.to_dashboard_data()
             self.trajectory.clear()
+            if hasattr(self, "lidar_odometry"):
+                self.lidar_odometry.reset_pose(self.pose.x, self.pose.y, self.pose.theta)
+                self._last_odom_scan_time = time.time()
             self._has_reset_real_map = True
             self._add_event("SUCCESS", "Cleared simulated room. Mapping Real Environment!")
 
@@ -340,7 +372,6 @@ class MockRobot(RobotController, SensorProvider, MapProvider, NavigationManager,
             self._last_lidar_time = time.time()
             self._lidar_connected = True
             ranges = [0.0] * 360
-            scan_points = []
 
             for item in raw_lidar:
                 if len(item) >= 2:
@@ -353,6 +384,27 @@ class MockRobot(RobotController, SensorProvider, MapProvider, NavigationManager,
 
                     ranges[int(round(ang_deg)) % 360] = dist
 
+            # 2D LiDAR Scan Matching Odometry (Triệt tiêu Wheel Slip Dead-Reckoning Drift)
+            now_t = time.time()
+            if hasattr(self, "lidar_odometry"):
+                dt_scan = max(0.01, min(0.3, now_t - getattr(self, '_last_odom_scan_time', now_t - 0.1)))
+                self._last_odom_scan_time = now_t
+                ox, oy, oth, odom_diag = self.lidar_odometry.update(
+                    ranges,
+                    dt=dt_scan,
+                    v_cmd=getattr(self, "linear_vel", 0.0),
+                    w_cmd=getattr(self, "angular_vel", 0.0)
+                )
+                # Luôn luôn cập nhật pose: nếu ICP tin cậy thì dùng ICP, nếu ICP từ chối thì dùng Dead-Reckoning Kinematic Fallback
+                # Tuyệt đối KHÔNG ĐƯỢC bỏ qua cập nhật khiến pose bị đóng băng khi robot xoay trên sàn trơn!
+                self.pose.x = ox
+                self.pose.y = oy
+                self.pose.theta = oth
+
+            # Transform raw ranges to global point cloud with corrected pose
+            scan_points = []
+            for ang_deg, dist in enumerate(ranges):
+                if dist >= 0.12:
                     rad = math.radians(ang_deg) + self.pose.theta
                     hit_x = self.pose.x + dist * math.cos(rad)
                     hit_y = self.pose.y + dist * math.sin(rad)
@@ -367,15 +419,19 @@ class MockRobot(RobotController, SensorProvider, MapProvider, NavigationManager,
             if scan_points:
                 self.current_scan = LidarScan(points=scan_points)
 
-            # Throttle grid map update to 4-5 Hz (period >= 0.2s) to prevent CPU event loop blocking
-            now_t = time.time()
-            if now_t - getattr(self, '_last_map_update_time', 0.0) >= 0.2:
+            # Throttle grid map update to 5 Hz (period >= 0.18s) synchronized with WebSocket
+            if now_t - getattr(self, '_last_map_update_time', 0.0) >= 0.18:
                 self.grid_map.update_scan(
                     self.pose.x, self.pose.y, self.pose.theta,
                     ranges=ranges,
                     max_valid_range=Config.MAX_RANGE - 0.15
                 )
+                if getattr(self, "latest_clusters", None):
+                    self.grid_map.insert_obstacle_clusters(
+                        self.latest_clusters, self.pose.x, self.pose.y, self.pose.theta
+                    )
                 self.map_data = self.grid_map.to_dashboard_data()
+                self.map_version = getattr(self, "map_version", 0) + 1
                 self._last_map_update_time = now_t
         else:
             if time.time() - getattr(self, '_last_lidar_time', 0.0) > 2.0:
@@ -403,17 +459,17 @@ class MockRobot(RobotController, SensorProvider, MapProvider, NavigationManager,
                     azimuth_deg=float(d.get("azimuth_deg", 0.0))
                 ))
             self.current_detections = DetectionList(objects=obj_list)
-            # TẦNG 1: Project Social Cost Bubbles (0.9m) onto 2D Occupancy Grid Map
+            # TẦNG 1: Project Social Cost Bubbles (0.40m) onto 2D Occupancy Grid Map
             self.grid_map.update_social_bubbles_from_detections(
                 detections=raw_dets,
                 robot_x=self.pose.x,
                 robot_y=self.pose.y,
                 robot_theta=self.pose.theta,
-                bubble_radius_m=0.9
+                bubble_radius_m=0.40
             )
             self.latest_social_bubbles = [
-                {"x": round(px, 3), "y": round(py, 3), "radius": round(rad, 2)}
-                for px, py, rad in getattr(self.grid_map, "social_bubbles", [])
+                {"x": round(b[0], 3), "y": round(b[1], 3), "radius": round(b[2], 2)}
+                for b in getattr(self.grid_map, "social_bubbles", [])
             ]
             self.map_data = self.grid_map.to_dashboard_data()
 
@@ -538,28 +594,77 @@ class MockRobot(RobotController, SensorProvider, MapProvider, NavigationManager,
 
     async def set_goal(self, x: float, y: float):
         if self.mode != ModeEnum.AUTONOMOUS:
-            self._add_event("WARNING", "Cannot set goal in MANUAL mode. Switch to AUTONOMOUS!")
-            return
+            self.mode = ModeEnum.AUTONOMOUS
+            self._add_event("INFO", "🤖 Auto-switched to AUTONOMOUS mode for navigation.")
         
+        # 1. Inject any detected obstacle clusters (table legs, boxes) into costmap
+        if getattr(self, "latest_clusters", None):
+            self.grid_map.insert_obstacle_clusters(
+                self.latest_clusters, self.pose.x, self.pose.y, self.pose.theta
+            )
+
+        # 2. Clear footprint under the robot chassis to guarantee valid A* start cell
+        self.grid_map.clear_footprint(self.pose.x, self.pose.y, radius=0.18)
+
+        # 3. Lock static anchor map walls so rooms do not mutate during navigation
+        if not self.grid_map.anchor_map_locked:
+            self.grid_map.lock_anchor_map()
+
+        # 3. Reset navigation & controller state
         self.nav_status.status = NavigationStatusEnum.PLANNING
         self.nav_status.goal_x = x
         self.nav_status.goal_y = y
-        self._add_event("INFO", f"Goal received: ({x:.2f}, {y:.2f}). Running A* Search...")
+        self.linear_vel = 0.0
+        self.angular_vel = 0.0
+        self._stop_start_time = 0.0
+        self._replan_attempts = 0
+        self._last_replan_time = 0.0
+        self.controller.clear_path()
+        self.controller.is_goal_reached = False
+        self.controller.is_path_blocked = False
+        self.controller._blocked_persistence_count = 0
+        await self.send_hardware_stop()
+        self._add_event("INFO", f"🎯 Goal received: ({x:.2f}, {y:.2f}). Computing optimal path...")
+        print(f"\n[NAV-DEBUG] >>> 🎯 GOAL RECEIVED: ({x:.2f}, {y:.2f}) | Mode: {self.mode.value} | Status: PLANNING", flush=True)
         
-        path = self.planner.plan((self.pose.x, self.pose.y), (x, y), smooth=True)
+        # Run A* in a background thread to prevent freezing the FastAPI asyncio event loop
+        try:
+            path = await asyncio.wait_for(
+                _async_run_in_thread(self.planner.plan, (self.pose.x, self.pose.y), (x, y), True, 10.0, 25000, self.pose.theta),
+                timeout=12.0
+            )
+        except asyncio.TimeoutError:
+            path = None
+            self._add_event("ERROR", f"⏱️ A* search timed out (> 10s)! Destination ({x:.2f}, {y:.2f}) is too complex or unreachable.")
+            print(f"[NAV-DEBUG] >>> ⏱️ A* SEARCH TIMEOUT (>10s) to ({x:.2f}, {y:.2f})", flush=True)
+        except Exception as e:
+            path = None
+            self._add_event("ERROR", f"A* Planner error: {e}")
+            print(f"[NAV-DEBUG] >>> ❌ A* PLANNER ERROR: {e}", flush=True)
+
         if path is not None and len(path) >= 2:
             self.planned_path.points = [LidarPoint(x=px, y=py) for px, py in path]
             self.controller.set_path(path)
             self._initial_goal_distance = math.hypot(x - self.pose.x, y - self.pose.y)
-            self.nav_status.status = NavigationStatusEnum.NAVIGATING
             self.nav_status.distance_remaining = self._initial_goal_distance
             self.nav_status.progress = 0.0
-            self._add_event("SUCCESS", f"A* found safe path ({len(path)} waypoints)! Tracking via Pure Pursuit...")
+            self._add_event("SUCCESS", f"✅ Path found ({len(path)} waypoints)! Validating clearance before moving...")
+            print(f"[NAV-DEBUG] >>> ✅ PATH FOUND: {len(path)} waypoints | Dist: {self._initial_goal_distance:.2f}m", flush=True)
+            
+            # Brief pause to verify trajectory and allow web UI to render
+            await asyncio.sleep(0.5)
+            
+            if self.nav_status.status == NavigationStatusEnum.PLANNING:
+                self.nav_status.status = NavigationStatusEnum.NAVIGATING
+                self._add_event("INFO", "🚀 Trajectory verified! Commencing navigation...")
+                print(f"[NAV-DEBUG] >>> 🚀 COMMENCING NAVIGATION: Status=NAVIGATING", flush=True)
         else:
             self.nav_status.status = NavigationStatusEnum.BLOCKED
             self.planned_path.points = []
             self.controller.clear_path()
-            self._add_event("ERROR", f"A* path blocked by obstacles! Cannot reach ({x:.2f}, {y:.2f})")
+            print(f"[NAV-DEBUG] >>> ❌ PATH BLOCKED to ({x:.2f}, {y:.2f})", flush=True)
+            if not any("timed out" in ev.message for ev in self.events[-3:]):
+                self._add_event("ERROR", f"❌ A* path blocked by obstacles! Cannot reach ({x:.2f}, {y:.2f})")
 
     async def cancel_goal(self):
         if self.nav_status.status in (NavigationStatusEnum.PLANNING, NavigationStatusEnum.NAVIGATING):
@@ -568,6 +673,7 @@ class MockRobot(RobotController, SensorProvider, MapProvider, NavigationManager,
             self.angular_vel = 0.0
             self.planned_path.points = []
             self._add_event("WARNING", "Navigation cancelled")
+            print(f"[NAV-DEBUG] >>> ⚠️ NAVIGATION CANCELLED by user", flush=True)
 
     async def get_nav_status(self) -> NavigationStatus:
         return self.nav_status
@@ -647,10 +753,22 @@ class MockRobot(RobotController, SensorProvider, MapProvider, NavigationManager,
                         self._add_event("WARNING", f"🛡️ [XAI Plateau Detour] {evasion_reason or 'Evading obstacle with 0.52m offset'}")
                 self._last_evasion_active = evasion_active
 
+                # SOTA 2026: CBF & DDE Explainable AI Event Logging
+                if info.get("cbf_active"):
+                    now_t = time.time()
+                    if now_t - getattr(self, "_last_cbf_log_time", 0.0) > 3.0:
+                        self._add_event("WARNING", f"🛡️ [CBF Safety Shield] {evasion_reason or 'Control Barrier Function Active'}")
+                        self._last_cbf_log_time = now_t
+                elif info.get("dde_active"):
+                    now_t = time.time()
+                    if now_t - getattr(self, "_last_dde_log_time", 0.0) > 3.0:
+                        self._add_event("INFO", f"🧭 [DDE Gap Selection] Steering {info.get('dde_target_deg', 0):.0f}° towards safe opening")
+                        self._last_dde_log_time = now_t
+
                 # Curvature velocity scaling XAI logging
                 base_v = self.controller.max_linear_speed
                 curv_scale = round(v / max(0.01, base_v), 2) if v > 0 else 0.0
-                if abs(w) > 0.6 and curv_scale < 0.7:
+                if abs(w) > 0.35 and curv_scale < 0.85:
                     now_t = time.time()
                     if now_t - self._last_curv_log_time > 4.0:
                         pct_down = int(round((1.0 - curv_scale) * 100))
@@ -664,18 +782,121 @@ class MockRobot(RobotController, SensorProvider, MapProvider, NavigationManager,
                     "curvature_w": round(w, 2),
                     "evasion_active": evasion_active,
                     "evasion_reason": evasion_reason,
-                    "lookahead_target": [round(target_pt[0], 3), round(target_pt[1], 3)] if target_pt else None
+                    "lookahead_target": [round(target_pt[0], 3), round(target_pt[1], 3)] if target_pt else None,
+                    "cbf_active": info.get("cbf_active", False),
+                    "cbf_min_h": info.get("cbf_min_h", 1.0),
+                    "dde_active": info.get("dde_active", False),
+                    "dde_target_deg": info.get("dde_target_deg", 0.0)
                 }
+
+                # Real-Time Algorithm Diagnostics (Every 0.5s or on Status Change)
+                now_t = time.time()
+                last_log_t = getattr(self, "_last_nav_diag_time", 0.0)
+                last_logged_status = getattr(self, "_last_logged_ctrl_status", "")
+                if (now_t - last_log_t >= 0.5) or (status_str != last_logged_status):
+                    self._last_nav_diag_time = now_t
+                    self._last_logged_ctrl_status = status_str
+
+                    # Compute nearest frontal obstacle in body frame
+                    front_dist = None
+                    if getattr(self, "latest_raw_ranges", None):
+                        f_pts = [r for idx, r in enumerate(self.latest_raw_ranges) if (idx <= 30 or idx >= 330) and 0.12 <= r < 3.0]
+                        if f_pts:
+                            front_dist = round(min(f_pts), 2)
+
+                    hw_str = "CONNECTED" if (self.real_ws and self.is_real_connected) else "SIMULATION"
+                    log_line = (
+                        f"[NAV-DEBUG] Status={status_str:<14} | "
+                        f"Cmd: v={v:.3f} m/s, w={w:+.3f} rad/s | "
+                        f"Pose: ({self.pose.x:.2f}, {self.pose.y:.2f}, {math.degrees(self.pose.theta):+.1f}°) | "
+                        f"Goal: ({self.nav_status.goal_x:.2f}, {self.nav_status.goal_y:.2f}) rem={info.get('distance_remaining', 0.0):.2f}m | "
+                        f"FrontMin: {str(front_dist)+'m' if front_dist else 'CLEAR':<5} | "
+                        f"Reflex: {str(self.controller.is_reflex_stopped):<5} | "
+                        f"CBF: {str(info.get('cbf_active', False)):<5} | "
+                        f"HW: {hw_str}"
+                    )
+                    print(log_line, flush=True)
+
+                    try:
+                        log_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../04-hieu-MotionControl"))
+                        if os.path.exists(log_dir):
+                            log_path = os.path.join(log_dir, "nav_debug.log")
+                            with open(log_path, "a", encoding="utf-8") as lf:
+                                lf.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {log_line}\n")
+                    except Exception:
+                        pass
 
                 if status_str == "EMERGENCY_STOP":
                     self.linear_vel = 0.0
                     self.angular_vel = 0.0
                     await self.send_hardware_stop()
-                    self.nav_status.status = NavigationStatusEnum.BLOCKED
-                    self._add_event("ERROR", f"🚨 [10Hz Reflex Brake] {info.get('reason', 'Obstacle in immediate front cone!')}")
+                    now_t = time.time()
+                    if not hasattr(self, "_stop_start_time") or self._stop_start_time == 0.0:
+                        self._stop_start_time = now_t
+                        self._add_event("WARNING", f"🛑 [10Hz Reflex Brake] {info.get('reason', 'Obstacle close in front cone!')}. Waiting to clear...")
+                        print(f"[NAV-DEBUG] >>> 🛑 EMERGENCY STOP! Reason: {info.get('reason', 'Obstacle close in front cone!')}", flush=True)
+
+                    # CHỐT 4: Terminal Goal Lock. If within 0.40m of goal, lock path and DO NOT trigger replan detour!
+                    rem_goal_dist = self.nav_status.distance_remaining
+                    if rem_goal_dist <= 0.40:
+                        if rem_goal_dist <= max(0.20, self.controller.goal_tolerance * 1.5):
+                            self.nav_status.status = NavigationStatusEnum.REACHED
+                            self.nav_status.progress = 100.0
+                            self.nav_status.distance_remaining = 0.0
+                            self.planned_path.points = []
+                            self.motion_xai_info["status"] = "GOAL_REACHED"
+                            self._add_event("SUCCESS", "🎯 Reached goal destination vicinity!")
+                            print(f"[NAV-DEBUG] >>> 🎯 TERMINAL GOAL REACHED (within {rem_goal_dist:.2f}m)", flush=True)
+                        return
+
+                    # Intelligent recovery with throttling (at most 1 replan every 2.0s, max 3 attempts)
+                    if not hasattr(self, "_last_replan_time"):
+                        self._last_replan_time = 0.0
+                        self._replan_attempts = 0
+
+                    if (now_t - self._stop_start_time > 1.2) and (now_t - self._last_replan_time > 2.0):
+                        self._last_replan_time = now_t
+                        self._replan_attempts += 1
+                        goal_x = self.nav_status.goal_x
+                        goal_y = self.nav_status.goal_y
+
+                        # 1. Re-inject obstacle clusters before replan
+                        if getattr(self, "latest_clusters", None):
+                            self.grid_map.insert_obstacle_clusters(
+                                self.latest_clusters, self.pose.x, self.pose.y, self.pose.theta
+                            )
+
+                        # 2. Clear immediate footprint to ensure replan start cell is clean
+                        self.grid_map.clear_footprint(self.pose.x, self.pose.y, radius=0.15)
+
+                        try:
+                            new_path = await asyncio.wait_for(
+                                _async_run_in_thread(self.planner.plan, (self.pose.x, self.pose.y), (goal_x, goal_y), True, 3.0, 10000, self.pose.theta),
+                                timeout=3.5
+                            )
+                        except Exception:
+                            new_path = None
+
+                        if new_path and len(new_path) >= 2:
+                            self.controller.set_path(new_path)
+                            self.planned_path.points = [LidarPoint(x=p[0], y=p[1]) for p in new_path]
+                            self._stop_start_time = 0.0
+                            self._replan_attempts = 0
+                            self._add_event("SUCCESS", "🔄 Found new path around obstacle! Resuming navigation...")
+                            print(f"[NAV-DEBUG] >>> 🔄 REPLAN SUCCESS: New path found ({len(new_path)} waypoints)", flush=True)
+                        elif self._replan_attempts >= 3 or (now_t - self._stop_start_time > 8.0):
+                            self.nav_status.status = NavigationStatusEnum.BLOCKED
+                            self.planned_path.points = []
+                            self.controller.clear_path()
+                            self._stop_start_time = 0.0
+                            self._replan_attempts = 0
+                            self._add_event("ERROR", "🚨 All routes blocked by obstacles! Navigation terminated.")
+                            print(f"[NAV-DEBUG] >>> 🚨 ALL ROUTES BLOCKED: Navigation terminated.", flush=True)
                 elif status_str == "GOAL_REACHED":
                     self.linear_vel = 0.0
                     self.angular_vel = 0.0
+                    self._stop_start_time = 0.0
+                    self._replan_attempts = 0
                     await self.send_hardware_stop()
                     self.nav_status.status = NavigationStatusEnum.REACHED
                     self.nav_status.progress = 100.0
@@ -683,7 +904,10 @@ class MockRobot(RobotController, SensorProvider, MapProvider, NavigationManager,
                     self.planned_path.points = []
                     self.motion_xai_info["status"] = "GOAL_REACHED"
                     self._add_event("SUCCESS", "🎯 Target Goal Reached Successfully!")
+                    print(f"[NAV-DEBUG] >>> 🎯 GOAL REACHED! Successfully arrived at goal.", flush=True)
                 else:
+                    self._stop_start_time = 0.0
+                    self._replan_attempts = 0
                     self.linear_vel = v
                     self.angular_vel = w
                     self.nav_status.velocity = v
@@ -692,6 +916,41 @@ class MockRobot(RobotController, SensorProvider, MapProvider, NavigationManager,
                     if self._initial_goal_distance > 0:
                         self.nav_status.progress = max(0.0, min(100.0, (1.0 - rem_dist / self._initial_goal_distance) * 100.0))
                     await self.send_hardware_cmd_vel(v, w)
+
+                    # CHỐT 3: Proactive Replanning when path is persistently blocked ahead
+                    # If path ahead is blocked, and we are not in terminal goal zone (> 0.40m),
+                    # trigger background A* replan proactively instead of waiting to slam into E-Stop!
+                    now_t = time.time()
+                    if not hasattr(self, "_last_proactive_replan_time"):
+                        self._last_proactive_replan_time = 0.0
+                    if (
+                        info.get("is_blocked", False)
+                        and rem_dist > 0.40
+                        and (now_t - self._last_proactive_replan_time > 2.0)
+                    ):
+                        self._last_proactive_replan_time = now_t
+                        if getattr(self, "latest_clusters", None):
+                            self.grid_map.insert_obstacle_clusters(
+                                self.latest_clusters, self.pose.x, self.pose.y, self.pose.theta
+                            )
+                        self.grid_map.clear_footprint(self.pose.x, self.pose.y, radius=0.15)
+                        try:
+                            proactive_path = await asyncio.wait_for(
+                                _async_run_in_thread(
+                                    self.planner.plan,
+                                    (self.pose.x, self.pose.y),
+                                    (self.nav_status.goal_x, self.nav_status.goal_y),
+                                    True, 3.0, 10000, self.pose.theta
+                                ),
+                                timeout=2.0
+                            )
+                            if proactive_path and len(proactive_path) >= 2:
+                                self.controller.set_path(proactive_path)
+                                self.planned_path.points = [LidarPoint(x=p[0], y=p[1]) for p in proactive_path]
+                                self._add_event("INFO", "💡 Proactive replan: found clean path avoiding blockage ahead.")
+                                print(f"[NAV-DEBUG] >>> 💡 PROACTIVE REPLAN SUCCESS ({len(proactive_path)} waypoints)", flush=True)
+                        except Exception:
+                            pass
             else:
                 self.motion_xai_info["status"] = "IDLE"
                 self.motion_xai_info["evasion_active"] = False
@@ -699,23 +958,24 @@ class MockRobot(RobotController, SensorProvider, MapProvider, NavigationManager,
                 self.motion_xai_info["curvature_w"] = 0.0
                 self.motion_xai_info["lookahead_target"] = None
             
-            # Update physics
-            self.pose.theta += self.angular_vel * self._dt
-            self.pose.theta = (self.pose.theta + math.pi) % (2 * math.pi) - math.pi
-            self.pose.x += self.linear_vel * math.cos(self.pose.theta) * self._dt
-            self.pose.y += self.linear_vel * math.sin(self.pose.theta) * self._dt
+            # LiDAR scan (Use real scan if hardware connected, otherwise simulate)
+            is_hardware_active = self.is_real_connected and (time.time() - self._last_real_data_time < 3.0)
+
+            # Update physics (Simulated kinematic integration when hardware is not driving pose via LiDAR Odometry)
+            if not is_hardware_active:
+                self.pose.theta += self.angular_vel * self._dt
+                self.pose.theta = (self.pose.theta + math.pi) % (2 * math.pi) - math.pi
+                self.pose.x += self.linear_vel * math.cos(self.pose.theta) * self._dt
+                self.pose.y += self.linear_vel * math.sin(self.pose.theta) * self._dt
             
             # Record trajectory
             t = time.time()
             if t - self.last_traj_time > 0.1:
                 self.trajectory.append(LidarPoint(x=self.pose.x, y=self.pose.y))
                 self.last_traj_time = t
-                # Limit trajectory length
                 if len(self.trajectory) > 5000:
                     self.trajectory = self.trajectory[-3000:]
-                
-            # LiDAR scan (Use real scan if hardware connected, otherwise simulate)
-            is_hardware_active = self.is_real_connected and (time.time() - self._last_real_data_time < 3.0)
+
             if not is_hardware_active:
                 scan_points = []
                 sim_ranges = []
@@ -740,6 +1000,22 @@ class MockRobot(RobotController, SensorProvider, MapProvider, NavigationManager,
                 self.current_scan = LidarScan(points=scan_points)
                 self.latest_raw_ranges = sim_ranges
                 self._process_lidar_clusters(sim_ranges)
+
+                # Throttle simulation grid map update to 5 Hz synchronized with WebSocket
+                now_sim_t = time.time()
+                if now_sim_t - getattr(self, '_last_sim_map_time', 0.0) >= 0.18:
+                    self.grid_map.update_scan(
+                        self.pose.x, self.pose.y, self.pose.theta,
+                        ranges=sim_ranges,
+                        max_valid_range=Config.MAX_RANGE - 0.15
+                    )
+                    if getattr(self, "latest_clusters", None):
+                        self.grid_map.insert_obstacle_clusters(
+                            self.latest_clusters, self.pose.x, self.pose.y, self.pose.theta
+                        )
+                    self.map_data = self.grid_map.to_dashboard_data()
+                    self.map_version = getattr(self, "map_version", 0) + 1
+                    self._last_sim_map_time = now_sim_t
             
             # YOLO detections (Only simulate if NO real hardware connected)
             if not is_hardware_active:
@@ -790,8 +1066,8 @@ class MockRobot(RobotController, SensorProvider, MapProvider, NavigationManager,
                         bubble_radius_m=0.9
                     )
                     self.latest_social_bubbles = [
-                        {"x": round(px, 3), "y": round(py, 3), "radius": round(rad, 2)}
-                        for px, py, rad in getattr(self.grid_map, "social_bubbles", [])
+                        {"x": round(b[0], 3), "y": round(b[1], 3), "radius": round(b[2], 2)}
+                        for b in getattr(self.grid_map, "social_bubbles", [])
                     ]
                 elif getattr(self.grid_map, "social_bubbles", None):
                     self.grid_map.social_bubbles = []

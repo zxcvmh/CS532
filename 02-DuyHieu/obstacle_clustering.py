@@ -73,55 +73,102 @@ class DynamicObstacleTracker:
         self.next_id: int = 1
         self.last_timestamp: Optional[float] = None
 
-    def update(self, clusters: List[ObstacleCluster], timestamp: Optional[float] = None) -> List[ObstacleCluster]:
+    def update(
+        self,
+        clusters: List[ObstacleCluster],
+        timestamp: Optional[float] = None,
+        robot_pose: Optional[Tuple[float, float, float]] = None
+    ) -> List[ObstacleCluster]:
+        """
+        Frame-to-frame dynamic obstacle tracker & velocity estimator.
+        Tracks obstacles in World Frame {W} when robot_pose is provided to strictly
+        eliminate ego-motion false positives (stationary table/chair legs falsely flagged as oncoming).
+        """
         import time
         t_now = time.perf_counter() if timestamp is None else timestamp
         dt = (t_now - self.last_timestamp) if self.last_timestamp is not None else 0.10
         dt = max(0.02, min(0.40, dt))
         self.last_timestamp = t_now
 
+        has_pose = robot_pose is not None and len(robot_pose) >= 3
+        if has_pose:
+            rx, ry, rth = robot_pose[0], robot_pose[1], robot_pose[2]
+            c_th = math.cos(rth)
+            s_th = math.sin(rth)
+
         new_tracks = {}
         for cl in clusters:
             cx, cy = cl.centroid
+
+            # Transform to World Frame {W} if robot pose is available
+            if has_pose:
+                wx = rx + cx * c_th - cy * s_th
+                wy = ry + cx * s_th + cy * c_th
+            else:
+                wx, wy = cx, cy
+
             best_match = None
             min_dist = float("inf")
 
             for tid, tr in self.tracks.items():
-                px, py = tr["centroid"]
-                d = math.hypot(cx - px, cy - py)
+                twx, twy = tr.get("world_pos", tr.get("centroid", (0.0, 0.0)))
+                d = math.hypot(wx - twx, wy - twy)
                 if d < min_dist and d < self.assoc_dist_m:
                     min_dist = d
                     best_match = tid
 
             if best_match is not None:
                 tr = self.tracks[best_match]
-                raw_vx = (cx - tr["centroid"][0]) / dt
-                raw_vy = (cy - tr["centroid"][1]) / dt
+                prev_wx, prev_wy = tr.get("world_pos", tr.get("centroid", (wx, wy)))
+                raw_vx = (wx - prev_wx) / dt
+                raw_vy = (wy - prev_wy) / dt
 
-                vx = self.alpha * raw_vx + (1.0 - self.alpha) * tr["velocity"][0]
-                vy = self.alpha * raw_vy + (1.0 - self.alpha) * tr["velocity"][1]
+                prev_vx, prev_vy = tr.get("velocity", (0.0, 0.0))
+                vx = self.alpha * raw_vx + (1.0 - self.alpha) * prev_vx
+                vy = self.alpha * raw_vy + (1.0 - self.alpha) * prev_vy
                 speed = math.hypot(vx, vy)
+                # True physical motion in the room (> 8 cm/s)
                 is_dyn = speed > 0.08
 
-                # Radial approach speed towards robot origin (0, 0)
-                dist = cl.min_distance
-                radial_v = -(cx * vx + cy * vy) / max(1e-3, math.hypot(cx, cy))
-                closing_speed = max(0.0, radial_v)
-                ttc = (dist / closing_speed) if closing_speed > 0.05 else 99.0
+                if is_dyn:
+                    # Radial approach speed towards robot in World Frame
+                    if has_pose:
+                        dx_r = wx - rx
+                        dy_r = wy - ry
+                        dist_r = max(1e-3, math.hypot(dx_r, dy_r))
+                        radial_v = -(dx_r * vx + dy_r * vy) / dist_r
+                    else:
+                        radial_v = -(cx * vx + cy * vy) / max(1e-3, math.hypot(cx, cy))
 
-                cl.velocity = (round(vx, 3), round(vy, 3))
-                cl.speed = round(speed, 3)
-                cl.closing_speed = round(closing_speed, 3)
-                cl.ttc = round(ttc, 2)
-                cl.is_dynamic = is_dyn
-                cl.id = best_match
+                    closing_speed = max(0.0, radial_v)
+                    ttc = (cl.min_distance / closing_speed) if closing_speed > 0.08 else 99.0
 
-                if is_dyn and closing_speed > 0.10 and ttc < 2.5:
-                    cl.threat_level = "CRITICAL_ONCOMING"
-                elif is_dyn and closing_speed > 0.05 and ttc < 4.0:
-                    cl.threat_level = "WARNING_APPROACHING"
+                    cl.velocity = (round(vx, 3), round(vy, 3))
+                    cl.speed = round(speed, 3)
+                    cl.closing_speed = round(closing_speed, 3)
+                    cl.ttc = round(ttc, 2)
+                    cl.is_dynamic = True
+                    cl.id = best_match
 
-                new_tracks[best_match] = {"centroid": (cx, cy), "velocity": (vx, vy)}
+                    if closing_speed > 0.10 and ttc < 2.5:
+                        cl.threat_level = "CRITICAL_ONCOMING"
+                    elif closing_speed > 0.05 and ttc < 4.0:
+                        cl.threat_level = "WARNING_APPROACHING"
+                else:
+                    # Stationary obstacle (table leg, box, wall) - strictly eliminate false dynamic alarms
+                    # while preserving static proximity threat level (e.g. CRITICAL if in front corridor)
+                    cl.velocity = (0.0, 0.0)
+                    cl.speed = 0.0
+                    cl.closing_speed = 0.0
+                    cl.ttc = 99.0
+                    cl.is_dynamic = False
+                    cl.id = best_match
+
+                new_tracks[best_match] = {
+                    "world_pos": (wx, wy),
+                    "centroid": (cx, cy),
+                    "velocity": (vx if is_dyn else 0.0, vy if is_dyn else 0.0)
+                }
             else:
                 tid = self.next_id
                 self.next_id += 1
@@ -131,7 +178,11 @@ class DynamicObstacleTracker:
                 cl.ttc = 99.0
                 cl.is_dynamic = False
                 cl.id = tid
-                new_tracks[tid] = {"centroid": (cx, cy), "velocity": (0.0, 0.0)}
+                new_tracks[tid] = {
+                    "world_pos": (wx, wy),
+                    "centroid": (cx, cy),
+                    "velocity": (0.0, 0.0)
+                }
 
         self.tracks = new_tracks
         return clusters
@@ -159,6 +210,21 @@ class LiDARClusterDetector:
         self.max_range_m = float(max_range_m)
         self._tan_1deg = math.tan(math.radians(1.0))
         self.tracker = DynamicObstacleTracker()
+
+    def cluster_ranges(self, ranges: List[float], timestamp: Optional[float] = None) -> List[ObstacleCluster]:
+        """Converts raw 360-degree ranges to 2D robot frame points and clusters them."""
+        if not ranges:
+            return []
+        pts = []
+        num_pts = len(ranges)
+        step_rad = (2.0 * math.pi) / num_pts
+        for i, r in enumerate(ranges):
+            if self.min_range_m <= r <= self.max_range_m:
+                ang = i * step_rad
+                pts.append([r * math.cos(ang), r * math.sin(ang)])
+        if len(pts) < self.min_size:
+            return []
+        return self.cluster_point_cloud(np.array(pts, dtype=np.float32), timestamp=timestamp)
 
     def cluster_point_cloud(self, pts_robot: np.ndarray, timestamp: Optional[float] = None) -> List[ObstacleCluster]:
         """
@@ -191,27 +257,14 @@ class LiDARClusterDetector:
         thetas_sorted = thetas[sort_indices]
 
         n = len(pts_sorted)
-        clusters_indices: List[List[int]] = []
-        current_cluster: List[int] = [0]
 
-        # 3. 1D Jump Distance Linear Scan O(N)
-        for i in range(1, n):
-            dx = pts_sorted[i, 0] - pts_sorted[i - 1, 0]
-            dy = pts_sorted[i, 1] - pts_sorted[i - 1, 1]
-            dist_step = math.hypot(dx, dy)
-
-            # Adaptive threshold based on range
-            r_mid = 0.5 * (ranges_sorted[i] + ranges_sorted[i - 1])
-            eps_adaptive = max(0.12, r_mid * self._tan_1deg + 0.05)
-
-            if dist_step <= eps_adaptive:
-                current_cluster.append(i)
-            else:
-                clusters_indices.append(current_cluster)
-                current_cluster = [i]
-
-        if current_cluster:
-            clusters_indices.append(current_cluster)
+        # 3. Vectorized 1D Jump Distance Linear Scan O(N)
+        diffs = pts_sorted[1:] - pts_sorted[:-1]
+        dist_steps = np.hypot(diffs[:, 0], diffs[:, 1])
+        r_mids = 0.5 * (ranges_sorted[1:] + ranges_sorted[:-1])
+        eps_adaptives = np.maximum(0.12, r_mids * self._tan_1deg + 0.05)
+        splits = np.where(dist_steps > eps_adaptives)[0] + 1
+        clusters_indices = [c.tolist() for c in np.split(np.arange(n), splits) if len(c) > 0]
 
         # Wrap-around check between last cluster and first cluster (360° to 0°)
         if len(clusters_indices) > 1:
@@ -253,36 +306,47 @@ class LiDARClusterDetector:
             is_frontal_corridor = (centroid_x > 0.0) and (abs(centroid_y) <= self.corridor_width)
 
             if is_frontal_corridor and count >= 3:
-                # Full PCA for frontal corridor
-                centered = c_pts - np.array([centroid_x, centroid_y], dtype=np.float32)
-                cov = np.cov(centered, rowvar=False)
-                evals, evecs = np.linalg.eigh(cov)
+                # Analytical 2x2 PCA (eliminates np.cov and LAPACK eigh overhead)
+                x = c_pts[:, 0] - centroid_x
+                y = c_pts[:, 1] - centroid_y
+                cxx = float(np.sum(x * x)) / (count - 1)
+                cyy = float(np.sum(y * y)) / (count - 1)
+                cxy = float(np.sum(x * y)) / (count - 1)
 
-                v_major = evecs[:, 1]
-                v_minor = evecs[:, 0]
+                tr = cxx + cyy
+                det = cxx * cyy - cxy * cxy
+                disc = max(0.0, (tr * tr) / 4.0 - det)
+                s_disc = math.sqrt(disc)
+                l1 = tr / 2.0 + s_disc
+                l2 = max(0.0, tr / 2.0 - s_disc)
 
-                proj_major = centered @ v_major
-                proj_minor = centered @ v_minor
+                vx = l1 - cyy
+                vy = cxy
+                norm_v = math.hypot(vx, vy)
+                if norm_v < 1e-6:
+                    vx, vy = 1.0, 0.0
+                else:
+                    vx /= norm_v
+                    vy /= norm_v
+
+                ux, uy = -vy, vx
+
+                proj_major = x * vx + y * vy
+                proj_minor = x * ux + y * uy
 
                 min_u, max_u = float(np.min(proj_major)), float(np.max(proj_major))
                 min_v, max_v = float(np.min(proj_minor)), float(np.max(proj_minor))
 
                 length_m = max(0.04, max_u - min_u)
                 width_m = max(0.04, max_v - min_v)
-                orientation_rad = float(math.atan2(v_major[1], v_major[0]))
+                orientation_rad = float(math.atan2(vy, vx))
 
-                center_arr = np.array([centroid_x, centroid_y])
-                c1 = center_arr + (min_u * v_major) + (min_v * v_minor)
-                c2 = center_arr + (max_u * v_major) + (min_v * v_minor)
-                c3 = center_arr + (max_u * v_major) + (max_v * v_minor)
-                c4 = center_arr + (min_u * v_major) + (max_v * v_minor)
-                obb_corners = [
-                    (float(c1[0]), float(c1[1])),
-                    (float(c2[0]), float(c2[1])),
-                    (float(c3[0]), float(c3[1])),
-                    (float(c4[0]), float(c4[1]))
-                ]
-                linearity = (evals[1] - evals[0]) / max(1e-4, evals[1])
+                c1 = (centroid_x + min_u * vx + min_v * ux, centroid_y + min_u * vy + min_v * uy)
+                c2 = (centroid_x + max_u * vx + min_v * ux, centroid_y + max_u * vy + min_v * uy)
+                c3 = (centroid_x + max_u * vx + max_v * ux, centroid_y + max_u * vy + max_v * uy)
+                c4 = (centroid_x + min_u * vx + max_v * ux, centroid_y + min_u * vy + max_v * uy)
+                obb_corners = [c1, c2, c3, c4]
+                linearity = (l1 - l2) / max(1e-4, l1)
             else:
                 # Fast AABB approximation for non-critical side/rear points
                 min_x = float(np.min(c_pts[:, 0]))
@@ -353,3 +417,17 @@ class LiDARClusterDetector:
 
     def to_dict_list(self, clusters: List[ObstacleCluster]) -> List[Dict[str, Any]]:
         return [c.to_dict() for c in clusters]
+
+
+_default_detector = LiDARClusterDetector()
+
+def cluster_lidar_obstacles(ranges_or_pts, min_dist: float = 0.12, max_dist: float = 2.0, timestamp: Optional[float] = None) -> List[ObstacleCluster]:
+    """Convenience functional interface for 1D Range Jump obstacle clustering."""
+    if ranges_or_pts is None:
+        return []
+    if isinstance(ranges_or_pts, (list, tuple)) and len(ranges_or_pts) > 0 and isinstance(ranges_or_pts[0], (int, float)):
+        return _default_detector.cluster_ranges(ranges_or_pts, timestamp=timestamp)
+    elif isinstance(ranges_or_pts, np.ndarray) or (isinstance(ranges_or_pts, list) and len(ranges_or_pts) > 0 and hasattr(ranges_or_pts[0], '__len__')):
+        return _default_detector.cluster_point_cloud(np.asarray(ranges_or_pts), timestamp=timestamp)
+    return []
+

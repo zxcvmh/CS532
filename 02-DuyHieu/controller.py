@@ -27,15 +27,15 @@ except ImportError:
 class PurePursuitController:
     def __init__(
         self,
-        lookahead_dist: float = 0.32,
-        max_linear_speed: float = 0.32,
-        max_angular_speed: float = 1.2,
+        lookahead_dist: float = 0.28,
+        max_linear_speed: float = 0.18,
+        max_angular_speed: float = 1.0,
         track_width: float = 0.115,
         goal_tolerance: float = 0.12,
-        reflex_dist_threshold: float = 0.18,
-        warning_dist_threshold: float = 0.70,
+        reflex_dist_threshold: float = 0.14,
+        warning_dist_threshold: float = 0.55,
         curvature_scale_k: float = 1.0,
-        lateral_detour_offset: float = 0.52
+        lateral_detour_offset: float = 0.38
     ):
         self.lookahead_dist = lookahead_dist
         self.max_linear_speed = max_linear_speed
@@ -317,6 +317,82 @@ class PurePursuitController:
         spliced_path = detour_pts + self.current_path[splice_idx:]
         return spliced_path
 
+    def _is_path_safe(self, pts: List[Tuple[float, float]], grid_map: Any) -> bool:
+        if not pts or grid_map is None:
+            return True
+        for px, py in pts:
+            c, r = grid_map.world_to_grid(px, py)
+            if not grid_map.is_cell_free(c, r):
+                return False
+        return True
+
+    def generate_greedy_detour(
+        self,
+        robot_x: float,
+        robot_y: float,
+        robot_theta: float,
+        goal_x: float,
+        goal_y: float,
+        grid_map: Optional[Any] = None,
+        lidar_ranges: Optional[List[float]] = None
+    ) -> Optional[List[Tuple[float, float]]]:
+        """
+        Greedy Local Reactive Detour for sudden obstacles (Greedy Gap Finder).
+        Evaluates angular evasion candidates (+-35, +-55, +-75, +-90 deg) and
+        picks the best unblocked heading pointing closest towards the goal.
+        """
+        th_goal = math.atan2(goal_y - robot_y, goal_x - robot_x)
+        candidates = [math.radians(ang) for ang in [-35.0, 35.0, -55.0, 55.0, -75.0, 75.0, -90.0, 90.0]]
+
+        best_cand = None
+        best_score = -999.0
+
+        for d_th in candidates:
+            cand_th = (robot_theta + d_th + math.pi) % (2.0 * math.pi) - math.pi
+
+            # 1. LiDAR ray check if ranges available
+            if lidar_ranges and len(lidar_ranges) >= 360:
+                ray_deg = int(round(math.degrees(d_th))) % 360
+                cone_indices = [(ray_deg + ofs) % 360 for ofs in range(-12, 13)]
+                min_cone_r = min((lidar_ranges[idx] for idx in cone_indices if lidar_ranges[idx] > 0.05), default=2.0)
+                if min_cone_r < 0.30:
+                    continue
+
+            # 2. Costmap ray check
+            if grid_map is not None:
+                is_free = True
+                for d_step in [0.15, 0.28, 0.38]:
+                    cx = robot_x + d_step * math.cos(cand_th)
+                    cy = robot_y + d_step * math.sin(cand_th)
+                    col, row = grid_map.world_to_grid(cx, cy)
+                    if not grid_map.is_cell_free(col, row):
+                        is_free = False
+                        break
+                if not is_free:
+                    continue
+
+            # 3. Greedy Score: highest projection towards goal direction
+            score = math.cos(cand_th - th_goal)
+            if score > best_score:
+                best_score = score
+                best_cand = cand_th
+
+        if best_cand is None:
+            return None
+
+        # Construct greedy local detour waypoints
+        p1 = (round(robot_x + 0.22 * math.cos(best_cand), 3), round(robot_y + 0.22 * math.sin(best_cand), 3))
+        p2 = (round(robot_x + 0.42 * math.cos(best_cand), 3), round(robot_y + 0.42 * math.sin(best_cand), 3))
+
+        rejoin_idx = len(self.current_path) - 1
+        for i in range(self.path_index, len(self.current_path)):
+            pt = self.current_path[i]
+            if math.hypot(pt[0] - p2[0], pt[1] - p2[1]) > 0.35:
+                rejoin_idx = i
+                break
+
+        return [p1, p2] + self.current_path[rejoin_idx:]
+
     def modulate_velocity(
         self,
         base_v: float,
@@ -329,11 +405,11 @@ class PurePursuitController:
         - When heading straight (omega ~ 0 rad/s), v maintains cruise speed.
         - When turning tight corner (omega >= 1.0 rad/s), speed gracefully drops
           to prevent differential wheel slip and roll instability.
-        - Decelerates softly when obstacles enter warning zone (0.70m).
+        - Decelerates softly when obstacles enter warning zone (0.55m).
         """
-        # Curvature scaling
+        # Curvature scaling with safe deadband floor (0.14 m/s)
         scaled_v = base_v / (1.0 + self.curvature_scale_k * abs(omega))
-        target_v = max(0.04, scaled_v)
+        target_v = max(0.14, scaled_v)
 
         if not clusters:
             return target_v
@@ -390,7 +466,7 @@ class PurePursuitController:
             self.last_linear_v = 0.0
             return 0.0, 0.0, {
                 "status": "EMERGENCY_STOP",
-                "reason": "Obstacle < 18cm in front cone!",
+                "reason": f"Obstacle < {self.reflex_dist_threshold*100:.0f}cm in front cone!",
                 "distance_remaining": 0.0
             }
 
@@ -409,12 +485,12 @@ class PurePursuitController:
             self.last_linear_v = 0.0
             return 0.0, 0.0, {"status": "GOAL_REACHED", "distance_remaining": 0.0}
 
-        # 4. Closed-Loop Dynamic Detour Evasion
+        # 4. Closed-Loop Dynamic Detour Evasion (Plateau + Greedy Gap Fallback)
         evasion_active = False
         evasion_reason = ""
-        if auto_evade and clusters and self.current_path:
+        if auto_evade and self.current_path:
             is_blk, blk_pt, reason = self.check_path_collision(
-                robot_x, robot_y, robot_theta, grid_map=grid_map, clusters=clusters, horizon_m=1.8
+                robot_x, robot_y, robot_theta, grid_map=grid_map, clusters=clusters, horizon_m=1.2
             )
             if is_blk and blk_pt is not None:
                 culprit = clusters[0] if clusters else None
@@ -422,6 +498,15 @@ class PurePursuitController:
                     robot_x, robot_y, robot_theta, blk_pt,
                     obstacle_cluster=culprit, grid_map=grid_map, lateral_offset=self.lateral_detour_offset
                 )
+                if not detour or (grid_map is not None and not self._is_path_safe(detour[:4], grid_map)):
+                    # Fallback to Greedy Gap finder around sudden obstacle
+                    detour = self.generate_greedy_detour(
+                        robot_x, robot_y, robot_theta, goal_x, goal_y,
+                        grid_map=grid_map, lidar_ranges=lidar_ranges
+                    )
+                    if detour:
+                        reason = "GREEDY_GAP_EVASION"
+
                 if detour:
                     self.current_path = detour
                     evasion_active = True
@@ -459,21 +544,31 @@ class PurePursuitController:
 
         kappa = (2.0 * math.sin(alpha)) / self.lookahead_dist
 
-        # 7. Curvature-Aware Scaling
-        base_v = min(self.max_linear_speed, max(0.12, dist_to_final_goal * 0.8))
+        # 7. Curvature-Aware Scaling with Deadband-Safe Velocity Floor (0.14 m/s)
+        v_floor = 0.14
+        base_v = min(self.max_linear_speed, max(v_floor, dist_to_final_goal * 0.75))
         target_w0 = base_v * kappa
 
         if abs(alpha) > 1.2:
-            # Very sharp turn (> 70 degrees): spin-turn throttle
-            v = 0.04
+            # Very sharp turn (> 70 degrees): spin-turn throttle with safe torque
+            v = 0.08
             w = math.copysign(self.max_angular_speed * 0.85, alpha)
+            aligning = True
+        elif abs(alpha) > 0.45:
+            # Significant heading error (> 26 degrees): slow down to pivot smoothly
+            v = 0.10
+            w = math.copysign(min(0.75, self.max_angular_speed), alpha)
+            aligning = True
         else:
             v = self.modulate_velocity(base_v, clusters=clusters, omega=target_w0)
+            v = max(v_floor, min(self.max_linear_speed, v))
             w = max(-self.max_angular_speed, min(self.max_angular_speed, v * kappa))
+            aligning = False
 
         self.last_linear_v = v
+        status = "EVADING" if evasion_active else ("ALIGNING" if aligning else "NAVIGATING")
         return round(v, 3), round(w, 3), {
-            "status": "EVADING" if evasion_active else "NAVIGATING",
+            "status": status,
             "distance_remaining": round(dist_to_final_goal, 3),
             "target": (round(target_pt[0], 3), round(target_pt[1], 3)),
             "is_blocked": self.is_path_blocked,

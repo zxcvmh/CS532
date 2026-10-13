@@ -16,6 +16,7 @@ class WebSocketManager:
     async def connect(self, websocket: WebSocket):
         await websocket.accept()
         self.active_connections.append(websocket)
+        self._last_broadcast_map_ver = -1
 
     def disconnect(self, websocket: WebSocket):
         if websocket in self.active_connections:
@@ -171,17 +172,20 @@ class WebSocketManager:
                             })
                             
                         elif key == "map_update":
-                            m = await self.robot.get_map()
-                            await self.broadcast({
-                                "type": "map_update",
-                                "resolution": m.resolution,
-                                "width": m.width,
-                                "height": m.height,
-                                "origin_x": m.origin_x,
-                                "origin_y": m.origin_y,
-                                "data": m.data,
-                                "timestamp": time.time()
-                            })
+                            cur_map_ver = getattr(self.robot, "map_version", 0)
+                            if cur_map_ver != getattr(self, "_last_broadcast_map_ver", -1):
+                                m = await self.robot.get_map()
+                                await self.broadcast({
+                                    "type": "map_update",
+                                    "resolution": m.resolution,
+                                    "width": m.width,
+                                    "height": m.height,
+                                    "origin_x": m.origin_x,
+                                    "origin_y": m.origin_y,
+                                    "data": m.data,
+                                    "timestamp": time.time()
+                                })
+                                self._last_broadcast_map_ver = cur_map_ver
                             
                         elif key == "detections":
                             dets = await self.robot.get_detections()
