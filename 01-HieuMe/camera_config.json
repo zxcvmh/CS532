@@ -21,11 +21,22 @@
     }
   },
   "safety_margins_m": {
-    "person": 0.90,
-    "chair": 0.35,
-    "backpack": 0.25,
-    "bottle": 0.20,
-    "default": 0.30
+    "person": {
+      "front_m": 0.80,
+      "side_m": 0.40,
+      "back_m": 0.30
+    },
+    "chair": 0.30,
+    "backpack": 0.20,
+    "bottle": 0.15,
+    "default": 0.25
+  },
+  "temporal_filter": {
+    "enabled": true,
+    "alpha": 0.65,
+    "min_hits": 2,
+    "max_age_frames": 3,
+    "match_dist_m": 0.15
   },
   "low_obstacle_filter": {
     "max_ground_height_cm": 16.0,

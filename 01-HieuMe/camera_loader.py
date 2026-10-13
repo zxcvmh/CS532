@@ -57,10 +57,10 @@ class CameraLoader:
         return os.path.exists("/etc/nv_tegra_release") or os.path.exists("/usr/lib/aarch64-linux-gnu/tegra")
 
     def _get_gstreamer_pipeline(self) -> str:
-        """Pipeline GStreamer chuẩn NVMM cho IMX219 trên Jetson Nano."""
+        """Pipeline GStreamer chuẩn NVMM cho IMX219 trên Jetson Nano (1280x720 capture -> scale nvvidconv)."""
         return (
             f"nvarguscamerasrc sensor-id=0 ! "
-            f"video/x-raw(memory:NVMM), width=(int){self.width}, height=(int){self.height}, "
+            f"video/x-raw(memory:NVMM), width=(int)1280, height=(int)720, "
             f"format=(string)NV12, framerate=(fraction){self.fps}/1 ! "
             f"nvvidconv flip-method={self.flip_method} ! "
             f"video/x-raw, width=(int){self.width}, height=(int){self.height}, format=(string)BGRx ! "
@@ -72,7 +72,6 @@ class CameraLoader:
         # 1. Hỗ trợ luồng IP Camera từ điện thoại (HTTP / RTSP)
         if isinstance(self.source, str) and (self.source.startswith("http://") or self.source.startswith("https://") or self.source.startswith("rtsp://")):
             print(f"[CameraLoader] Dang ket noi toi Camera dien thoai: {self.source}")
-            # Cấu hình tối ưu FFmpeg & timeout cho OpenCV
             os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "fflags;nobuffer|flags;low_delay"
             self.cap = cv2.VideoCapture(self.source)
             self._start_zero_buffer_thread()
@@ -84,38 +83,83 @@ class CameraLoader:
             print(f"[CameraLoader USB] Dang mo Camera cap USB index {cam_idx}...")
             backend = cv2.CAP_DSHOW if sys.platform.startswith("win") else cv2.CAP_ANY
             self.cap = cv2.VideoCapture(cam_idx, backend)
-            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
-            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
-            self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-            self._start_zero_buffer_thread()
-            return
+            if self.cap.isOpened():
+                self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
+                self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
+                self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                self._start_zero_buffer_thread()
+                return
+            else:
+                print(f"[WARN] Khong mo duoc Camera index {cam_idx}. Chuyen sang fallback.")
+                self._fallback_init()
+                return
 
         if self.source == "webcam":
             print("[CameraLoader] Dang mo Webcam USB mac dinh...")
             backend = cv2.CAP_DSHOW if sys.platform.startswith("win") else cv2.CAP_ANY
             self.cap = cv2.VideoCapture(0, backend)
-            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
-            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
-            self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-            self._start_zero_buffer_thread()
-            return
+            if self.cap.isOpened():
+                self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
+                self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
+                self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                self._start_zero_buffer_thread()
+                return
+            else:
+                print("[WARN] Khong mo duoc Webcam USB. Chuyen sang fallback.")
+                self._fallback_init()
+                return
 
-        # 3. Chế độ tự động
+        # 3. Chế độ tự động thông minh (Chuỗi fallback 4 tầng: CSI -> USB -> Ảnh mẫu -> Synthetic)
         if self.source == "auto":
             if self._is_jetson():
                 print("[CameraLoader] Phat hien Jetson Nano -> Khoi tao GStreamer CSI Camera...")
                 gst = self._get_gstreamer_pipeline()
                 self.cap = cv2.VideoCapture(gst, cv2.CAP_GSTREAMER)
-                if not self.cap.isOpened():
-                    print("[WARN] Khong mo duoc GStreamer. Chuyen sang fallback.")
-                    self._fallback_init()
-            else:
+                if self.cap.isOpened():
+                    print("[CameraLoader] Da mo GStreamer CSI Camera thanh cong.")
+                    self._start_zero_buffer_thread()
+                    return
+                print("[WARN] Khong mo duoc CSI GStreamer. Thu USB Camera /dev/video0...")
+                self.cap = cv2.VideoCapture(0)
+                if self.cap.isOpened():
+                    print("[CameraLoader] Da mo USB Camera /dev/video0.")
+                    self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
+                    self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
+                    self._start_zero_buffer_thread()
+                    return
+                print("[WARN] Khong co camera vat ly tren Jetson. Chuyen sang fallback.")
                 self._fallback_init()
+            else:
+                # Chạy trên PC/Laptop: Thử mở webcam máy tính trước
+                backend = cv2.CAP_DSHOW if sys.platform.startswith("win") else cv2.CAP_ANY
+                try:
+                    test_cap = cv2.VideoCapture(0, backend)
+                    if test_cap.isOpened():
+                        ret, test_frame = test_cap.read()
+                        if ret and test_frame is not None and test_frame.size > 0:
+                            print("[CameraLoader PC] Phat hien Webcam may tinh -> Khoi tao luong doc...")
+                            self.cap = test_cap
+                            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
+                            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
+                            self._start_zero_buffer_thread()
+                            return
+                        test_cap.release()
+                except Exception:
+                    pass
+                print("[CameraLoader PC] Khong co webcam kha dung -> Chuyen sang anh mau/synthetic.")
+                self._fallback_init()
+
         elif self.source == "gstreamer":
             gst = self._get_gstreamer_pipeline()
             self.cap = cv2.VideoCapture(gst, cv2.CAP_GSTREAMER)
+            if self.cap.isOpened():
+                self._start_zero_buffer_thread()
+            else:
+                self._fallback_init()
+
         elif self.source == "synthetic":
             self.is_synthetic = True
+
         elif isinstance(self.source, str) and os.path.exists(self.source):
             if self.source.lower().endswith((".jpg", ".jpeg", ".png", ".bmp")):
                 self.static_frame = cv2.imread(self.source)
@@ -132,11 +176,14 @@ class CameraLoader:
         sample_path = os.path.join(base_dir, "sample_data", "csi_floor_sample.jpg")
 
         if os.path.exists(sample_path):
-            self.static_frame = cv2.imread(sample_path)
-            print(f"[CameraLoader PC] Dang su dung anh mau: {sample_path}")
-        else:
-            print("[CameraLoader PC] Khong tim thay anh mau -> Chuyen sang che do tu sinh anh synthetic.")
-            self.is_synthetic = True
+            img = cv2.imread(sample_path)
+            if img is not None and img.size > 0:
+                self.static_frame = img
+                print(f"[CameraLoader PC] Dang su dung anh mau: {sample_path}")
+                return
+
+        print("[CameraLoader PC] Chuyen sang che do tu sinh anh synthetic.")
+        self.is_synthetic = True
 
     def _start_zero_buffer_thread(self):
         """Khởi động luồng đọc nền liên tục xả bộ đệm để giữ frame mới nhất."""
@@ -145,12 +192,19 @@ class CameraLoader:
             self._thread = threading.Thread(target=self._grabber_loop, daemon=True)
             self._thread.start()
             print("[CameraLoader] Da kich hoat che do Zero-Buffer Grabber (Triet tieu 100% do tre!).")
+            # Chờ ngắn tối đa 500ms cho frame đầu tiên sẵn sàng
+            t_wait = time.time()
+            while time.time() - t_wait < 0.5:
+                with self._frame_lock:
+                    if self._latest_frame is not None:
+                        break
+                time.sleep(0.02)
 
     def _grabber_loop(self):
         """Vòng lặp đọc nền tốc độ cao, luôn giữ frame mới nhất."""
         while self._thread_running and self.cap is not None and self.cap.isOpened():
             ret, frame = self.cap.read()
-            if ret and frame is not None:
+            if ret and frame is not None and frame.size > 0:
                 if frame.shape[1] != self.width or frame.shape[0] != self.height:
                     frame = cv2.resize(frame, (self.width, self.height))
                 with self._frame_lock:
@@ -164,19 +218,31 @@ class CameraLoader:
             return True, self.static_frame.copy()
 
         if self.is_synthetic:
-            from generate_sample_data import generate_synthetic_perspective_floor
-            return True, generate_synthetic_perspective_floor(self.width, self.height)
+            try:
+                from generate_sample_data import generate_synthetic_perspective_floor
+                return True, generate_synthetic_perspective_floor(self.width, self.height)
+            except Exception:
+                # Dummy blank frame with grid
+                blank = np.ones((self.height, self.width, 3), dtype=np.uint8) * 220
+                return True, blank
 
         # Nếu có luồng zero-buffer đang chạy, lấy frame mới nhất ngay lập tức
         if self._thread_running:
             with self._frame_lock:
                 if self._latest_frame is not None:
                     return True, self._latest_frame.copy()
+            # Nếu thread chưa kịp có frame, thử đọc 1 frame đồng bộ
+            if self.cap is not None and self.cap.isOpened():
+                ret, frame = self.cap.read()
+                if ret and frame is not None and frame.size > 0:
+                    if frame.shape[1] != self.width or frame.shape[0] != self.height:
+                        frame = cv2.resize(frame, (self.width, self.height))
+                    return True, frame
             return False, None
 
         if self.cap is not None and self.cap.isOpened():
             ret, frame = self.cap.read()
-            if ret and frame is not None:
+            if ret and frame is not None and frame.size > 0:
                 if frame.shape[1] != self.width or frame.shape[0] != self.height:
                     frame = cv2.resize(frame, (self.width, self.height))
                 return True, frame

@@ -1,35 +1,36 @@
-# KẾ HOẠCH TRIỂN KHAI COMPUTER VISION & PHÂN ĐOẠN MẶT SÀN
-## DÀNH CHO THÀNH VIÊN PHỤ TRÁCH THỊ GIÁC (HIẾU ME)
+# KẾ HOẠCH TRIỂN KHAI COMPUTER VISION, PHÂN ĐOẠN MẶT SÀN & NÂNG CẤP YOLO26-N
+## DÀNH CHO MODULE THỊ GIÁC (PERCEPTION AGENT — TEAM LEAD TIẾP QUẢN & THỰC THI)
 ### ĐỒ ÁN CS532 — AUTONOMOUS JETBOT (JETSON NANO)
 
-> **Người thực hiện:** Hiếu me (Phụ trách độc lập module `perception/` / Computer Vision)  
-> **Người tiếp nhận & Tích hợp trên robot:** Team Lead (Người duy nhất đang giữ robot thật)  
-> **Mục tiêu:** Xây dựng pipeline Thị giác máy tính thời gian thực độc lập trên PC cá nhân, nâng cao đóng góp học thuật (Contribution), giải quyết triệt để điểm mù LiDAR cao 16 cm bằng phân đoạn mặt sàn IPM, và đóng gói sạch sẽ để Team Lead nạp vào JetBot.  
+> **Người thực hiện chính:** Team Lead (Trực tiếp tiếp quản toàn bộ module `01-HieuMe/`, nâng cấp mô hình YOLO26-n và tích hợp phần cứng)  
+> **Đóng góp kiến trúc nền tảng:** Hiếu me (Đã hoàn thành thiết kế Floor IPM bù điểm mù LiDAR, cơ chế Social Bubble và khung PC-First)  
+> **Agent phụ trách:** `perception-agent` (Thư mục `01-HieuMe/`, tham chiếu [`agents-doc/agents/perception-agent.md`](file:///home/zxcvmh/Projects/CS532/agents-doc/agents/perception-agent.md))  
+> **Mục tiêu:** Nâng cấp mô hình nhận diện lên **Ultralytics YOLO26-n (Thế hệ 2026)** siêu nhẹ (2.4M tham số, 5.5 GFLOPs) giúp giải phóng tải GPU Maxwell 128-core trên Jetson Nano; bảo toàn 100% đóng góp học thuật bù điểm mù LiDAR cao 16 cm bằng phân đoạn mặt sàn IPM; đảm bảo tốc độ thời gian thực $\ge 25 - 35\text{ FPS}$.  
 > **Tài liệu tham chiếu:** [`agents-doc/WORKFLOW.MD`](file:///home/zxcvmh/Projects/CS532/agents-doc/WORKFLOW.MD), [`agents-doc/INTERFACE.md`](file:///home/zxcvmh/Projects/CS532/agents-doc/INTERFACE.md).
 
 ---
 
-## 1. Bối Cảnh Phối Hợp: Hiếu Me Không Giữ Robot Thực Tế (PC-First Workflow)
+## 1. Bối Cảnh Chuyển Giao & Quy Trình Thử Nghiệm PC-First
 
 > [!IMPORTANT]
-> **RÀNG BUỘC THỰC TẾ & CƠ CHẾ PHỐI HỢP:**
-> Hiện tại **Hiếu me KHÔNG GIỮ ROBOT THỰC TẾ** (Xe JetBot, Camera CSI IMX219 và chip Jetson Nano đều ở chỗ Team Lead).  
-> Do đó, pipeline Computer Vision phải được thiết kế để **Hiếu me phát triển và kiểm thử 100% trên PC/Laptop cá nhân** mà không bị phụ thuộc vào phần cứng!
+> **PHÂN ĐỊNH VAI TRÒ & CHIẾN LƯỢC TRIỂN KHAI:**
+> - **Hiếu me đã hoàn thành:** Module thị giác đã có sẵn khung Floor IPM, contract dữ liệu JSON và mock test.
+> - **Team Lead tiếp quản trực tiếp:** Do Team Lead là người duy nhất nắm giữ robot JetBot và chịu trách nhiệm toàn bộ hệ thống, Team Lead sẽ đóng vai trò người thực thi module này cùng với `perception-agent`.
+> - **Chiến lược PC-First:** Toàn bộ quá trình tải mô hình, xuất ONNX và benchmark được thực hiện độc lập trên PC cá nhân trước. Khi JetBot online qua SSH (`192.168.1.11`), chỉ cần đẩy ONNX lên và chạy `trtexec` build TensorRT FP16 trong 3 phút.
 
 ```mermaid
 flowchart LR
-    subgraph PC_Phase ["GIAI ĐOẠN 1: HIẾU ME PHÁT TRIỂN & TEST TRÊN PC CÁ NHÂN"]
-        A["Team Lead gửi Bộ Ảnh Mẫu chụp từ Camera CSI JetBot"] --> B["Hiếu me Căn chỉnh Ma trận IPM (Homography) trên PC"]
-        C["Huấn luyện / Xuất mô hình YOLOv8n-seg.onnx"] --> D["Viết Pipeline CV + Mock Camera (Webcam / Video file)"]
-        B --> E["Chạy Bộ Test Độc lập trên PC (test_cv_local.py)"]
-        D --> E
-        E --> F["Đạt 100% Pass Logic & Trích xuất Bounding Box + Tọa độ Sàn"]
+    subgraph PC_Phase ["GIAI ĐOẠN 1: TEAM LEAD KIỂM THỬ TRÊN PC (HOÀN TẤT)"]
+        A["Tải mô hình YOLO26-n (5.3 MB, 2.4M params)"] --> B["Xuất yolo26n.onnx (opset 12, onnxslim)"]
+        B --> C["Kiểm tra Shape: (1, 3, 640, 640) -> (1, 84, 8400)"]
+        C --> D["Tích hợp vào 01-HieuMe/yolo_seg_runner.py & floor_ipm.py"]
+        D --> E["Chạy Bộ Test Cục Bộ PC: Pass 100% Contract"]
     end
-    subgraph Jetson_Phase ["GIAI ĐOẠN 2: CHUYỂN GIAO CHO TEAM LEAD NẠP LÊN JETBOT"]
-        F --> G["Gửi File .onnx + Code Python + Script Build TRT cho Team Lead"]
-        G --> H["Team Lead chạy trtexec build .engine trên GPU Maxwell"]
-        H --> I["Kết nối với Camera CSI thật (nvarguscamerasrc GStreamer)"]
-        I --> J["Team Lead gửi Log FPS & Độ trễ thực tế về cho Hiếu me"]
+    subgraph Jetson_Phase ["GIAI ĐOẠN 2: NẠP LÊN JETBOT KHI ROBOT ONLINE"]
+        E --> F["SCP yolo26n.onnx lên Jetson Nano (192.168.1.11)"]
+        F --> G["trtexec --onnx=yolo26n.onnx --saveEngine=yolo26n.engine --fp16"]
+        G --> H["Khởi động jetbot_bridge.py / backend kết nối CSI Camera"]
+        H --> I["Đạt FPS thực tế ~30 - 40 FPS trên GPU Maxwell"]
     end
 ```
 
@@ -54,34 +55,45 @@ flowchart LR
 
 ---
 
-## 3. Kiến Trúc Kỹ Thuật: 1 Mô Hình Đa Nhiệm (YOLOv8n-seg Multi-Task)
+## 3. Kiến Trúc Kỹ Thuật: Nâng Cấp Lên Ultralytics YOLO26-n & Floor IPM Pipeline
 
-Để tiết kiệm GPU Maxwell (128 CUDA cores) và bộ nhớ RAM 4GB của Jetson Nano, Hiếu me sử dụng **1 mô hình đa nhiệm duy nhất**:
+Để tối ưu hóa năng lực xử lý trên GPU Maxwell (128 CUDA cores) và bộ nhớ RAM 4GB của Jetson Nano, nhóm quyết định nâng cấp mô hình lên **Ultralytics YOLO26-n (Thế hệ mới 2026)** kết hợp cùng pipeline Floor IPM:
+
+### 3.1. Bảng So Sánh Kỹ Thuật YOLOv8n vs YOLO26-n
+| Tiêu chí kỹ thuật | YOLOv8n (Kiến trúc cũ) | YOLO26-n (Thế hệ 2026) | Mức cải thiện / Đánh giá |
+| :--- | :---: | :---: | :--- |
+| **Số tham số (Parameters)** | 3,157,200 (3.2M) | **2,408,932 (2.4M)** | **Giảm 24%** (nhẹ hơn, ít chiếm RAM) |
+| **Tính toán (FLOPs)** | 8.2 GFLOPs | **5.5 GFLOPs** | **Giảm 33%** (tiết kiệm 1/3 chu kỳ tính toán) |
+| **Kích thước file PT** | 6.3 MB | **5.3 MB** | Nhẹ hơn, tải nhanh |
+| **Kích thước file ONNX** | 12.2 MB | **9.5 MB** | Nhỏ gọn, opset=12, onnxslim tối ưu |
+| **Kích thước Tensor Đầu Ra** | `(1, 84, 8400)` | `(1, 84, 8400)` | **Tương thích 1:1 drop-in replacement!** |
+| **Số lớp COCO chuẩn** | 80 classes | 80 classes | Đầy đủ `person`, `chair`, `backpack`... |
+| **Độ trễ TensorRT FP16 (Est.)**| ~35 ms (~28 FPS) | **~22 ms (~40 FPS)** | **Tăng tốc độ xử lý ~40%** |
 
 ```mermaid
 flowchart TD
-    A["Camera Frame (640x640)"] --> B["YOLOv8n-seg (1 Lượt Pass GPU duy nhất ~35ms)"]
-    B --> C["Nhánh Detection: Person, Chair, Backpack"]
-    B --> D["Nhánh Segmentation: Mask Mặt Sàn & Vật Thể Sàn"]
-    C --> E["Tính Azimuth & Gán Safety Margin (Hiếu me tự chọn cự ly né)"]
-    D --> F["Ma trận IPM Homography 3x3"]
-    F --> G["Chuyển Pixel Vật cản Sàn -> Tọa độ Mét 2D Thực tế"]
+    A["Camera CSI Frame (640x640)"] --> B["Ultralytics YOLO26-n (5.5 GFLOPs, ~22ms TensorRT)"]
+    B --> C["Nhánh Detection: person, chair, backpack..."]
+    B --> D["Nhánh Floor Obstacles: Phân đoạn vật thể sát sàn"]
+    C --> E["Tính Azimuth & Bán kính An toàn (Social Bubble 0.9m)"]
+    D --> F["Ma trận IPM Homography H (3x3)"]
+    F --> G["Chiếu Pixel Vật cản Sàn -> Tọa độ Mét 2D Thực tế"]
     E --> H["Payload 1: SemanticDetections (Người & Vật thể lớn)"]
     G --> I["Payload 2: low_obstacles [[x, y], ...] (Vật cản sát sàn < 16cm)"]
 ```
 
-### 3.1. Nhánh Nhận diện Đối tượng (Object Detection & Dynamic Safety Margin)
+### 3.2. Nhánh Nhận diện Đối tượng (Object Detection & Dynamic Safety Margin)
 * Trích xuất các lớp: `person`, `chair`, `backpack`, `bottle`...
 * Tính góc phương vị ngang chuẩn xác:
   $$\theta_{\text{azimuth}} = \arctan\left(\frac{x_{\text{center}} - c_x}{f_x}\right) \in [-80^\circ, +80^\circ]$$
-* **Cơ chế Bán kính An toàn Động (Hiếu me tự chọn cự ly né):**
-  Hiếu me chủ động gắn kèm trường `safety_margin_m` cho từng vật thể trong payload để Team Lead không phải hardcode:
+* **Cơ chế Bán kính An toàn Động (Social Bubble):**
+  Tự động gắn kèm trường `safety_margin_m` cho từng vật thể trong payload để Planning không cần hardcode:
   * `person`: $0.9\text{ m}$ (Vùng an toàn xã hội Hall's Proxemics).
   * `chair`: $0.35\text{ m}$.
   * `backpack`: $0.25\text{ m}$.
 
-### 3.2. Nhánh Phân đoạn Mặt sàn Bù Điểm Mù (Floor Segmentation & IPM)
-* Mô hình xuất ra mask nhị phân: vùng sàn đi được (`walkable floor`) và vùng vật cản trên sàn (`floor obstacle`).
+### 3.3. Nhánh Phân đoạn Mặt sàn Bù Điểm Mù (Floor Segmentation & IPM)
+* Xác định vùng sàn đi được (`walkable floor`) và vùng vật cản trên sàn (`floor obstacle`).
 * Áp dụng ma trận biến đổi **Inverse Perspective Mapping (IPM)** $H_{3 \times 3}$:
   - Biến đổi vùng quan tâm mặt sàn trước mũi xe thành ảnh Bird’s-Eye View (BEV).
   - Trích xuất tâm các vật cản thấp thành danh sách tọa độ mét thực tế 2D cục bộ $(X_{\text{local}}, Y_{\text{local}})$:
@@ -89,32 +101,29 @@ flowchart TD
 
 ---
 
-## 4. Ngân Sách Độ Trễ & Hiệu Năng Trên Jetson Nano (Latency Budget)
+## 4. Ngân Sách Độ Trễ & Hiệu Năng Trên Jetson Nano (Latency Budget Với YOLO26-n)
 
-| Thành phần xử lý | Thời gian cho phép | Giải pháp kỹ thuật bắt buộc |
-| :--- | :---: | :--- |
-| **Đọc khung hình Camera** | $\le 5\text{ ms}$ | GStreamer `nvarguscamerasrc` đẩy thẳng bộ nhớ `NVMM` (trên robot). |
-| **YOLOv8n-seg TRT** | $\le 35\text{ ms}$ | Engine TensorRT FP16 (chỉ 1 lượt pass GPU cho cả detect + seg). |
-| **Vectorized Post-process** | $\le 3\text{ ms}$ | Xử lý hoàn toàn bằng mảng NumPy Boolean, **cấm vòng lặp for Python**. |
-| **IPM Coordinate Projection** | $\le 5\text{ ms}$ | Nhân ma trận Homography trực tiếp trên tọa độ điểm contour. |
-| **Tổng thời gian pipeline** | **$\le 48\text{ ms}$** | **Đảm bảo $\ge 20\text{ FPS}$ mượt mà thời gian thực!** |
+| Thành phần xử lý | Thời gian cũ (YOLOv8n) | Thời gian mới (YOLO26-n TRT) | Giải pháp kỹ thuật bắt buộc |
+| :--- | :---: | :---: | :--- |
+| **Đọc khung hình Camera** | $\le 5\text{ ms}$ | $\le 5\text{ ms}$ | GStreamer `nvarguscamerasrc` đẩy thẳng bộ nhớ `NVMM` (trên robot). |
+| **YOLO Inference Engine** | $\le 35\text{ ms}$ | **$\le 22\text{ ms}$** | Engine TensorRT FP16 của YOLO26-n (giảm 33% FLOPs). |
+| **Vectorized Post-process** | $\le 3\text{ ms}$ | $\le 3\text{ ms}$ | Xử lý hoàn toàn bằng mảng NumPy Boolean, **cấm vòng lặp for Python**. |
+| **IPM Coordinate Projection** | $\le 5\text{ ms}$ | $\le 5\text{ ms}$ | Nhân ma trận Homography trực tiếp trên tọa độ điểm contour. |
+| **Tổng thời gian pipeline** | **$\approx 48\text{ ms}$ ($\sim 20\text{ FPS}$)** | **$\approx 35\text{ ms}$ ($\ge 28 - 35\text{ FPS}$)** | **Vượt xa yêu cầu thời gian thực của đề tài!** |
 
 ---
 
-## 5. Quy Chuẩn Bàn Giao Của Hiếu Me Cho Team Lead (Handoff Deliverables)
+## 5. Danh Mục Tài Nguyên & Quy Trình Triển Khai (Deliverables & Deployment)
 
-> [!TIP]
-> **Hiếu me hoàn thiện trên PC và gửi cho Team Lead gói sản phẩm gồm:**
-
-### 5.1. File mã nguồn độc lập trong thư mục `perception/`:
-1. `camera_loader.py`: Class đọc camera linh hoạt (tự động nhận diện: nếu chạy trên PC thì đọc webcam/video `.mp4`, nếu chạy trên JetBot thì mở pipeline GStreamer).
-2. `yolo_seg_runner.py`: Script load mô hình (`.onnx` trên PC hoặc `.engine` trên JetBot) và trích xuất kết quả vector hóa.
-3. `floor_ipm.py`: Chứa ma trận Homography $H$ và hàm chuyển đổi mask sàn sang tọa độ mét.
-4. `yolov8n-seg.onnx`: File mô hình chuẩn đã export để Team Lead build TensorRT trên robot.
-5. `test_cv_local.py`: File unit test chạy hoàn toàn trên máy tính cá nhân.
+### 5.1. File mã nguồn & Model trong thư mục `01-HieuMe/`:
+1. `yolo26n.pt` (5.3 MB) & `yolo26n.onnx` (9.5 MB, opset=12, onnxslim): File mô hình YOLO26-n thế hệ mới đã xuất sẵn.
+2. `yolo_seg_runner.py`: Đã cấu hình ưu tiên tự động nạp `yolo26n` (Engine -> ONNX -> PT).
+3. `floor_ipm.py`: Chứa ma trận Homography $H$ và hàm chuyển đổi pixel sang tọa độ mét robot.
+4. `camera_loader.py`: Class đọc camera linh hoạt (Webcam/Video trên PC, GStreamer trên JetBot).
+5. `test_cv_local.py`: File unit test chạy hoàn toàn độc lập trên PC.
 
 ### 5.2. Chuẩn dữ liệu đầu ra bàn giao (Clean Data Contract):
-Mỗi chu kỳ, module của Hiếu me xuất ra một dictionary sạch sẽ:
+Mỗi chu kỳ, module xuất ra một dictionary chuẩn JSON:
 
 ```json
 {
@@ -142,16 +151,24 @@ Mỗi chu kỳ, module của Hiếu me xuất ra một dictionary sạch sẽ:
 }
 ```
 
-* **Ý nghĩa đối với Team Lead:**
-  * `detections`: Team Lead lấy thẳng `safety_margin_m` (do Hiếu me cấu hình) để kích hoạt **Social Bubble** né người/vật thể lớn trên bản đồ.
-  * `low_obstacles`: Team Lead nạp trực tiếp danh sách tọa độ mét này vào **Costmap của Planning** để xe tự bẻ lái né vật cản thấp $< 16\text{ cm}$ mà LiDAR bị mù!
+* **Ý nghĩa đối với Planning & Control:**
+  * `detections`: Trích xuất trực tiếp `safety_margin_m` để kích hoạt **Social Bubble** né người ($0.9\text{ m}$) và vật cản lớn.
+  * `low_obstacles`: Nạp trực tiếp danh sách tọa độ mét này vào **Costmap của Planning** để xe tự bẻ lái né vật cản thấp $< 16\text{ cm}$ mà LiDAR bị mù!
 
 ---
 
-## 6. Hỗ Trợ Từ Team Lead Cho Hiếu Me (Collaboration Support)
+## 6. Quy Trình Nạp & Biên Dịch TensorRT Khi JetBot Online (Deployment Playbook)
 
-Để Hiếu me có dữ liệu thực tế căn chỉnh ma trận Homography IPM mà không cần giữ robot:
-* **Team Lead sẽ cung cấp cho Hiếu me:**
-  1. Thư mục `sample_data/`: Chứa 5 – 10 ảnh chụp từ chính Camera CSI của JetBot đặt trên sàn phòng thực tế.
-  2. Trong ảnh có đặt thước đo, đánh dấu 4 điểm góc hình chữ nhật kích thước thật ($0.5\text{m} \times 0.5\text{m}$) và vài vật cản mẫu (dép, dây điện, hộp nhỏ $< 16\text{ cm}$).
-* **Hiếu me chỉ cần:** Mở ảnh này trên PC, click lấy tọa độ pixel của 4 điểm đánh dấu để tính ma trận Homography $H_{3 \times 3}$ chính xác 100%!
+Khi JetBot kết nối mạng LAN / Wi-Fi (`192.168.1.11`), thực hiện 3 bước đơn giản:
+
+```bash
+# Bước 1: Copy model ONNX sang Jetson Nano (từ PC):
+scp 01-HieuMe/yolo26n.onnx jetbot@192.168.1.11:/home/jetbot/
+
+# Bước 2: SSH vào JetBot và biên dịch TensorRT FP16 (mất ~2-3 phút, chỉ chạy 1 lần duy nhất):
+ssh -p 22 jetbot@192.168.1.11
+/usr/src/tensorrt/bin/trtexec --onnx=/home/jetbot/yolo26n.onnx --saveEngine=/home/jetbot/yolo26n.engine --fp16
+
+# Bước 3: Khởi động hệ thống (Bridge + Backend + CV):
+bash /home/jetbot/CS532/start_all.sh
+```

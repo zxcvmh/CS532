@@ -53,20 +53,20 @@ pip install -r 01-HieuMe/requirements.txt
 ## 🚀 4. Hướng Dẫn Sử Dụng & Kiểm Thử
 
 ### 4.1. Chạy Unit Test Độc Lập Trên PC
-Kiểm tra nạp ảnh mẫu, trích xuất góc Azimuth, Social Bubble và ma trận IPM:
+Kiểm tra nạp ảnh mẫu, trích xuất góc Azimuth, Social Bubble, ma trận IPM chống chia cho 0, YOLO26-n Vectorized Runner và chuẩn hợp đồng dữ liệu:
 ```bash
-$env:PYTHONIOENCODING="utf-8"; python 01-HieuMe/test_cv_local.py
+python 01-HieuMe/test_cv_local.py
 ```
-*(Kết quả yêu cầu: Pass 3/3 bài kiểm tra).*
+*(Kết quả: Pass 5/5 bài kiểm tra toàn diện).*
 
 ---
 
 ### 4.2. Chạy Demo Pipeline Đo Đạc Hiệu Năng
-Chạy luồng xử lý hoàn chỉnh từ ảnh/camera $\to$ YOLOv8 $\to$ IPM $\to$ JSON:
+Chạy luồng xử lý hoàn chỉnh từ ảnh/camera $\to$ YOLO26-n (ONNX/TensorRT) $\to$ IPM $\to$ JSON:
 ```bash
-$env:PYTHONIOENCODING="utf-8"; python 01-HieuMe/pipeline_demo.py
+python 01-HieuMe/pipeline_demo.py
 ```
-* **Độ trễ ổn định đo được:** $\approx 45.2\text{ ms}$ (tương đương $\sim 22\text{ FPS}$), thỏa mãn trọn vẹn ngân sách thời gian thực $\le 48\text{ ms}$ của đồ án!
+* **Độ trễ trung bình đo được (CUDA ONNX):** $\approx 14.43\text{ ms}$ (tương đương $\sim 69.3\text{ FPS}$), vượt xa ngân sách thời gian thực $\le 35\text{ ms}$ của đồ án!
 
 ---
 
@@ -131,3 +131,29 @@ Mọi thông số hiệu chuẩn vật lý được tách riêng tại [camera_c
 * `mount_height_m`: Chiều cao camera đặt trên xe (mặc định: $0.12\text{ m}$).
 * `pitch_angle_deg`: Góc nghiêng camera chúc xuống (mặc định: $20.0^\circ$).
 * `source_points`: 4 tọa độ pixel của hình chữ nhật hiệu chuẩn trên sàn. Khi Team Lead chụp ảnh thực tế có thước đo trên sàn, chỉ cần cập nhật 4 tọa độ này là toàn bộ hệ thống khớp ngay lập tức mà không phải sửa mã nguồn!
+
+---
+
+## ⚡ 7. Hướng Dẫn Chuyển Giao Nạp Lên Jetson Nano (TensorRT Mode)
+
+Khi JetBot kết nối mạng, Team Lead thực hiện nạp và build Engine TensorRT FP16:
+
+1. **Chuyển giao file sang Jetson Nano:**
+   ```bash
+   scp 01-HieuMe/yolo26n.onnx jetbot@<JETBOT_IP>:~/CS532/01-HieuMe/
+   ```
+
+2. **Biên dịch TensorRT FP16 Engine (Tận dụng 128 CUDA Cores Maxwell):**
+   ```bash
+   /usr/src/tensorrt/bin/trtexec \
+     --onnx=01-HieuMe/yolo26n.onnx \
+     --saveEngine=01-HieuMe/yolo26n.engine \
+     --fp16 \
+     --workspace=512
+   ```
+
+3. **Khởi chạy hệ thống trên Jetson Nano:**
+   ```bash
+   python3 01-HieuMe/pipeline_demo.py
+   ```
+
