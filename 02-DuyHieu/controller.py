@@ -12,6 +12,8 @@ Academic Standard (2024-2026 IEEE Robotics & Autonomous Systems):
 =============================================================================
 """
 
+import os
+import json
 import math
 from typing import List, Tuple, Optional, Dict, Any
 
@@ -27,15 +29,18 @@ except ImportError:
 class PurePursuitController:
     def __init__(
         self,
-        lookahead_dist: float = 0.28,
-        max_linear_speed: float = 0.18,
-        max_angular_speed: float = 1.0,
+        lookahead_dist: float = 0.32,
+        max_linear_speed: float = 0.32,
+        max_angular_speed: float = 1.2,
         track_width: float = 0.115,
         goal_tolerance: float = 0.12,
-        reflex_dist_threshold: float = 0.14,
-        warning_dist_threshold: float = 0.55,
+        reflex_dist_threshold: float = 0.18,
+        warning_dist_threshold: float = 0.70,
         curvature_scale_k: float = 1.0,
-        lateral_detour_offset: float = 0.38
+        lateral_detour_offset: float = 0.32,
+        min_drive_speed: float = 0.22,
+        trim_factor: float = 1.0,
+        soft_start_ramp_sec: float = 0.4
     ):
         self.lookahead_dist = lookahead_dist
         self.max_linear_speed = max_linear_speed
@@ -46,26 +51,46 @@ class PurePursuitController:
         self.warning_dist_threshold = warning_dist_threshold
         self.curvature_scale_k = curvature_scale_k
         self.lateral_detour_offset = lateral_detour_offset
+        self.min_drive_speed = min_drive_speed
+        self.trim_factor = trim_factor
+        self.soft_start_ramp_sec = soft_start_ramp_sec
 
+        self.last_pwm_left: float = 0.0
+        self.last_pwm_right: float = 0.0
+
+        self.global_reference_path: List[Tuple[float, float]] = []
+        self.global_goal: Optional[Tuple[float, float]] = None
         self.current_path: List[Tuple[float, float]] = []
         self.path_index: int = 0
         self.is_goal_reached: bool = False
         self.is_reflex_stopped: bool = False
         self.is_path_blocked: bool = False
+        self.is_evading: bool = False
+        self.evasion_end_index: int = 0
         self.last_linear_v: float = 0.0
 
+        self.load_dynamics_config()
+
     def set_path(self, path: List[Tuple[float, float]]):
-        self.current_path = path
+        self.global_reference_path = list(path)
+        self.global_goal = path[-1] if path else None
+        self.current_path = list(path)
         self.path_index = 0
         self.is_goal_reached = False
         self.is_reflex_stopped = False
         self.is_path_blocked = False
+        self.is_evading = False
+        self.evasion_end_index = 0
 
     def clear_path(self):
         self.current_path = []
+        self.global_reference_path = []
+        self.global_goal = None
         self.path_index = 0
         self.is_goal_reached = False
         self.is_path_blocked = False
+        self.is_evading = False
+        self.evasion_end_index = 0
 
     def check_safety_reflex(self, ranges: List[float]) -> bool:
         """10Hz Hardware Reflex Emergency Brake on immediate frontal cone (< 0.18m)."""
@@ -204,6 +229,36 @@ class PurePursuitController:
         self.is_path_blocked = False
         return False, None, "CLEAR"
 
+    def measure_wall_distance(
+        self,
+        grid_map: Any,
+        origin_pt: Tuple[float, float],
+        direction: Tuple[float, float],
+        start_offset: float = 0.0,
+        max_dist: float = 2.0,
+        step: float = 0.02
+    ) -> float:
+        """
+        Raycasts along `direction` starting from `start_offset` outwards
+        to find the distance from origin_pt to the nearest lethal boundary/wall.
+        Uses Nyquist spatial sampling (step <= resolution / 2) to ensure no barrier cell is skipped.
+        """
+        if grid_map is None:
+            return max_dist
+        ox, oy = origin_pt
+        dx, dy = direction
+        res = getattr(grid_map, "resolution", 0.05)
+        step = min(step, res * 0.5)
+        dist = max(0.0, start_offset)
+        while dist <= max_dist:
+            px = ox + dist * dx
+            py = oy + dist * dy
+            c, r = grid_map.world_to_grid(px, py)
+            if not grid_map.is_cell_free(c, r):
+                return dist
+            dist += step
+        return max_dist
+
     def generate_detour_splice(
         self,
         robot_x: float,
@@ -212,16 +267,17 @@ class PurePursuitController:
         blocked_pt: Tuple[float, float],
         obstacle_cluster: Optional[Any] = None,
         grid_map: Optional[Any] = None,
-        lateral_offset: float = 0.52
+        lateral_offset: Optional[float] = None
     ) -> Optional[List[Tuple[float, float]]]:
         """
-        Trapezoidal Plateau Detour Generator (3 segments with parallel hold).
-        - lateral_offset: 0.50m - 0.55m (default 0.52m).
-        - Segment 1 (u in [0, 0.35]): Smooth cosine lane change ramp out.
-        - Segment 2 (u in [0.35, 0.65]): Constant plateau hold at full lateral_offset along obstacle.
-        - Segment 3 (u in [0.65, 1.0]): Smooth cosine lane rejoin back to global path.
-        - Guarantees minimum physical clearance margin >= 0.22m (> 0.20m E-stop threshold).
-        - Costmap-verified direction selection (automatically inverts side if blocked by wall).
+        General Dynamic Drivable Corridor & Frenet-Splice Avoidance Planner (FCP-Lite).
+        Academic Standard (2024-2026 IEEE RAS / IV):
+          1. Continuous spatial corridor clearance raycasting (left & right free space).
+          2. Adaptive lateral offset: centers the robot in the available gap, preventing wall hits.
+          3. General obstacle geometry handling (small items, medium boxes, large barriers, oncoming persons).
+          4. Full blockage protection: gracefully returns None if corridor < 0.28m passability width.
+          5. Smooth 3-segment cosine trapezoidal plateau trajectory with Costmap safety verification.
+          6. Global Goal & Reference Path Persistence: guarantee the real goal is never lost or truncated.
         """
         if not self.current_path or len(self.current_path) < 2:
             return None
@@ -239,159 +295,187 @@ class PurePursuitController:
         n_left = (-u_fwd[1], u_fwd[0])
         n_right = (u_fwd[1], -u_fwd[0])
 
-        cand_left = (bx + lateral_offset * n_left[0], by + lateral_offset * n_left[1])
-        cand_right = (bx + lateral_offset * n_right[0], by + lateral_offset * n_right[1])
-
-        # Direction choice: COLREGS right deflection for oncoming, or check obstacle relative lateral pos
+        # 1. Obstacle geometry estimation in Frenet frame
+        d_obs_left = 0.15
+        d_obs_right = -0.15
+        obs_length = 0.25
         is_oncoming = False
+
         if obstacle_cluster is not None:
-            if getattr(obstacle_cluster, "is_dynamic", False) and getattr(obstacle_cluster, "closing_speed", 0.0) > 0.05:
-                is_oncoming = True
+            is_oncoming = getattr(obstacle_cluster, "is_dynamic", False) and getattr(obstacle_cluster, "closing_speed", 0.0) > 0.05
+            cx = getattr(obstacle_cluster, "centroid", (bx, by))[0]
+            cy = getattr(obstacle_cluster, "centroid", (bx, by))[1]
+            length_m = getattr(obstacle_cluster, "length_m", 0.25)
+            width_m = getattr(obstacle_cluster, "width_m", 0.25)
+            obs_length = max(0.10, length_m)
+            half_w = max(0.04, width_m / 2.0)
 
+            cos_t = math.cos(robot_theta)
+            sin_t = math.sin(robot_theta)
+            # Support both World and Robot coordinates for cluster centroid
+            d_world = math.hypot(cx - bx, cy - by)
+            cx_w_trans = robot_x + cx * cos_t - cy * sin_t
+            cy_w_trans = robot_y + cx * sin_t + cy * cos_t
+            d_robot = math.hypot(cx_w_trans - bx, cy_w_trans - by)
+            if d_robot < d_world:
+                cx_w, cy_w = cx_w_trans, cy_w_trans
+            else:
+                cx_w, cy_w = cx, cy
+
+            lat_centroid = (cx_w - bx) * n_left[0] + (cy_w - by) * n_left[1]
+            d_obs_left = lat_centroid + half_w
+            d_obs_right = lat_centroid - half_w
+        elif grid_map is not None:
+            # Measure obstacle boundary directly from costmap if no cluster is provided
+            d_l = 0.0
+            while d_l < 1.0:
+                d_l += 0.02
+                px = bx + d_l * n_left[0]
+                py = by + d_l * n_left[1]
+                c, r = grid_map.world_to_grid(px, py)
+                if grid_map.is_cell_free(c, r):
+                    break
+            d_obs_left = max(0.12, d_l)
+
+            d_r = 0.0
+            while d_r < 1.0:
+                d_r += 0.02
+                px = bx + d_r * n_right[0]
+                py = by + d_r * n_right[1]
+                c, r = grid_map.world_to_grid(px, py)
+                if grid_map.is_cell_free(c, r):
+                    break
+            d_obs_right = -max(0.12, d_r)
+
+        # 2. Continuous spatial corridor clearance raycasting
+        wall_clearance_left = 1.5
+        wall_clearance_right = 1.5
+        if grid_map is not None:
+            wall_clearance_left = self.measure_wall_distance(
+                grid_map, (bx, by), n_left, start_offset=max(0.0, d_obs_left) + 0.02
+            )
+            wall_clearance_right = self.measure_wall_distance(
+                grid_map, (bx, by), n_right, start_offset=max(0.0, -d_obs_right) + 0.02
+            )
+
+        # 3. Drivable gaps calculation
+        gap_left = max(0.0, wall_clearance_left - max(0.0, d_obs_left))
+        gap_right = max(0.0, wall_clearance_right - max(0.0, -d_obs_right))
+
+        MIN_REQUIRED_PASS_GAP = 0.28  # robot diameter 0.24m + 0.04m physical margin
+        left_viable = gap_left >= MIN_REQUIRED_PASS_GAP
+        right_viable = gap_right >= MIN_REQUIRED_PASS_GAP
+
+        # 4. Impassable Corridor Protection (Full Blockage)
+        if grid_map is not None and not left_viable and not right_viable:
+            # Neither side offers sufficient gap: abort detour safely to avoid wall crash
+            return None
+
+        # 5. Side selection logic
         if is_oncoming:
-            chosen_cand = cand_right
-            chosen_lat_dir = n_right
-            if grid_map is not None:
-                c_r, r_r = grid_map.world_to_grid(cand_right[0], cand_right[1])
-                if not grid_map.is_cell_free(c_r, r_r):
-                    chosen_cand = cand_left
-                    chosen_lat_dir = n_left
-        else:
-            chosen_cand = cand_left
-            chosen_lat_dir = n_left
-            if obstacle_cluster and hasattr(obstacle_cluster, "centroid") and obstacle_cluster.centroid[1] > 0:
-                chosen_cand = cand_right
+            # COLREGS maritime/road standard: prefer right deflection if viable
+            if right_viable:
+                chosen_side = "RIGHT"
                 chosen_lat_dir = n_right
-
-            # Costmap obstacle check: if preferred side is blocked by wall, flip
-            if grid_map is not None:
-                c_l, r_l = grid_map.world_to_grid(cand_left[0], cand_left[1])
-                c_r, r_r = grid_map.world_to_grid(cand_right[0], cand_right[1])
-                l_free = grid_map.is_cell_free(c_l, r_l)
-                r_free = grid_map.is_cell_free(c_r, r_r)
-                if r_free and not l_free:
-                    chosen_cand = cand_right
-                    chosen_lat_dir = n_right
-                elif l_free and not r_free:
-                    chosen_cand = cand_left
+            else:
+                chosen_side = "LEFT"
+                chosen_lat_dir = n_left
+        else:
+            if left_viable and not right_viable:
+                chosen_side = "LEFT"
+                chosen_lat_dir = n_left
+            elif right_viable and not left_viable:
+                chosen_side = "RIGHT"
+                chosen_lat_dir = n_right
+            else:
+                # Both viable: choose side with larger clearance
+                if gap_left >= gap_right:
+                    chosen_side = "LEFT"
                     chosen_lat_dir = n_left
+                else:
+                    chosen_side = "RIGHT"
+                    chosen_lat_dir = n_right
 
-        rejoin_dist = 0.85 if is_oncoming else 0.70
+        # 6. Adaptive lateral offset computation (Minimal Necessary Deviation)
+        ROBOT_RADIUS = 0.12
+        DESIRED_BODY_CLEARANCE = ROBOT_RADIUS + 0.06  # 0.18m
+
+        if grid_map is not None:
+            if chosen_side == "LEFT":
+                if gap_left < 0.60:
+                    d_offset = max(0.0, d_obs_left) + (gap_left / 2.0)
+                else:
+                    d_offset = max(0.0, d_obs_left) + DESIRED_BODY_CLEARANCE
+                # Clamp so robot does not strike left wall
+                d_offset = min(d_offset, wall_clearance_left - ROBOT_RADIUS - 0.03)
+            else:
+                if gap_right < 0.60:
+                    d_offset = max(0.0, -d_obs_right) + (gap_right / 2.0)
+                else:
+                    d_offset = max(0.0, -d_obs_right) + DESIRED_BODY_CLEARANCE
+                d_offset = min(d_offset, wall_clearance_right - ROBOT_RADIUS - 0.03)
+            d_offset = max(DESIRED_BODY_CLEARANCE, min(0.35, d_offset))
+        else:
+            # Open space fallback
+            d_offset = lateral_offset if lateral_offset is not None else self.lateral_detour_offset
+
+        # 7. Adaptive longitudinal splice horizon (Gentle lane-change slope <= 22 degrees)
+        s_ramp = max(0.65, d_offset * 2.6)
+        s_plateau = max(0.20, obs_length + 0.08)
+        rejoin_dist = s_ramp + s_plateau
+
         rejoin_pt = (bx + rejoin_dist * u_fwd[0], by + rejoin_dist * u_fwd[1])
         p_start = (robot_x, robot_y)
         vec_long = (rejoin_pt[0] - p_start[0], rejoin_pt[1] - p_start[1])
 
-        # 3-Segment Trapezoidal Plateau Generation
-        # Segment 1: u in [0, 0.35] (Ramp out)
-        # Segment 2: u in [0.35, 0.65] (Plateau hold: lat_disp = lateral_offset)
-        # Segment 3: u in [0.65, 1.0] (Ramp in)
+        # 3-segment Trapezoidal Plateau Generation
         detour_pts = []
         n_steps = 14
-        u1 = 0.35
-        u2 = 0.65
+        total_len = s_ramp + s_plateau + s_ramp
+        u1 = s_ramp / total_len
+        u2 = (s_ramp + s_plateau) / total_len
 
         for s in range(1, n_steps + 1):
             u = s / float(n_steps)
             if u <= u1:
-                # Smooth cosine ramp out
-                lat_disp = lateral_offset * 0.5 * (1.0 - math.cos(math.pi * (u / u1)))
+                lat_disp = d_offset * 0.5 * (1.0 - math.cos(math.pi * (u / u1)))
             elif u <= u2:
-                # Flat plateau hold parallel to obstacle
-                lat_disp = lateral_offset
+                lat_disp = d_offset
             else:
-                # Smooth cosine ramp in back to path
-                lat_disp = lateral_offset * 0.5 * (1.0 + math.cos(math.pi * ((u - u2) / (1.0 - u2))))
+                lat_disp = d_offset * 0.5 * (1.0 + math.cos(math.pi * ((u - u2) / (1.0 - u2))))
 
             x = p_start[0] + u * vec_long[0] + lat_disp * chosen_lat_dir[0]
             y = p_start[1] + u * vec_long[1] + lat_disp * chosen_lat_dir[1]
             detour_pts.append((round(x, 3), round(y, 3)))
 
-        # Splicing into remaining path
-        splice_idx = len(self.current_path) - 1
-        for i in range(self.path_index, len(self.current_path)):
-            pt = self.current_path[i]
-            if (pt[0] - rejoin_pt[0]) * u_fwd[0] + (pt[1] - rejoin_pt[1]) * u_fwd[1] > 0.15:
+        # Splicing into global reference path to prevent goal loss
+        target_ref = self.global_reference_path if self.global_reference_path else self.current_path
+        splice_idx = -1
+        for i in range(len(target_ref)):
+            pt = target_ref[i]
+            if (pt[0] - rejoin_pt[0]) * u_fwd[0] + (pt[1] - rejoin_pt[1]) * u_fwd[1] > 0.10:
                 splice_idx = i
                 break
 
-        spliced_path = detour_pts + self.current_path[splice_idx:]
+        if splice_idx != -1 and splice_idx < len(target_ref):
+            spliced_path = detour_pts + target_ref[splice_idx:]
+        else:
+            if self.global_goal is not None:
+                spliced_path = detour_pts + [self.global_goal]
+            else:
+                spliced_path = detour_pts
+
+        if self.global_goal is not None and spliced_path[-1] != self.global_goal:
+            spliced_path.append(self.global_goal)
+
+        # 8. Trajectory Costmap Safety Check
+        if grid_map is not None:
+            for pt in detour_pts:
+                c, r = grid_map.world_to_grid(pt[0], pt[1])
+                if not grid_map.is_cell_free(c, r):
+                    return None
+
         return spliced_path
-
-    def _is_path_safe(self, pts: List[Tuple[float, float]], grid_map: Any) -> bool:
-        if not pts or grid_map is None:
-            return True
-        for px, py in pts:
-            c, r = grid_map.world_to_grid(px, py)
-            if not grid_map.is_cell_free(c, r):
-                return False
-        return True
-
-    def generate_greedy_detour(
-        self,
-        robot_x: float,
-        robot_y: float,
-        robot_theta: float,
-        goal_x: float,
-        goal_y: float,
-        grid_map: Optional[Any] = None,
-        lidar_ranges: Optional[List[float]] = None
-    ) -> Optional[List[Tuple[float, float]]]:
-        """
-        Greedy Local Reactive Detour for sudden obstacles (Greedy Gap Finder).
-        Evaluates angular evasion candidates (+-35, +-55, +-75, +-90 deg) and
-        picks the best unblocked heading pointing closest towards the goal.
-        """
-        th_goal = math.atan2(goal_y - robot_y, goal_x - robot_x)
-        candidates = [math.radians(ang) for ang in [-35.0, 35.0, -55.0, 55.0, -75.0, 75.0, -90.0, 90.0]]
-
-        best_cand = None
-        best_score = -999.0
-
-        for d_th in candidates:
-            cand_th = (robot_theta + d_th + math.pi) % (2.0 * math.pi) - math.pi
-
-            # 1. LiDAR ray check if ranges available
-            if lidar_ranges and len(lidar_ranges) >= 360:
-                ray_deg = int(round(math.degrees(d_th))) % 360
-                cone_indices = [(ray_deg + ofs) % 360 for ofs in range(-12, 13)]
-                min_cone_r = min((lidar_ranges[idx] for idx in cone_indices if lidar_ranges[idx] > 0.05), default=2.0)
-                if min_cone_r < 0.30:
-                    continue
-
-            # 2. Costmap ray check
-            if grid_map is not None:
-                is_free = True
-                for d_step in [0.15, 0.28, 0.38]:
-                    cx = robot_x + d_step * math.cos(cand_th)
-                    cy = robot_y + d_step * math.sin(cand_th)
-                    col, row = grid_map.world_to_grid(cx, cy)
-                    if not grid_map.is_cell_free(col, row):
-                        is_free = False
-                        break
-                if not is_free:
-                    continue
-
-            # 3. Greedy Score: highest projection towards goal direction
-            score = math.cos(cand_th - th_goal)
-            if score > best_score:
-                best_score = score
-                best_cand = cand_th
-
-        if best_cand is None:
-            return None
-
-        # Construct greedy local detour waypoints
-        p1 = (round(robot_x + 0.22 * math.cos(best_cand), 3), round(robot_y + 0.22 * math.sin(best_cand), 3))
-        p2 = (round(robot_x + 0.42 * math.cos(best_cand), 3), round(robot_y + 0.42 * math.sin(best_cand), 3))
-
-        rejoin_idx = len(self.current_path) - 1
-        for i in range(self.path_index, len(self.current_path)):
-            pt = self.current_path[i]
-            if math.hypot(pt[0] - p2[0], pt[1] - p2[1]) > 0.35:
-                rejoin_idx = i
-                break
-
-        return [p1, p2] + self.current_path[rejoin_idx:]
 
     def modulate_velocity(
         self,
@@ -405,11 +489,11 @@ class PurePursuitController:
         - When heading straight (omega ~ 0 rad/s), v maintains cruise speed.
         - When turning tight corner (omega >= 1.0 rad/s), speed gracefully drops
           to prevent differential wheel slip and roll instability.
-        - Decelerates softly when obstacles enter warning zone (0.55m).
+        - Decelerates softly when obstacles enter warning zone (0.70m).
         """
-        # Curvature scaling with safe deadband floor (0.14 m/s)
+        # Curvature scaling
         scaled_v = base_v / (1.0 + self.curvature_scale_k * abs(omega))
-        target_v = max(0.14, scaled_v)
+        target_v = max(0.04, scaled_v)
 
         if not clusters:
             return target_v
@@ -466,7 +550,7 @@ class PurePursuitController:
             self.last_linear_v = 0.0
             return 0.0, 0.0, {
                 "status": "EMERGENCY_STOP",
-                "reason": f"Obstacle < {self.reflex_dist_threshold*100:.0f}cm in front cone!",
+                "reason": "Obstacle < 18cm in front cone!",
                 "distance_remaining": 0.0
             }
 
@@ -475,46 +559,81 @@ class PurePursuitController:
             self.last_linear_v = 0.0
             return 0.0, 0.0, {"status": "IDLE", "distance_remaining": 0.0}
 
-        goal_x, goal_y = self.current_path[-1]
-        dist_to_final_goal = math.hypot(goal_x - robot_x, goal_y - robot_y)
+        # Check distance to TRUE GLOBAL GOAL
+        if self.global_goal is not None:
+            dist_to_final_goal = math.hypot(self.global_goal[0] - robot_x, self.global_goal[1] - robot_y)
+        else:
+            goal_x, goal_y = self.current_path[-1]
+            dist_to_final_goal = math.hypot(goal_x - robot_x, goal_y - robot_y)
 
-        # 3. Goal Reached check
+        # 3. Goal Reached check (only triggers when near the real global goal!)
         if dist_to_final_goal <= self.goal_tolerance:
             self.is_goal_reached = True
             self.clear_path()
             self.last_linear_v = 0.0
             return 0.0, 0.0, {"status": "GOAL_REACHED", "distance_remaining": 0.0}
 
-        # 4. Closed-Loop Dynamic Detour Evasion (Plateau + Greedy Gap Fallback)
-        evasion_active = False
+        # 4. Closed-Loop Dynamic Detour Evasion
+        evasion_active = self.is_evading
         evasion_reason = ""
         if auto_evade and self.current_path:
             is_blk, blk_pt, reason = self.check_path_collision(
-                robot_x, robot_y, robot_theta, grid_map=grid_map, clusters=clusters, horizon_m=1.2
+                robot_x, robot_y, robot_theta, grid_map=grid_map, clusters=clusters, horizon_m=1.8
             )
+            # Re-trigger detour only if not currently evading OR if remaining path has a new close obstruction
+            should_evade = False
             if is_blk and blk_pt is not None:
-                culprit = clusters[0] if clusters else None
+                if not self.is_evading:
+                    should_evade = True
+                else:
+                    curr_seg, _, _ = self._project_to_path(robot_x, robot_y)
+                    if curr_seg >= self.evasion_end_index:
+                        should_evade = True
+                    else:
+                        d_blk_cur = math.hypot(blk_pt[0] - robot_x, blk_pt[1] - robot_y)
+                        if d_blk_cur < 0.30:
+                            should_evade = True
+
+            if should_evade and blk_pt is not None:
+                culprit = None
+                if clusters:
+                    best_d = 999.0
+                    for cl in clusters:
+                        cx, cy = getattr(cl, "centroid", (0.0, 0.0))
+                        d = math.hypot(cx - blk_pt[0], cy - blk_pt[1])
+                        if d < best_d:
+                            best_d = d
+                            culprit = cl
+
                 detour = self.generate_detour_splice(
                     robot_x, robot_y, robot_theta, blk_pt,
-                    obstacle_cluster=culprit, grid_map=grid_map, lateral_offset=self.lateral_detour_offset
+                    obstacle_cluster=culprit, grid_map=grid_map, lateral_offset=None
                 )
-                if not detour or (grid_map is not None and not self._is_path_safe(detour[:4], grid_map)):
-                    # Fallback to Greedy Gap finder around sudden obstacle
-                    detour = self.generate_greedy_detour(
-                        robot_x, robot_y, robot_theta, goal_x, goal_y,
-                        grid_map=grid_map, lidar_ranges=lidar_ranges
-                    )
-                    if detour:
-                        reason = "GREEDY_GAP_EVASION"
-
                 if detour:
                     self.current_path = detour
+                    self.path_index = 0
+                    self.is_evading = True
+                    self.evasion_end_index = 14
                     evasion_active = True
                     evasion_reason = reason
+                else:
+                    self.last_linear_v = 0.0
+                    return 0.0, 0.0, {
+                        "status": "IMPASSABLE_STOP",
+                        "reason": f"Path blocked at {blk_pt} and corridor is impassable!",
+                        "distance_remaining": round(dist_to_final_goal, 3),
+                        "is_blocked": True,
+                        "evasion_active": False,
+                        "evasion_reason": reason
+                    }
 
         # 5. Pure Pursuit Lookahead Target Search
         best_seg, best_proj, _ = self._project_to_path(robot_x, robot_y)
         self.path_index = best_seg
+
+        if self.is_evading and self.path_index >= self.evasion_end_index:
+            self.is_evading = False
+            evasion_active = False
 
         rem_L = self.lookahead_dist
         curr_pt = best_proj
@@ -544,31 +663,26 @@ class PurePursuitController:
 
         kappa = (2.0 * math.sin(alpha)) / self.lookahead_dist
 
-        # 7. Curvature-Aware Scaling with Deadband-Safe Velocity Floor (0.14 m/s)
-        v_floor = 0.14
-        base_v = min(self.max_linear_speed, max(v_floor, dist_to_final_goal * 0.75))
+        # 7. Curvature-Aware Scaling
+        base_v = min(self.max_linear_speed, max(0.12, dist_to_final_goal * 0.8))
         target_w0 = base_v * kappa
 
         if abs(alpha) > 1.2:
-            # Very sharp turn (> 70 degrees): spin-turn throttle with safe torque
-            v = 0.08
-            w = math.copysign(self.max_angular_speed * 0.85, alpha)
-            aligning = True
-        elif abs(alpha) > 0.45:
-            # Significant heading error (> 26 degrees): slow down to pivot smoothly
-            v = 0.10
-            w = math.copysign(min(0.75, self.max_angular_speed), alpha)
-            aligning = True
+            # Very sharp turn (> 70 degrees)
+            if self.is_evading:
+                # Continuous forward motion during detour, prevent spin-turn dead stops
+                v = 0.10
+                w = math.copysign(self.max_angular_speed * 0.65, alpha)
+            else:
+                v = 0.04
+                w = math.copysign(self.max_angular_speed * 0.85, alpha)
         else:
             v = self.modulate_velocity(base_v, clusters=clusters, omega=target_w0)
-            v = max(v_floor, min(self.max_linear_speed, v))
             w = max(-self.max_angular_speed, min(self.max_angular_speed, v * kappa))
-            aligning = False
 
         self.last_linear_v = v
-        status = "EVADING" if evasion_active else ("ALIGNING" if aligning else "NAVIGATING")
         return round(v, 3), round(w, 3), {
-            "status": status,
+            "status": "EVADING" if evasion_active else "NAVIGATING",
             "distance_remaining": round(dist_to_final_goal, 3),
             "target": (round(target_pt[0], 3), round(target_pt[1], 3)),
             "is_blocked": self.is_path_blocked,
@@ -581,3 +695,93 @@ class PurePursuitController:
         v_left = v - (w * self.track_width / 2.0)
         v_right = v + (w * self.track_width / 2.0)
         return round(v_left, 3), round(v_right, 3)
+
+    def load_dynamics_config(self, config_path: Optional[str] = None):
+        """Loads physical motor dynamics, trim factor and deadband from JSON config."""
+        if config_path is None:
+            search_paths = [
+                os.path.join(os.path.dirname(__file__), "..", "setup", "robot_dynamics.json"),
+                os.path.join(os.path.dirname(__file__), "robot_dynamics.json"),
+                os.path.expanduser("~/setup/robot_dynamics.json"),
+                os.path.expanduser("~/CS532-main/setup/robot_dynamics.json"),
+            ]
+            for p in search_paths:
+                if os.path.isfile(p):
+                    config_path = p
+                    break
+        if config_path and os.path.isfile(config_path):
+            try:
+                with open(config_path, "r", encoding="utf-8") as f:
+                    cfg = json.load(f)
+                self.min_drive_speed = float(cfg.get("min_drive_speed", self.min_drive_speed))
+                self.trim_factor = float(cfg.get("trim_factor", self.trim_factor))
+                self.soft_start_ramp_sec = float(cfg.get("soft_start_ramp_sec", self.soft_start_ramp_sec))
+                if "max_safe_speed_mps" in cfg:
+                    self.max_linear_speed = float(cfg["max_safe_speed_mps"])
+            except Exception:
+                pass
+
+    def compute_motor_pwm(
+        self,
+        linear_v: float,
+        angular_w: float,
+        dt: float = 0.1,
+        emergency_stop: bool = False
+    ) -> Tuple[Tuple[float, float], Tuple[float, float]]:
+        """
+        Piecewise Kinematic Velocity-to-PWM Remapping with Continuous Deadband Lift,
+        Slew-Rate Acceleration Limiter, and Trim Balancing (IEEE 2024-2026 Standard).
+
+        Returns:
+            (pwm_left, pwm_right), (v_left, v_right)
+            where pwm in [-1.0, 1.0] ready for PCA9685 / Adafruit MotorHAT.
+        """
+        if emergency_stop or (abs(linear_v) < 1e-4 and abs(angular_w) < 1e-4):
+            self.last_pwm_left = 0.0
+            self.last_pwm_right = 0.0
+            return (0.0, 0.0), (0.0, 0.0)
+
+        # 1. Differential Drive Inverse Kinematics
+        half_l = self.track_width / 2.0
+        v_left = linear_v - (angular_w * half_l)
+        v_right = linear_v + (angular_w * half_l)
+
+        # 2. Speed Normalization by max linear speed
+        v_max = max(0.05, self.max_linear_speed)
+        u_left = max(-1.0, min(1.0, v_left / v_max))
+        u_right = max(-1.0, min(1.0, v_right / v_max))
+
+        # 3. Piecewise Continuous Deadband Lift
+        min_pwm = self.min_drive_speed
+
+        def lift_deadband(u: float) -> float:
+            if abs(u) < 1e-3:
+                return 0.0
+            sign = 1.0 if u > 0 else -1.0
+            return sign * (min_pwm + (1.0 - min_pwm) * abs(u))
+
+        raw_pwm_l = lift_deadband(u_left)
+        raw_pwm_r = lift_deadband(u_right)
+
+        # 4. Mechanical Trim Balancing (Wheel Asymmetry Compensation)
+        raw_pwm_l = max(-1.0, min(1.0, raw_pwm_l * self.trim_factor))
+        raw_pwm_r = max(-1.0, min(1.0, raw_pwm_r))
+
+        # 5. Slew-Rate Acceleration Limiter (Chống sụt áp pin & trượt bánh)
+        ramp_time = max(0.1, self.soft_start_ramp_sec)
+        max_rate = 1.0 / ramp_time
+        max_delta = max_rate * max(0.01, min(0.2, dt))
+
+        def clamp_rate(target: float, previous: float) -> float:
+            delta = target - previous
+            if abs(delta) > max_delta:
+                return previous + math.copysign(max_delta, delta)
+            return target
+
+        final_pwm_l = clamp_rate(raw_pwm_l, self.last_pwm_left)
+        final_pwm_r = clamp_rate(raw_pwm_r, self.last_pwm_right)
+
+        self.last_pwm_left = final_pwm_l
+        self.last_pwm_right = final_pwm_r
+
+        return (round(final_pwm_l, 3), round(final_pwm_r, 3)), (round(v_left, 3), round(v_right, 3))
