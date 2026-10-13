@@ -93,27 +93,32 @@ class AStarPlanner:
             return (dy + 0.41421356 * dx) * 1.001
         return (dx + 0.41421356 * dy) * 1.001
 
-    def find_nearest_free_cell(self, target_c: int, target_r: int, max_radius: int = 15) -> Optional[Tuple[int, int]]:
+    def find_nearest_free_cell(self, target_c: int, target_r: int, max_radius: int = 20) -> Optional[Tuple[int, int]]:
         costmap = self.grid_map.costmap
         width = self.grid_map.width
         height = self.grid_map.height
 
-        if 0 <= target_c < width and 0 <= target_r < height and costmap[target_r, target_c] < 200:
+        if 0 <= target_c < width and 0 <= target_r < height and costmap[target_r, target_c] < 250:
             return target_c, target_r
 
+        candidates = []
         for rad in range(1, max_radius + 1):
             for dc in range(-rad, rad + 1):
                 for dr in (-rad, rad):
                     nc = target_c + dc
                     nr = target_r + dr
-                    if 0 <= nc < width and 0 <= nr < height and costmap[nr, nc] < 200:
-                        return nc, nr
+                    if 0 <= nc < width and 0 <= nr < height and costmap[nr, nc] < 250:
+                        candidates.append((dc * dc + dr * dr, float(costmap[nr, nc]), (nc, nr)))
             for dr in range(-rad + 1, rad):
                 for dc in (-rad, rad):
                     nc = target_c + dc
                     nr = target_r + dr
-                    if 0 <= nc < width and 0 <= nr < height and costmap[nr, nc] < 200:
-                        return nc, nr
+                    if 0 <= nc < width and 0 <= nr < height and costmap[nr, nc] < 250:
+                        candidates.append((dc * dc + dr * dr, float(costmap[nr, nc]), (nc, nr)))
+            if candidates:
+                # Prioritize uninflated space (cost < 200) first, then closest distance, then lowest cost
+                candidates.sort(key=lambda item: (item[1] >= 200, item[0], item[1]))
+                return candidates[0][2]
         return None
 
     def plan(
@@ -131,25 +136,46 @@ class AStarPlanner:
         height = grid_map.height
         costmap = grid_map.costmap
 
-        start_c, start_r = grid_map.world_to_grid(*start_world)
+        raw_sc, raw_sr = grid_map.world_to_grid(*start_world)
         raw_gc, raw_gr = grid_map.world_to_grid(*goal_world)
 
-        if not (0 <= start_c < width and 0 <= start_r < height):
-            return None
+        # 1. Clamp start and goal to valid grid dimensions with safety margin
+        pad = 1
+        clamped_sc = max(pad, min(width - 1 - pad, raw_sc))
+        clamped_sr = max(pad, min(height - 1 - pad, raw_sr))
+        clamped_gc = max(pad, min(width - 1 - pad, raw_gc))
+        clamped_gr = max(pad, min(height - 1 - pad, raw_gr))
 
-        if costmap[start_r, start_c] >= 200:
-            start_cell = self.find_nearest_free_cell(start_c, start_r, max_radius=10)
-            if start_cell is None:
-                return None
-            start_c, start_r = start_cell
+        # 2. Resolve start cell if robot is parked inside a lethal obstacle (>= 250)
+        if costmap[clamped_sr, clamped_sc] >= 250:
+            start_cell = self.find_nearest_free_cell(clamped_sc, clamped_sr, max_radius=15)
+            if start_cell is not None:
+                start_c, start_r = start_cell
+            else:
+                start_c, start_r = clamped_sc, clamped_sr
+        else:
+            start_c, start_r = clamped_sc, clamped_sr
 
-        goal_cell = self.find_nearest_free_cell(raw_gc, raw_gr, max_radius=15)
+        # 3. Robust goal resolution: handles out-of-bounds clicks or obstacles
+        goal_cell = self.find_nearest_free_cell(clamped_gc, clamped_gr, max_radius=20)
+        if goal_cell is None:
+            # Raycast from clamped goal straight back to start to find first reachable free cell
+            line = grid_map.bresenham_line(clamped_gc, clamped_gr, start_c, start_r)
+            for c, r in line:
+                if 0 <= c < width and 0 <= r < height and costmap[r, c] < 250:
+                    goal_cell = (c, r)
+                    break
+
         if goal_cell is None:
             return None
         goal_c, goal_r = goal_cell
 
+        # 4. Handle start == goal cleanly
         if start_c == goal_c and start_r == goal_r:
-            return [grid_map.grid_to_world(start_c, start_r)]
+            return [
+                (round(start_world[0], 3), round(start_world[1], 3)),
+                (round(goal_world[0], 3), round(goal_world[1], 3))
+            ]
 
         start_idx = start_r * width + start_c
         goal_idx = goal_r * width + goal_c
@@ -168,7 +194,11 @@ class AStarPlanner:
             grid_path = self.smooth_grid_path(grid_path, costmap)
 
         grid_to_world = grid_map.grid_to_world
-        return [grid_to_world(c, r) for c, r in grid_path]
+        world_path = [grid_to_world(c, r) for c, r in grid_path]
+        if world_path:
+            world_path[0] = (round(start_world[0], 3), round(start_world[1], 3))
+            world_path[-1] = (round(goal_world[0], 3), round(goal_world[1], 3))
+        return world_path
 
     def _c_search(self, costmap: np.ndarray, width: int, height: int, start_idx: int, goal_idx: int) -> Optional[List[Tuple[int, int]]]:
         """C-accelerated search (0.1ms on ARM64)."""
@@ -264,10 +294,12 @@ class AStarPlanner:
                 if not (0 <= nc < width and 0 <= nr < height):
                     continue
                 n_idx = curr_idx + d_idx
-                if closed[n_idx] or mv[n_idx] >= 200:
+                val = mv[n_idx]
+                if closed[n_idx] or val >= 250:
                     continue
 
-                tentative_g = curr_g + 1.0
+                cost_penalty = (float(val) / 255.0) * 3.0 if val >= 150 else 0.0
+                tentative_g = curr_g + 1.0 + cost_penalty
                 if tentative_g < g_cost[n_idx]:
                     g_cost[n_idx] = tentative_g
                     parent[n_idx] = curr_idx
@@ -283,12 +315,14 @@ class AStarPlanner:
                 if not (0 <= nc < width and 0 <= nr < height):
                     continue
                 n_idx = curr_idx + d_idx
-                if closed[n_idx] or mv[n_idx] >= 200:
+                val = mv[n_idx]
+                if closed[n_idx] or val >= 250:
                     continue
-                if mv[curr_idx + o1] >= 200 or mv[curr_idx + o2] >= 200:
+                if mv[curr_idx + o1] >= 250 and mv[curr_idx + o2] >= 250:
                     continue
 
-                tentative_g = curr_g + sqrt2
+                cost_penalty = (float(val) / 255.0) * 3.0 if val >= 150 else 0.0
+                tentative_g = curr_g + sqrt2 + cost_penalty
                 if tentative_g < g_cost[n_idx]:
                     g_cost[n_idx] = tentative_g
                     parent[n_idx] = curr_idx
@@ -324,7 +358,7 @@ class AStarPlanner:
         cx, cy = x0, y0
 
         while True:
-            if costmap[cy, cx] >= 200:
+            if costmap[cy, cx] >= 240:
                 return False
             if cx == x1 and cy == y1:
                 return True

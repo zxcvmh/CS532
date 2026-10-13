@@ -131,9 +131,11 @@ int astar_c_search(
             int nr = curr_r + card_dr[k];
             if (nc < 0 || nc >= width || nr < 0 || nr >= height) continue;
             int n_idx = curr + card_didx[k];
-            if (closed[n_idx] || costmap[n_idx] >= 200) continue;
+            uint8_t val = costmap[n_idx];
+            if (closed[n_idx] || val >= 250) continue;
 
-            float tg = curr_g + 1.0f;
+            float penalty = (val >= 150) ? ((float)val / 255.0f) * 3.0f : 0.0f;
+            float tg = curr_g + 1.0f + penalty;
             if (tg < g_cost[n_idx]) {
                 g_cost[n_idx] = tg;
                 parent[n_idx] = curr;
@@ -150,11 +152,13 @@ int astar_c_search(
             int nr = curr_r + diag_dr[k];
             if (nc < 0 || nc >= width || nr < 0 || nr >= height) continue;
             int n_idx = curr + diag_didx[k];
-            if (closed[n_idx] || costmap[n_idx] >= 200) continue;
+            uint8_t val = costmap[n_idx];
+            if (closed[n_idx] || val >= 250) continue;
 
-            if (costmap[curr + diag_o1[k]] >= 200 || costmap[curr + diag_o2[k]] >= 200) continue;
+            if (costmap[curr + diag_o1[k]] >= 250 && costmap[curr + diag_o2[k]] >= 250) continue;
 
-            float tg = curr_g + SQRT2;
+            float penalty = (val >= 150) ? ((float)val / 255.0f) * 3.0f : 0.0f;
+            float tg = curr_g + SQRT2 + penalty;
             if (tg < g_cost[n_idx]) {
                 g_cost[n_idx] = tg;
                 parent[n_idx] = curr;
