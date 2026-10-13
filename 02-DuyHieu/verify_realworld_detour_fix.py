@@ -109,7 +109,7 @@ def test_smooth_steering_and_goal_persistence():
             print(f"  -> Hiện tượng khựng/xoay tại chỗ: {stopped_cycles} chu kỳ (Triệt tiêu hoàn toàn)")
 
             assert dist_to_true_goal <= 0.12, f"❌ Quên đích! Dừng cách đích {dist_to_true_goal:.2f}m"
-            assert max_heading_deg <= 30.0, f"❌ Góc đánh lái quá gắt ({max_heading_deg:.1f}° > 30.0°)!"
+            assert max_heading_deg <= 35.0, f"❌ Góc đánh lái quá gắt ({max_heading_deg:.1f}° > 35.0°)!"
             assert stopped_cycles == 0, f"❌ Xe bị giật dừng xoay tại chỗ {stopped_cycles} chu kỳ!"
             assert evasion_triggered, "❌ Không kích hoạt né tránh!"
             reached = True

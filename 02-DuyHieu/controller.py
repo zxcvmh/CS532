@@ -419,10 +419,14 @@ class PurePursuitController:
             # Open space fallback
             d_offset = lateral_offset if lateral_offset is not None else self.lateral_detour_offset
 
-        # 7. Adaptive longitudinal splice horizon (Gentle lane-change slope <= 22 degrees)
-        s_ramp = max(0.65, d_offset * 2.6)
-        s_plateau = max(0.20, obs_length + 0.08)
+        # 7. Adaptive longitudinal splice horizon (Smooth lane-change slope)
+        s_ramp = max(0.45, min(0.68, d_offset * 1.85))
+        s_plateau = max(0.18, min(0.45, obs_length + 0.05))
         rejoin_dist = s_ramp + s_plateau
+        if self.global_goal is not None:
+            dist_to_goal_from_blk = math.hypot(self.global_goal[0] - bx, self.global_goal[1] - by)
+            if dist_to_goal_from_blk > 0.20:
+                rejoin_dist = min(rejoin_dist, max(0.45, dist_to_goal_from_blk))
 
         rejoin_pt = (bx + rejoin_dist * u_fwd[0], by + rejoin_dist * u_fwd[1])
         p_start = (robot_x, robot_y)
