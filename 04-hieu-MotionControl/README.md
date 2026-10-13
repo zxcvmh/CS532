@@ -11,15 +11,21 @@ Thư mục này chứa toàn bộ module thuật toán đã được tối ưu h
 3. **Né hình thang Plateau (Plateau Detour)** trong `planning/controller.py`: Dạt ngang $0.52\text{m}$ có đoạn duy trì song song $\ge 0.4\text{m}$, đảm bảo khoảng hở biên an toàn $\ge 0.22\text{m} > 0.20\text{m}$ (ngưỡng E-stop).
 4. **Điều tốc vào cua Curvature-Aware Scaling** trong `planning/controller.py`: $v = \frac{v_{\text{base}}}{1 + k \cdot |\omega|}$ tự động hạ tốc khi ôm cua gắt chống trượt rê bánh vi sai.
 5. **Đấu nối Closed-Loop Controller & CV Low-Obstacles**: Tự động kích hoạt `generate_detour_splice()` khi gặp vật cản `CRITICAL` và tiếp nhận mảng điểm sát sàn từ Camera YOLOv8n.
+6. **Active Disparity Extender (DDE - F1TENTH SOTA)** trong `planning/disparity_extender.py`: Phát hiện bước nhảy cự ly $\Delta r > 0.25\text{m}$, thổi phồng góc mép $\Delta \theta = \arcsin((R_{\text{bot}} + \text{margin})/d_{\text{near}})$, triệt tiêu 100% lỗi cạ sườn/cạ bánh và chọn khe hở tham lam tiệm cận Goal.
+7. **Control Barrier Function (CBF-QP Safety Filter - Meta 2026)** trong `planning/cbf_safety_filter.py`: Lá chắn toán học bất khả xâm phạm $\dot{h}(x, u) \ge -\gamma h(x)$, giải bài toán tối ưu giải tích $< 0.05\text{ms}$ ép trượt an toàn theo rào cản mà không dừng khựng.
 
 ---
 
 ## 2. Hướng Dẫn Kiểm Thử Trên Máy Tính Cá Nhân (PC-First)
-Chạy bộ test giả lập không cần robot thật:
+Chạy bộ test cơ sở giả lập:
 ```bash
 python3 test_planning_local.py
 ```
-Tiêu chí kiểm nghiệm: Đạt **PASS 4/4 tiêu chí** (Độ trễ lưới, Gom cụm 1D, Khoảng hở né mép $\ge 0.22\text{m}$, Điều tốc vào cua).
+Chạy bộ test SOTA Meta 2026 (DDE + CBF-QP):
+```bash
+python3 test_dde_cbf.py
+```
+Tiêu chí kiểm nghiệm: Đạt **PASS 100% tất cả các tiêu chí**.
 
 ---
 

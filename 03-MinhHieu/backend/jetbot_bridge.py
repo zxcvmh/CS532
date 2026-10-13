@@ -19,6 +19,12 @@ import threading
 import ctypes
 import numpy as np
 
+# Import Floor IPM transformer for LiDAR blind spot compensation
+try:
+    from floor_ipm import FloorIPMTransformer
+except ImportError:
+    from .floor_ipm import FloorIPMTransformer
+
 # ─────────────────────────────────────────────────────────────
 # DEPENDENCY CHECKS
 # ─────────────────────────────────────────────────────────────
@@ -103,19 +109,39 @@ def read_ina219_battery():
 # ─────────────────────────────────────────────────────────────
 # CONFIGURATION
 # ─────────────────────────────────────────────────────────────
-SERVER_HOST = os.environ.get("DASHBOARD_HOST") or os.environ.get("DASHBOARD_IP") or "192.168.168.156"
-SERVER_PORT = int(os.environ.get("DASHBOARD_PORT", "8000"))
+SERVER_HOST = (
+    sys.argv[1] if len(sys.argv) > 1 and not sys.argv[1].startswith("-")
+    else (os.environ.get("DASHBOARD_HOST") or os.environ.get("DASHBOARD_IP") or "192.168.1.8")
+)
+SERVER_PORT = int(sys.argv[2]) if len(sys.argv) > 2 and sys.argv[2].isdigit() else int(os.environ.get("DASHBOARD_PORT", "8000"))
 WS_URL = f"ws://{SERVER_HOST}:{SERVER_PORT}/ws/robot"
 
 LIDAR_PORT = os.environ.get("LIDAR_PORT", "/dev/ttyUSB0")
 LIDAR_BAUDRATE = 230400
+LIDAR_YAW_OFFSET_DEG = float(os.environ.get("LIDAR_YAW_OFFSET", "0.0"))
+for _p in ("/home/jetbot/03-MinhHieu/test-hardware/robot_dynamics.json", "/home/jetbot/setup/robot_dynamics.json", "setup/robot_dynamics.json"):
+    try:
+        with open(_p, "r") as f:
+            _dyn = json.load(f)
+            LIDAR_YAW_OFFSET_DEG = float(_dyn.get("lidar_yaw_offset_deg", LIDAR_YAW_OFFSET_DEG))
+            break
+    except Exception:
+        pass
 
 CAMERA_WIDTH = 640
 CAMERA_HEIGHT = 480
 CAMERA_FPS = 20
 CAMERA_FLIP = int(os.environ.get("CAMERA_FLIP", "0"))  # Set CAMERA_FLIP=2 if upside down
 
-ENGINE_PATH = os.environ.get("YOLO_ENGINE", "/home/jetbot/yolov8n.engine")
+# Priority: YOLO26-n TensorRT Engine (2026), fallback to YOLOv8n
+ENGINE_CANDIDATES = [
+    os.environ.get("YOLO_ENGINE", ""),
+    "/home/jetbot/yolo26n.engine",
+    os.path.join(os.path.dirname(__file__), "yolo26n.engine"),
+    "/home/jetbot/yolov8n.engine",
+    os.path.join(os.path.dirname(__file__), "yolov8n.engine")
+]
+ENGINE_PATH = next((c for c in ENGINE_CANDIDATES if c and os.path.exists(c)), "/home/jetbot/yolo26n.engine")
 
 COCO_CLASSES = [
     "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat",
@@ -129,6 +155,10 @@ COCO_CLASSES = [
     "remote", "keyboard", "cell phone", "microwave", "oven", "toaster", "sink",
     "refrigerator", "book", "clock", "vase", "scissors", "teddy bear", "hair drier", "toothbrush"
 ]
+
+YOLO_CONF_THRESHOLD = float(os.environ.get("YOLO_CONF_THRESHOLD", "0.45"))
+DEFAULT_NAV_CLASSES = "person,chair,couch,backpack,suitcase,dog,cat"
+TARGET_CLASSES = set(filter(None, os.environ.get("YOLO_CLASSES", DEFAULT_NAV_CLASSES).split(",")))
 
 
 # ─────────────────────────────────────────────────────────────
@@ -215,6 +245,7 @@ class D500LidarThread(threading.Thread):
         self.baudrate = baudrate
         self.latest_scan = []  # list of [angle_deg, dist_meters]
         self.scan_cache = {}   # angle: (dist_m, timestamp)
+        self.cache_lock = threading.Lock()  # Mutex bảo vệ race condition đa luồng
         self.running = True
 
     def run(self):
@@ -261,25 +292,32 @@ class D500LidarThread(threading.Thread):
                         now = time.time()
 
                         # 12 measurement points (each 3 bytes: dist_lo, dist_hi, intensity)
+                        new_hits = []
                         for i in range(12):
                             offset = 6 + (i * 3)
                             dist_mm = packet[offset] | (packet[offset + 1] << 8)
                             raw_angle = (start_angle + (i * step)) % 360.0
                             dist_m = dist_mm / 1000.0
 
-                            # Invert angle to standard CCW mathematical coordinate frame
-                            angle_ccw = (360 - int(round(raw_angle))) % 360
+                            # Invert angle to standard CCW mathematical coordinate frame + apply hardware offset
+                            angle_ccw = (360 - int(round(raw_angle)) + int(round(LIDAR_YAW_OFFSET_DEG))) % 360
 
                             if 0.05 < dist_m < 12.0:
-                                self.scan_cache[angle_ccw] = (round(dist_m, 3), now)
+                                new_hits.append((angle_ccw, round(dist_m, 3), now))
+
+                        if new_hits:
+                            with self.cache_lock:
+                                for ang, dm, ts in new_hits:
+                                    self.scan_cache[ang] = (dm, ts)
 
                     # Flush 360° scan every 100ms, retaining points younger than 0.6s
                     now = time.time()
                     if now - last_flush_time >= 0.10:
-                        fresh_points = [
-                            [ang, dist] for ang, (dist, ts) in self.scan_cache.items()
-                            if now - ts < 0.6
-                        ]
+                        with self.cache_lock:
+                            fresh_points = [
+                                [ang, dist] for ang, (dist, ts) in self.scan_cache.items()
+                                if now - ts < 0.6
+                            ]
                         if len(fresh_points) > 15:
                             self.latest_scan = fresh_points
                         last_flush_time = now
@@ -302,7 +340,36 @@ class TensorRTYOLOThread(threading.Thread):
         self.lidar = lidar_thread
         self.engine_path = engine_path
         self.latest_detections = []
+        self.latest_low_obstacles = []
         self.running = True
+
+        # Khởi tạo Floor IPM Transformer bù điểm mù LiDAR
+        self.ipm = FloorIPMTransformer()
+        self.safety_margins = {
+            "person": {"front_m": 0.80, "side_m": 0.40, "back_m": 0.30},
+            "chair": 0.30,
+            "backpack": 0.20,
+            "bottle": 0.15,
+            "default": 0.25
+        }
+
+    def compute_dynamic_proxemics(self, azimuth_deg: float, cls_name: str):
+        c_lower = cls_name.lower()
+        margin_cfg = self.safety_margins.get(c_lower, self.safety_margins.get("default", 0.25))
+        if c_lower == "person":
+            if isinstance(margin_cfg, dict):
+                front_m = float(margin_cfg.get("front_m", 0.80))
+                side_m = float(margin_cfg.get("side_m", 0.40))
+                back_m = float(margin_cfg.get("back_m", 0.30))
+            else:
+                front_m, side_m, back_m = 0.80, 0.40, 0.30
+            theta_rad = math.radians(abs(azimuth_deg))
+            denom = math.sqrt((side_m * math.cos(theta_rad)) ** 2 + (front_m * math.sin(theta_rad)) ** 2)
+            effective = (front_m * side_m) / max(denom, 1e-6)
+            return round(effective, 2), {"front_m": front_m, "side_m": side_m, "back_m": back_m}
+        if isinstance(margin_cfg, (int, float)):
+            return float(margin_cfg), None
+        return 0.25, None
 
     def run(self):
         if os.environ.get("NO_YOLO") == "1":
@@ -313,7 +380,7 @@ class TensorRTYOLOThread(threading.Thread):
             print(f"[WARN] TensorRT engine not found at {self.engine_path}.")
             return
 
-        print(f"[INFO] Loading TensorRT YOLOv8n engine from {self.engine_path}...")
+        print(f"[INFO] Loading TensorRT YOLO engine from {self.engine_path}...")
         try:
             cudart = ctypes.CDLL('libcudart.so')
 
@@ -330,7 +397,7 @@ class TensorRTYOLOThread(threading.Thread):
             self.engine = engine
 
             context = engine.create_execution_context()
-            print("[OK] YOLOv8n TensorRT Engine active on GPU!")
+            print("[OK] YOLO TensorRT Engine active on GPU!")
 
             # Input: images (1, 3, 640, 640) float32
             # Output: output0 (1, 84, 8400) float32
@@ -369,91 +436,124 @@ class TensorRTYOLOThread(threading.Thread):
                     # Copy output from GPU (64-bit safe data_as)
                     cudart.cudaMemcpy(h_output.ctypes.data_as(ctypes.c_void_p), d_output, output_bytes, 2)
 
-                    # Parse predictions (1, 84, 8400) -> (8400, 84)
-                    preds = h_output[0].transpose(1, 0)
+                    # ── 1. GIẢI MÃ TENSOR VECTOR HÓA 100% NUMPY (Độ trễ < 1ms) ──
+                    preds = h_output[0].transpose(1, 0)  # (8400, 84)
+                    boxes_raw = preds[:, :4]
+                    scores_matrix = preds[:, 4:]
+
+                    class_ids = np.argmax(scores_matrix, axis=1)
+                    confidences = np.max(scores_matrix, axis=1)
+
+                    mask = confidences >= YOLO_CONF_THRESHOLD
                     boxes = []
-                    confidences = []
-                    class_ids = []
+                    filt_confs = []
+                    filt_cids = []
 
-                    for row in preds:
-                        cx, cy, w, h = row[:4]
-                        classes_scores = row[4:]
-                        class_id = int(np.argmax(classes_scores))
-                        max_score = float(classes_scores[class_id])
+                    if np.any(mask):
+                        f_boxes = boxes_raw[mask]
+                        filt_confs = confidences[mask].tolist()
+                        filt_cids = class_ids[mask].tolist()
 
-                        # Sensitivity threshold set to 0.20
-                        if max_score > 0.20:
-                            x1 = int((cx - w / 2) * (w_orig / 640.0))
-                            y1 = int((cy - h / 2) * (h_orig / 640.0))
-                            box_w = int(w * (w_orig / 640.0))
-                            box_h = int(h * (h_orig / 640.0))
-                            boxes.append([x1, y1, box_w, box_h])
-                            confidences.append(max_score)
-                            class_ids.append(class_id)
+                        scale_x = w_orig / 640.0
+                        scale_y = h_orig / 640.0
+                        cx = f_boxes[:, 0]
+                        cy = f_boxes[:, 1]
+                        bw = f_boxes[:, 2]
+                        bh = f_boxes[:, 3]
+
+                        x1 = np.clip((cx - bw / 2.0) * scale_x, 0, w_orig - 1).astype(np.int32)
+                        y1 = np.clip((cy - bh / 2.0) * scale_y, 0, h_orig - 1).astype(np.int32)
+                        box_w = np.clip(bw * scale_x, 1, w_orig).astype(np.int32)
+                        box_h = np.clip(bh * scale_y, 1, h_orig).astype(np.int32)
+                        boxes = np.stack([x1, y1, box_w, box_h], axis=1).tolist()
 
                     dets = []
                     if boxes:
-                        indices = cv2.dnn.NMSBoxes(boxes, confidences, 0.20, 0.45)
+                        indices = cv2.dnn.NMSBoxes(boxes, filt_confs, YOLO_CONF_THRESHOLD, 0.45)
                         now_lidar = time.time()
-                        for idx in indices:
-                            i = int(idx[0] if isinstance(idx, (list, np.ndarray)) else idx)
-                            bx, by, bw, bh = boxes[i]
-                            cls_idx = class_ids[i]
-                            cname = COCO_CLASSES[cls_idx] if cls_idx < len(COCO_CLASSES) else f"obj_{cls_idx}"
+                        if len(indices) > 0:
+                            indices = np.array(indices).flatten()
+                            for idx in indices:
+                                i = int(idx)
+                                cls_idx = filt_cids[i]
+                                cname = COCO_CLASSES[cls_idx] if cls_idx < len(COCO_CLASSES) else f"obj_{cls_idx}"
 
-                            # ── SENSOR FUSION: Camera Angle + 2D LiDAR Laser Distance ──
-                            # Camera horizontal FOV ~60° (+-30°). Center (320px) = 0°.
-                            # Left (0px) = +30° (CCW). Right (640px) = -30° (CW).
-                            x_left = bx
-                            x_right = bx + bw
-                            ang_left = ((320.0 - x_left) / 320.0) * 30.0
-                            ang_right = ((320.0 - x_right) / 320.0) * 30.0
-                            min_ang = min(ang_left, ang_right) - 4.0
-                            max_ang = max(ang_left, ang_right) + 4.0
+                                # Lọc bỏ các vật thể không có ý nghĩa dẫn đường / né tránh
+                                if TARGET_CLASSES and cname not in TARGET_CLASSES:
+                                    continue
 
-                            # Look up real LiDAR points in this bounding box angular window
-                            lidar_hits = []
-                            if self.lidar and self.lidar.scan_cache:
-                                for raw_ang, (dist_m, ts) in self.lidar.scan_cache.items():
-                                    if now_lidar - ts > 0.8:
-                                        continue
-                                    # Convert 0..360 to signed -180..180 where 0 is FRONT
-                                    signed_ang = (raw_ang - 360.0) if raw_ang > 180.0 else float(raw_ang)
-                                    if min_ang <= signed_ang <= max_ang:
-                                        if 0.12 <= dist_m <= 10.0:
-                                            lidar_hits.append(dist_m)
+                                bx, by, bw, bh = boxes[i]
 
-                            if lidar_hits:
-                                # Laser distance (cm accuracy)
-                                dist = round(min(lidar_hits), 2)
-                            else:
-                                # Optical fallback
-                                dist = round(220.0 / max(bh, 1), 2)
+                                # ── SENSOR FUSION: Camera Angle + 2D LiDAR Laser Distance ──
+                                x_center = bx + bw / 2.0
+                                # Góc phương vị chuẩn Robot Frame (CCW): Trái (+), Phải (-) theo FOV 160°
+                                azimuth_deg = round((((w_orig / 2.0) - x_center) / (w_orig / 2.0)) * 80.0, 1)
 
-                            # Calculate horizontal azimuth angle: center 320px is 0°, left is positive, right is negative
-                            cx = bx + bw / 2.0
-                            azimuth_deg = round(((320.0 - cx) / 320.0) * 30.0, 2)
+                                # Cửa sổ góc quét LiDAR tương ứng
+                                min_ang = azimuth_deg - 5.0
+                                max_ang = azimuth_deg + 5.0
 
-                            dets.append({
-                                "class": cname,
-                                "class_name": cname,
-                                "confidence": round(confidences[i], 2),
-                                "bbox": [bx, by, bx + bw, by + bh],
-                                "distance": dist,
-                                "azimuth_deg": azimuth_deg
-                            })
+                                lidar_hits = []
+                                if self.lidar and hasattr(self.lidar, "scan_cache"):
+                                    with self.lidar.cache_lock:
+                                        cache_snapshot = list(self.lidar.scan_cache.items())
+                                    for raw_ang, (dist_m, ts) in cache_snapshot:
+                                        if now_lidar - ts > 0.8:
+                                            continue
+                                        signed_ang = (raw_ang - 360.0) if raw_ang > 180.0 else float(raw_ang)
+                                        if min_ang <= signed_ang <= max_ang:
+                                            if 0.12 <= dist_m <= 10.0:
+                                                lidar_hits.append(dist_m)
+
+                                if lidar_hits:
+                                    dist = round(min(lidar_hits), 2)
+                                else:
+                                    # IPM Metric distance estimation từ điểm chạm đáy mặt sàn
+                                    est_x, est_y = self.ipm.image_pixel_to_robot_metric(x_center, by + bh)
+                                    if est_x < 900.0:
+                                        dist = round(math.hypot(est_x, est_y), 2)
+                                    else:
+                                        dist = round(220.0 / max(bh, 1), 2)
+
+                                margin, prox_env = self.compute_dynamic_proxemics(azimuth_deg, cname)
+
+                                det_obj = {
+                                    "class_id": cls_idx,
+                                    "class_name": cname,
+                                    "confidence": round(filt_confs[i], 2),
+                                    "azimuth_deg": azimuth_deg,
+                                    "estimated_dist": dist,
+                                    "safety_margin_m": margin,
+                                    "bbox": [bx, by, bx + bw, by + bh]
+                                }
+                                if prox_env is not None:
+                                    det_obj["proxemics"] = prox_env
+
+                                dets.append(det_obj)
 
                     self.latest_detections = dets
+
+                    # ── 2. TRÍCH XUẤT VẬT CẢN SÁT SÀN BÙ ĐIỂM MÙ LIDAR (Floor IPM) ──
+                    roi_y = int(h_orig * 0.70)
+                    roi = frame[roi_y:h_orig, 0:w_orig]
+                    gray_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+                    blurred = cv2.GaussianBlur(gray_roi, (5, 5), 0)
+                    _, bin_obs = cv2.threshold(blurred, 150, 255, cv2.THRESH_BINARY_INV)
+                    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+                    cleaned = cv2.morphologyEx(bin_obs, cv2.MORPH_OPEN, kernel)
+                    full_mask = np.zeros((h_orig, w_orig), dtype=np.uint8)
+                    full_mask[roi_y:h_orig, 0:w_orig] = cleaned
+                    self.latest_low_obstacles = self.ipm.extract_low_obstacles_from_mask(full_mask)[:4]
 
                     # Terminal visual feedback when objects detected
                     if dets:
                         now_t = time.time()
                         if now_t - last_log_time > 1.2:
-                            names = ", ".join(f"{d['class']} ({int(d['confidence']*100)}% | {d['distance']}m | {d['azimuth_deg']}°)" for d in dets[:3])
+                            names = ", ".join(f"{d['class_name']} ({int(d['confidence']*100)}% | {d['estimated_dist']}m | {d['azimuth_deg']}° | Bubble: {d['safety_margin_m']}m)" for d in dets[:3])
                             print(f"[AI YOLO + LiDAR] {names}")
                             last_log_time = now_t
 
-                    time.sleep(0.10)  # ~10 FPS inference rate (balanced load)
+                    time.sleep(0.04)  # ~25 FPS inference rate
 
                 except Exception as e:
                     time.sleep(0.05)
@@ -483,20 +583,25 @@ def set_raw_motor_speeds(left_norm: float, right_norm: float):
     hw_left = -left_norm
     hw_right = -right_norm
 
-    # Scale down motor speed so robot moves gently (~38% duty cycle)
-    SPEED_FACTOR = float(os.environ.get("SPEED_FACTOR", "0.38"))
+    # Scale down motor speed (default 0.32 for gentle, controllable driving and real-time obstacle evasion)
+    SPEED_FACTOR = float(os.environ.get("SPEED_FACTOR", "0.32"))
+    # Minimum PWM threshold to overcome static friction (min_drive_speed: 0.18-0.20 from robot_dynamics.json)
+    MIN_PWM = 40          # ~0.16 * 255 = 40 PWM (gentle roll)
+    MIN_JETBOT_SPEED = 0.16
 
     if HAS_MOTOR:
         try:
             if left_motor_dev and right_motor_dev:
-                left_speed = int(abs(hw_left) * 255 * SPEED_FACTOR)
-                right_speed = int(abs(hw_right) * 255 * SPEED_FACTOR)
+                left_speed = int(min(255, max(MIN_PWM, abs(hw_left) * 255 * SPEED_FACTOR))) if abs(left_norm) > 0.02 else 0
+                right_speed = int(min(255, max(MIN_PWM, abs(hw_right) * 255 * SPEED_FACTOR))) if abs(right_norm) > 0.02 else 0
                 left_motor_dev.setSpeed(left_speed)
                 right_motor_dev.setSpeed(right_speed)
                 left_motor_dev.run(1 if hw_left >= 0 else 2)
                 right_motor_dev.run(1 if hw_right >= 0 else 2)
             elif 'jetbot_robot' in globals() and jetbot_robot:
-                jetbot_robot.set_motors(hw_left * SPEED_FACTOR, hw_right * SPEED_FACTOR)
+                cmd_l = math.copysign(max(MIN_JETBOT_SPEED, abs(hw_left) * SPEED_FACTOR), hw_left) if abs(left_norm) > 0.02 else 0.0
+                cmd_r = math.copysign(max(MIN_JETBOT_SPEED, abs(hw_right) * SPEED_FACTOR), hw_right) if abs(right_norm) > 0.02 else 0.0
+                jetbot_robot.set_motors(cmd_l, cmd_r)
         except Exception as e:
             print(f"[ERROR] Motor drive: {e}")
     else:
@@ -508,7 +613,7 @@ def set_motor_speeds(linear: float, angular: float):
     Standard differential drive equations without double negation.
     """
     track_width = 0.115
-    max_speed = 0.5
+    max_speed = 0.20  # Max safe linear velocity matching min_drive_speed requirement (0.18 - 0.20 m/s)
 
     left = linear - (angular * track_width / 2.0)
     right = linear + (angular * track_width / 2.0)
@@ -564,6 +669,7 @@ async def bridge_loop(camera: CSICameraThread, lidar: D500LidarThread, yolo: Ten
                             "camera": camera.latest_jpeg_b64,
                             "lidar": lidar.latest_scan,
                             "detections": yolo.latest_detections,
+                            "low_obstacles": getattr(yolo, "latest_low_obstacles", []),
                             "battery": current_bat,
                             "yolo_active": HAS_TRT and getattr(yolo, "engine", None) is not None
                         }
@@ -620,16 +726,19 @@ async def bridge_loop(camera: CSICameraThread, lidar: D500LidarThread, yolo: Ten
 # ENTRY POINT
 # ─────────────────────────────────────────────────────────────
 def main():
-    global WS_URL
-    if len(sys.argv) > 1:
-        ip = sys.argv[1]
-        WS_URL = f"ws://{ip}:{SERVER_PORT}/ws/robot"
+    global WS_URL, SERVER_HOST, SERVER_PORT
+    if len(sys.argv) > 1 and not sys.argv[1].startswith("-"):
+        SERVER_HOST = sys.argv[1]
+    if len(sys.argv) > 2 and sys.argv[2].isdigit():
+        SERVER_PORT = int(sys.argv[2])
+    WS_URL = f"ws://{SERVER_HOST}:{SERVER_PORT}/ws/robot"
 
     print("=" * 65)
     print("  NVIDIA JETBOT HARDWARE BRIDGE")
     print(f"  Camera:  CSI (cáp dẹt) GStreamer (flip={CAMERA_FLIP})")
     print(f"  LiDAR:   D500 @ {LIDAR_PORT} (baud {LIDAR_BAUDRATE}, 360° Cache)")
-    print(f"  AI:      TensorRT YOLOv8n ({ENGINE_PATH})")
+    model_tag = os.path.basename(ENGINE_PATH).replace(".engine", "").upper()
+    print(f"  AI:      TensorRT Engine [{model_tag}] ({ENGINE_PATH})")
     print(f"  Target:  {WS_URL}")
     print("=" * 65)
 

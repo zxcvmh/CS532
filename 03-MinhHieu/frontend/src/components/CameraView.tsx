@@ -231,7 +231,7 @@ export default function CameraView({
           </div>
 
           <div className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-gray-50 dark:bg-[#1c1c1c] border border-gray-200/60 dark:border-[#262626] text-xs font-mono text-[#6e6e73] dark:text-[#9ca3af]">
-            <span>YOLOv8n:</span>
+            <span>YOLO26-n:</span>
             <span className="text-[#34c759] dark:text-[#4ade80] font-bold">~15 FPS</span>
           </div>
         </div>

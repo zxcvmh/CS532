@@ -75,7 +75,7 @@ export default function DeviceInspector({
     },
     {
       id: 'tensorrt',
-      name: 'YOLOv8n TensorRT FP16 Engine',
+      name: 'YOLO26-n TensorRT FP16 Engine',
       category: language === 'vi' ? 'Tăng Tốc AI Nhúng' : 'AI Acceleration',
       interfacePort: 'NVIDIA GPU CUDA 128-core',
       specs: 'Inference ~19.7 FPS (~50ms latency)',

@@ -33,8 +33,10 @@ frontend/dist/
 frontend/node_modules/
 dist/
 
-# Jetson Heavy Engines (Rebuild per hardware target)
+# Jetson Heavy Engines & Root Temp Weights (Rebuild per hardware target)
 *.engine
+/yolo11n.*
+/yolo26n.*
 
 # Environment & Credentials
 .env
