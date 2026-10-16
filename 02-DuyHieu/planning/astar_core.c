@@ -134,8 +134,7 @@ int astar_c_search(
             uint8_t val = costmap[n_idx];
             if (closed[n_idx] || val >= 250) continue;
 
-            float ratio = ((float)val / 255.0f);
-            float penalty = ratio * ratio * 8.0f;
+            float penalty = (val >= 150) ? ((float)val / 255.0f) * 3.0f : 0.0f;
             float tg = curr_g + 1.0f + penalty;
             if (tg < g_cost[n_idx]) {
                 g_cost[n_idx] = tg;
@@ -158,8 +157,7 @@ int astar_c_search(
 
             if (costmap[curr + diag_o1[k]] >= 250 && costmap[curr + diag_o2[k]] >= 250) continue;
 
-            float ratio = ((float)val / 255.0f);
-            float penalty = ratio * ratio * 8.0f;
+            float penalty = (val >= 150) ? ((float)val / 255.0f) * 3.0f : 0.0f;
             float tg = curr_g + SQRT2 + penalty;
             if (tg < g_cost[n_idx]) {
                 g_cost[n_idx] = tg;

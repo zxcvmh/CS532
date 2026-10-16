@@ -17,7 +17,6 @@ Architecture based on modern Nav2 SmacPlanner2D & embedded robotics principles (
 import os
 import math
 import heapq
-import platform
 from typing import List, Tuple, Optional
 import numpy as np
 
@@ -38,20 +37,10 @@ class Node:
         return self.f < other.f
 
 
-# Default physical arena boundaries for CS532 JetBot 2m x 1m testbed (min_x, max_x, min_y, max_y)
-DEFAULT_ARENA_BOUNDS: Tuple[float, float, float, float] = (-0.2, 2.2, -0.8, 0.8)
-
-
 class AStarPlanner:
-    def __init__(
-        self,
-        grid_map: OccupancyGridMap,
-        heuristic_weight: float = 1.15,
-        arena_bounds: Optional[Tuple[float, float, float, float]] = None
-    ):
+    def __init__(self, grid_map: OccupancyGridMap, heuristic_weight: float = 1.15):
         self.grid_map = grid_map
         self.h_weight = float(heuristic_weight)
-        self.arena_bounds = arena_bounds
         self.SQRT2 = 1.41421356
 
         self.motions = (
@@ -71,18 +60,7 @@ class AStarPlanner:
 
     def _init_c_engine(self):
         """Attempts to load pre-compiled C-acceleration shared library."""
-        arch = platform.machine().lower()
-        so_names = [
-            f"libastar_core_{arch}.so",
-            "libastar_core.so",
-            "astar_core.so",
-            "libastar.so"
-        ]
-        if "arm" in arch or "aarch64" in arch:
-            so_names.insert(0, "libastar_core_arm64.so")
-        elif "x86_64" in arch or "amd64" in arch:
-            so_names.insert(0, "libastar_core_x86_64.so")
-
+        so_names = ["libastar_core.so", "astar_core.so", "libastar.so"]
         base_dir = os.path.dirname(os.path.abspath(__file__))
         for name in so_names:
             so_path = os.path.join(base_dir, name)
@@ -147,12 +125,7 @@ class AStarPlanner:
         self,
         start_world: Tuple[float, float],
         goal_world: Tuple[float, float],
-        smooth: bool = True,
-        max_time_sec: float = 10.0,
-        max_expansions: int = 25000,
-        robot_theta: Optional[float] = None,
-        *args,
-        **kwargs
+        smooth: bool = True
     ) -> Optional[List[Tuple[float, float]]]:
         """
         Computes an optimal, collision-free global path from start_world to goal_world.
@@ -172,35 +145,6 @@ class AStarPlanner:
         clamped_sr = max(pad, min(height - 1 - pad, raw_sr))
         clamped_gc = max(pad, min(width - 1 - pad, raw_gc))
         clamped_gr = max(pad, min(height - 1 - pad, raw_gr))
-
-        # 1. Enforce strict physical ARENA_BOUNDS (e.g. 2m x 1m testbed or 5m x 5m room)
-        bounds = self.arena_bounds
-        if bounds is None:
-            bounds = getattr(grid_map, "arena_bounds", DEFAULT_ARENA_BOUNDS)
-        if bounds is None:
-            bounds = DEFAULT_ARENA_BOUNDS
-
-        wall_margin = 0.08  # 8cm physical standoff buffer inside arena walls
-        sx_c = max(bounds[0] + wall_margin, min(bounds[1] - wall_margin, start_world[0]))
-        sy_c = max(bounds[2] + wall_margin, min(bounds[3] - wall_margin, start_world[1]))
-        gx_c = max(bounds[0] + wall_margin, min(bounds[1] - wall_margin, goal_world[0]))
-        gy_c = max(bounds[2] + wall_margin, min(bounds[3] - wall_margin, goal_world[1]))
-
-        raw_sc, raw_sr = grid_map.world_to_grid(sx_c, sy_c)
-        raw_gc, raw_gr = grid_map.world_to_grid(gx_c, gy_c)
-
-        pad = 1
-        c_min, r_min = grid_map.world_to_grid(bounds[0], bounds[2])
-        c_max, r_max = grid_map.world_to_grid(bounds[1], bounds[3])
-        c_low = max(pad, min(width - 1 - pad, min(c_min, c_max)))
-        c_high = max(pad, min(width - 1 - pad, max(c_min, c_max)))
-        r_low = max(pad, min(height - 1 - pad, min(r_min, r_max)))
-        r_high = max(pad, min(height - 1 - pad, max(r_min, r_max)))
-
-        clamped_sc = max(c_low, min(c_high, raw_sc))
-        clamped_sr = max(r_low, min(r_high, raw_sr))
-        clamped_gc = max(c_low, min(c_high, raw_gc))
-        clamped_gr = max(r_low, min(r_high, raw_gr))
 
         # 2. Resolve start cell if robot is parked inside a lethal obstacle (>= 250)
         if costmap[clamped_sr, clamped_sc] >= 250:
@@ -229,50 +173,31 @@ class AStarPlanner:
         # 4. Handle start == goal cleanly
         if start_c == goal_c and start_r == goal_r:
             return [
-                (round(sx_c, 3), round(sy_c, 3)),
-                (round(gx_c, 3), round(gy_c, 3))
+                (round(start_world[0], 3), round(start_world[1], 3)),
+                (round(goal_world[0], 3), round(goal_world[1], 3))
             ]
 
         start_idx = start_r * width + start_c
         goal_idx = goal_r * width + goal_c
 
-        # Mask costmap outside arena bounds with lethal barrier (254) so A* NEVER steps outside arena!
-        search_costmap = costmap.copy()
-        search_costmap[:r_low, :] = 254
-        search_costmap[r_high + 1:, :] = 254
-        search_costmap[:, :c_low] = 254
-        search_costmap[:, c_high + 1:] = 254
-
         # Dispatch: C-engine if loaded, else pure Python
         if self._c_lib is not None:
-            grid_path = self._c_search(search_costmap, width, height, start_idx, goal_idx)
+            grid_path = self._c_search(costmap, width, height, start_idx, goal_idx)
         else:
-            grid_path = self._py_search(
-                search_costmap, width, height, start_c, start_r, goal_c, goal_r, start_idx, goal_idx,
-                bounds=(c_low, c_high, r_low, r_high)
-            )
+            grid_path = self._py_search(costmap, width, height, start_c, start_r, goal_c, goal_r, start_idx, goal_idx)
 
         if grid_path is None or len(grid_path) == 0:
             return None
 
         # Reverse Greedy Lookahead Path Smoothing
         if smooth and len(grid_path) > 2:
-            grid_path = self.smooth_grid_path(grid_path, costmap, max_cost=210)
+            grid_path = self.smooth_grid_path(grid_path, costmap)
 
         grid_to_world = grid_map.grid_to_world
         world_path = [grid_to_world(c, r) for c, r in grid_path]
         if world_path:
-            world_path[0] = (round(sx_c, 3), round(sy_c, 3))
-            if costmap[clamped_gr, clamped_gc] < 250:
-                world_path[-1] = (round(gx_c, 3), round(gy_c, 3))
-
-            # Strict ARENA_BOUNDS clamp for every intermediate waypoint in world coordinates
-            bounded_wpath = []
-            for px, py in world_path:
-                cpx = max(bounds[0] + 0.05, min(bounds[1] - 0.05, px))
-                cpy = max(bounds[2] + 0.05, min(bounds[3] - 0.05, py))
-                bounded_wpath.append((round(cpx, 3), round(cpy, 3)))
-            world_path = bounded_wpath
+            world_path[0] = (round(start_world[0], 3), round(start_world[1], 3))
+            world_path[-1] = (round(goal_world[0], 3), round(goal_world[1], 3))
         return world_path
 
     def _c_search(self, costmap: np.ndarray, width: int, height: int, start_idx: int, goal_idx: int) -> Optional[List[Tuple[int, int]]]:
@@ -308,17 +233,14 @@ class AStarPlanner:
         goal_c: int,
         goal_r: int,
         start_idx: int,
-        goal_idx: int,
-        bounds: Optional[Tuple[int, int, int, int]] = None
+        goal_idx: int
     ) -> Optional[List[Tuple[int, int]]]:
         """
         High-performance pure Python search:
         - Memoryview byte indexing (zero numpy wrapper allocations)
         - Separated cardinal & diagonal loops (halves corner checks)
         - Weighted octile heuristic (w = 1.15) for bounded-suboptimal fast convergence
-        - Strict arena bounding: never expands outside (c_low, c_high, r_low, r_high)
         """
-        b_c_low, b_c_high, b_r_low, b_r_high = bounds if bounds is not None else (0, width - 1, 0, height - 1)
         total_cells = width * height
         g_cost = [float('inf')] * total_cells
         parent = [-1] * total_cells
@@ -369,15 +291,14 @@ class AStarPlanner:
             for d_idx, dc, dr in cardinals:
                 nc = curr_c + dc
                 nr = curr_r + dr
-                if not (b_c_low <= nc <= b_c_high and b_r_low <= nr <= b_r_high):
+                if not (0 <= nc < width and 0 <= nr < height):
                     continue
                 n_idx = curr_idx + d_idx
                 val = mv[n_idx]
                 if closed[n_idx] or val >= 250:
                     continue
 
-                cost_ratio = float(val) / 255.0
-                cost_penalty = cost_ratio * cost_ratio * 8.0
+                cost_penalty = (float(val) / 255.0) * 3.0 if val >= 150 else 0.0
                 tentative_g = curr_g + 1.0 + cost_penalty
                 if tentative_g < g_cost[n_idx]:
                     g_cost[n_idx] = tentative_g
@@ -391,7 +312,7 @@ class AStarPlanner:
             for d_idx, dc, dr, o1, o2 in diagonals:
                 nc = curr_c + dc
                 nr = curr_r + dr
-                if not (b_c_low <= nc <= b_c_high and b_r_low <= nr <= b_r_high):
+                if not (0 <= nc < width and 0 <= nr < height):
                     continue
                 n_idx = curr_idx + d_idx
                 val = mv[n_idx]
@@ -400,8 +321,7 @@ class AStarPlanner:
                 if mv[curr_idx + o1] >= 250 and mv[curr_idx + o2] >= 250:
                     continue
 
-                cost_ratio = float(val) / 255.0
-                cost_penalty = cost_ratio * cost_ratio * 8.0
+                cost_penalty = (float(val) / 255.0) * 3.0 if val >= 150 else 0.0
                 tentative_g = curr_g + sqrt2 + cost_penalty
                 if tentative_g < g_cost[n_idx]:
                     g_cost[n_idx] = tentative_g
@@ -424,7 +344,7 @@ class AStarPlanner:
         return grid_path
 
     @staticmethod
-    def _is_line_free(costmap: np.ndarray, x0: int, y0: int, x1: int, y1: int, max_cost: int = 210) -> bool:
+    def _is_line_free(costmap: np.ndarray, x0: int, y0: int, x1: int, y1: int) -> bool:
         """Inline Bresenham raycasting check directly on costmap."""
         h, w = costmap.shape
         if not (0 <= x0 < w and 0 <= y0 < h and 0 <= x1 < w and 0 <= y1 < h):
@@ -438,7 +358,7 @@ class AStarPlanner:
         cx, cy = x0, y0
 
         while True:
-            if costmap[cy, cx] >= max_cost:
+            if costmap[cy, cx] >= 240:
                 return False
             if cx == x1 and cy == y1:
                 return True
@@ -450,7 +370,7 @@ class AStarPlanner:
                 err += dx
                 cy += sy
 
-    def smooth_grid_path(self, path: List[Tuple[int, int]], costmap: np.ndarray, max_cost: int = 210) -> List[Tuple[int, int]]:
+    def smooth_grid_path(self, path: List[Tuple[int, int]], costmap: np.ndarray) -> List[Tuple[int, int]]:
         """Reverse Greedy Lookahead Path Smoothing."""
         n = len(path)
         if n <= 2:
@@ -465,7 +385,7 @@ class AStarPlanner:
             furthest = curr_idx + 1
             for target_idx in range(n - 1, curr_idx + 1, -1):
                 p_target = path[target_idx]
-                if is_line_free(costmap, p0[0], p0[1], p_target[0], p_target[1], max_cost):
+                if is_line_free(costmap, p0[0], p0[1], p_target[0], p_target[1]):
                     furthest = target_idx
                     break
             smoothed.append(path[furthest])
@@ -473,52 +393,14 @@ class AStarPlanner:
 
         return smoothed
 
-    def has_line_of_sight(self, p1: Tuple[float, float], p2: Tuple[float, float], max_cost: int = 250) -> bool:
+    def has_line_of_sight(self, p1: Tuple[float, float], p2: Tuple[float, float]) -> bool:
         c0, r0 = self.grid_map.world_to_grid(*p1)
         c1, r1 = self.grid_map.world_to_grid(*p2)
-        return self._is_line_free(self.grid_map.costmap, c0, r0, c1, r1, max_cost)
+        return self._is_line_free(self.grid_map.costmap, c0, r0, c1, r1)
 
-    def chaikin_smooth(self, path: List[Tuple[float, float]], iterations: int = 2) -> List[Tuple[float, float]]:
-        """
-        Chaikin's Corner-Cutting algorithm for C1-continuous, soft and smooth curves.
-        Transforms sharp polyline corners into gentle, curvature-continuous arcs.
-        Start and goal endpoints remain strictly fixed.
-        Checks costmap clearance to ensure smoothed path never intersects lethal obstacles.
-        """
-        if len(path) <= 2:
-            return path
-
-        smoothed = list(path)
-        costmap = getattr(self.grid_map, "costmap", None)
-
-        for _ in range(iterations):
-            new_pts = [smoothed[0]]
-            for i in range(len(smoothed) - 1):
-                p0 = smoothed[i]
-                p1 = smoothed[i + 1]
-
-                q = (0.75 * p0[0] + 0.25 * p1[0], 0.75 * p0[1] + 0.25 * p1[1])
-                r = (0.25 * p0[0] + 0.75 * p1[0], 0.25 * p0[1] + 0.75 * p1[1])
-
-                if costmap is not None:
-                    qc, qr = self.grid_map.world_to_grid(q[0], q[1])
-                    rc, rr = self.grid_map.world_to_grid(r[0], r[1])
-                    if self.grid_map.is_inside(qc, qr) and costmap[qr, qc] >= 253:
-                        q = p0
-                    if self.grid_map.is_inside(rc, rr) and costmap[rr, rc] >= 253:
-                        r = p1
-
-                new_pts.append(q)
-                new_pts.append(r)
-            new_pts.append(smoothed[-1])
-            smoothed = new_pts
-
-        return smoothed
-
-    def smooth_path(self, path: List[Tuple[float, float]], max_cost: int = 250) -> List[Tuple[float, float]]:
+    def smooth_path(self, path: List[Tuple[float, float]]) -> List[Tuple[float, float]]:
         if len(path) <= 2:
             return path
         grid_path = [self.grid_map.world_to_grid(*p) for p in path]
-        sm = self.smooth_grid_path(grid_path, self.grid_map.costmap, max_cost)
-        world_pts = [self.grid_map.grid_to_world(c, r) for c, r in sm]
-        return self.chaikin_smooth(world_pts, iterations=2)
+        sm = self.smooth_grid_path(grid_path, self.grid_map.costmap)
+        return [self.grid_map.grid_to_world(c, r) for c, r in sm]

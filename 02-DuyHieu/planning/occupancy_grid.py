@@ -12,10 +12,7 @@ Academic Standard (2024-2026 IEEE Robotics & Autonomous Systems):
 =============================================================================
 """
 
-import time
 import math
-import os
-import json
 import numpy as np
 from typing import List, Tuple, Optional, Any
 
@@ -47,113 +44,22 @@ class OccupancyGridMap:
         self.origin_x = origin_x
         self.origin_y = origin_y
 
-        # Log-odds update values: accelerated free-space clearing
-        self.L_FREE = -1.25
+        # Log-odds update values
+        self.L_FREE = -0.85
         self.L_OCC = 1.38
         self.L_MIN = -5.0
         self.L_MAX = 5.0
         self.log_odds = np.zeros((height, width), dtype=np.float32)
 
-        # Inflation parameters: compact safety buffer (0.08m)
-        self.robot_radius = 0.06
-        self.inflation_radius = 0.08
-        self.inflation_cells = max(1, int(round(self.inflation_radius / self.resolution)))
+        # Inflation parameters
+        self.robot_radius = 0.12
+        self.inflation_radius = 0.25
+        self.inflation_cells = max(2, int(round(self.inflation_radius / self.resolution)))
         self._inflation_mask = self._create_circular_mask(self.inflation_cells)
         self.costmap = np.zeros((height, width), dtype=np.uint8)
-        self.dist_m: Optional[np.ndarray] = None
 
-        # Track active social bubbles for human-aware navigation with TTL
+        # Track active social bubbles for human-aware navigation
         self.social_bubbles: List[Tuple[float, float, float]] = []
-        self.social_bubbles_ts: float = 0.0
-        self.social_bubble_ttl_sec: float = 1.5
-
-        # Track active dynamic/segmented obstacle clusters
-        self.active_clusters: List[Tuple[float, float, float]] = []
-
-        # Anchor Map Locking mechanism
-        self.anchor_map_locked: bool = False
-        self._anchor_log_odds: Optional[np.ndarray] = None
-
-        # Physical arena boundaries
-        self.arena_bounds: Optional[Tuple[float, float, float, float]] = None
-        self.load_dynamics_config()
-
-    def load_dynamics_config(self, config_path: Optional[str] = None):
-        """Loads tested arena configuration from robot_dynamics.json."""
-        if config_path is None:
-            search_paths = [
-                os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", "setup", "robot_dynamics.json"),
-                os.path.join(os.path.dirname(__file__), "..", "..", "setup", "robot_dynamics.json"),
-                os.path.join(os.path.dirname(__file__), "..", "setup", "robot_dynamics.json"),
-                os.path.join(os.path.dirname(__file__), "robot_dynamics.json"),
-                os.path.expanduser("~/setup/robot_dynamics.json"),
-                os.path.expanduser("~/CS532-main/setup/robot_dynamics.json"),
-            ]
-            for p in search_paths:
-                if os.path.isfile(p):
-                    config_path = p
-                    break
-        if config_path and os.path.isfile(config_path):
-            try:
-                with open(config_path, "r", encoding="utf-8") as f:
-                    cfg = json.load(f)
-                arena_str = cfg.get("tested_arena", "")
-                if "2m_x_1m" in arena_str:
-                    self.arena_bounds = (-0.25, 2.05, -0.65, 0.65)
-                elif "5m_x_5m" in arena_str or "5x5" in arena_str:
-                    self.arena_bounds = (-2.5, 2.5, -2.5, 2.5)
-            except Exception:
-                pass
-
-    def lock_anchor_map(self):
-        """Locks current static obstacles as permanent anchor walls."""
-        self.anchor_map_locked = True
-        self._anchor_log_odds = np.copy(self.log_odds)
-
-    def unlock_anchor_map(self):
-        """Unlocks anchor map for dynamic re-mapping."""
-        self.anchor_map_locked = False
-        self._anchor_log_odds = None
-
-    def clear_footprint(self, wx: float, wy: float, radius: float = 0.18):
-        """
-        Clears occupancy log-odds and costmap cells within the robot's physical footprint.
-        Essential for recovering from kidnapped robot situations, carpet noise, or
-        when the robot is picked up and placed in a new location.
-        Ensures A* planner never fails with start cell being in collision.
-        """
-        if hasattr(self, "active_clusters") and self.active_clusters:
-            self.active_clusters = [
-                (cx, cy, crad) for cx, cy, crad in self.active_clusters
-                if math.hypot(cx - wx, cy - wy) > radius
-            ]
-
-        c_p, r_p = self.world_to_grid(wx, wy)
-        rad_cells = int(math.ceil(radius / self.resolution))
-
-        r_min = max(0, r_p - rad_cells)
-        r_max = min(self.height, r_p + rad_cells + 1)
-        c_min = max(0, c_p - rad_cells)
-        c_max = min(self.width, c_p + rad_cells + 1)
-
-        if r_min >= r_max or c_min >= c_max:
-            return
-
-        ys, xs = np.ogrid[r_min - r_p : r_max - r_p, c_min - c_p : c_max - c_p]
-        dist_m = np.sqrt(xs * xs + ys * ys) * self.resolution
-        footprint_mask = dist_m <= radius
-
-        # Reset log-odds in footprint to L_FREE
-        sub_log_odds = self.log_odds[r_min:r_max, c_min:c_max]
-        sub_log_odds[footprint_mask] = np.minimum(sub_log_odds[footprint_mask], self.L_FREE)
-
-        # Recalculate costmap
-        self._update_costmap()
-
-        # Guarantee cells strictly inside robot inscribed footprint are traversable (cost = 0)
-        inscribed_cells = dist_m <= radius
-        sub_cost = self.costmap[r_min:r_max, c_min:c_max]
-        sub_cost[inscribed_cells] = 0
 
     def _create_circular_mask(self, radius_cells: int) -> np.ndarray:
         y, x = np.ogrid[-radius_cells:radius_cells + 1, -radius_cells:radius_cells + 1]
@@ -171,85 +77,6 @@ class OccupancyGridMap:
 
     def is_inside(self, col: int, row: int) -> bool:
         return 0 <= col < self.width and 0 <= row < self.height
-
-    def get_probability_map(self) -> np.ndarray:
-        """
-        Returns normalized occupancy probability P in [0, 1] from log-odds.
-        P = 1.0 / (1.0 + exp(-log_odds))
-        Vectorized with numerically stable sigmoid clamping.
-        """
-        lo = self._anchor_log_odds if (self.anchor_map_locked and self._anchor_log_odds is not None) else self.log_odds
-        clamped_lo = np.clip(lo, -6.0, 6.0)
-        return 1.0 / (1.0 + np.exp(-clamped_lo))
-
-    def get_interpolated_value_and_gradient(
-        self,
-        world_coords: np.ndarray
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        """
-        Bilinear interpolation of map probability M(x, y) and its spatial gradient
-        nabla M = (dM/dx, dM/dy) at arbitrary continuous world coordinates.
-        Core mathematical foundation of Hector SLAM (Kohlbrecher et al., 2011).
-
-        Args:
-            world_coords: (N, 2) array of (x, y) coordinates in world frame.
-
-        Returns:
-            values: (N,) interpolated probability M in [0, 1]
-            grad_x: (N,) dM/dx in 1/meters
-            grad_y: (N,) dM/dy in 1/meters
-            valid_mask: (N,) boolean mask of points inside valid map interior
-        """
-        N = len(world_coords)
-        if N == 0:
-            return (
-                np.empty(0, dtype=np.float32),
-                np.empty(0, dtype=np.float32),
-                np.empty(0, dtype=np.float32),
-                np.empty(0, dtype=bool)
-            )
-
-        P_map = self.get_probability_map()
-
-        inv_res = 1.0 / self.resolution
-        u = (world_coords[:, 0] - self.origin_x) * inv_res - 0.5
-        v = (world_coords[:, 1] - self.origin_y) * inv_res - 0.5
-
-        u0 = np.floor(u).astype(np.int32)
-        v0 = np.floor(v).astype(np.int32)
-
-        valid_mask = (u0 >= 0) & (u0 < self.width - 1) & (v0 >= 0) & (v0 < self.height - 1)
-
-        values = np.zeros(N, dtype=np.float32)
-        grad_x = np.zeros(N, dtype=np.float32)
-        grad_y = np.zeros(N, dtype=np.float32)
-
-        if not np.any(valid_mask):
-            return values, grad_x, grad_y, valid_mask
-
-        u0_v = u0[valid_mask]
-        v0_v = v0[valid_mask]
-        u1_v = u0_v + 1
-        v1_v = v0_v + 1
-
-        fu = (u[valid_mask] - u0_v).astype(np.float32)
-        fv = (v[valid_mask] - v0_v).astype(np.float32)
-
-        m00 = P_map[v0_v, u0_v]
-        m01 = P_map[v0_v, u1_v]
-        m10 = P_map[v1_v, u0_v]
-        m11 = P_map[v1_v, u1_v]
-
-        val_v = (1.0 - fu) * (1.0 - fv) * m00 + fu * (1.0 - fv) * m01 + (1.0 - fu) * fv * m10 + fu * fv * m11
-
-        du = (1.0 - fv) * (m01 - m00) + fv * (m11 - m10)
-        dv = (1.0 - fu) * (m10 - m00) + fu * (m11 - m01)
-
-        values[valid_mask] = val_v
-        grad_x[valid_mask] = du * inv_res
-        grad_y[valid_mask] = dv * inv_res
-
-        return values, grad_x, grad_y, valid_mask
 
     @staticmethod
     def bresenham_line(x0: int, y0: int, x1: int, y1: int) -> List[Tuple[int, int]]:
@@ -313,8 +140,8 @@ class OccupancyGridMap:
         robot_y: float,
         robot_theta: float,
         ranges: List[float],
-        max_valid_range: float = 1.80,
-        min_valid_range: float = 0.15
+        max_valid_range: float = 2.4,
+        min_valid_range: float = 0.12
     ):
         """
         Updates 2D Occupancy Grid Map from 360-degree LiDAR range array.
@@ -328,10 +155,6 @@ class OccupancyGridMap:
 
         num_points = len(ranges)
         step_rad = (2.0 * math.pi) / num_points
-
-        free_cells = []
-        occ_cells = []
-        w = self.width
 
         # Fast downsampling: step by 2 (180 rays) to cut raycasting latency
         for i in range(0, num_points, 2):
@@ -352,37 +175,12 @@ class OccupancyGridMap:
             if was_clipped:
                 is_obstacle = False  # Ray clipped at map boundary, not a detected obstacle cell
 
-            # Inline fast integer Bresenham ray tracer directly accumulating cell indices
-            dx = abs(h_col - r_col)
-            dy = abs(h_row - r_row)
-            sx = 1 if r_col < h_col else -1
-            sy = 1 if r_row < h_row else -1
-            err = dx - dy
-            cx, cy = r_col, r_row
-
-            while cx != h_col or cy != h_row:
-                free_cells.append(cy * w + cx)
-                e2 = 2 * err
-                if e2 > -dy:
-                    err -= dy
-                    cx += sx
-                if e2 < dx:
-                    err += dx
-                    cy += sy
+            line = self.bresenham_line(r_col, r_row, h_col, h_row)
+            for col, row in line[:-1]:
+                self.log_odds[row, col] = max(self.L_MIN, self.log_odds[row, col] + self.L_FREE)
 
             if is_obstacle:
-                occ_cells.append(h_row * w + h_col)
-
-        flat = self.log_odds.ravel()
-        if free_cells:
-            np.add.at(flat, free_cells, self.L_FREE)
-        if occ_cells:
-            np.add.at(flat, occ_cells, self.L_OCC)
-        np.clip(flat, self.L_MIN, self.L_MAX, out=flat)
-
-        if self.anchor_map_locked and self._anchor_log_odds is not None:
-            anchor_occ = self._anchor_log_odds > 0.62
-            self.log_odds[anchor_occ] = np.maximum(self.log_odds[anchor_occ], self.L_OCC)
+                self.log_odds[h_row, h_col] = min(self.L_MAX, self.log_odds[h_row, h_col] + self.L_OCC)
 
         self._update_costmap()
 
@@ -427,186 +225,34 @@ class OccupancyGridMap:
                 self.costmap[r, c] = 254
             self._update_costmap()
 
-    def insert_obstacle_clusters(
-        self,
-        clusters: List[Any],
-        robot_x: float,
-        robot_y: float,
-        robot_theta: float
-    ):
-        """
-        Injects segmented 2D LiDAR obstacle clusters (table legs, boxes, humans)
-        directly into the Costmap as lethal obstacle zones.
-        Prevents A* planner from ever routing paths through detected clusters
-        while preserving log_odds sensor map integrity (anti-blooming).
-        """
-        if not clusters:
-            self.active_clusters = []
-            self._update_costmap()
-            return
-
-        c_th = math.cos(robot_theta)
-        s_th = math.sin(robot_theta)
-        new_active = []
-
-        for cl in clusters:
-            cx, cy = getattr(cl, "centroid", (0.0, 0.0))
-            if cx == 0.0 and cy == 0.0:
-                continue
-
-            # Transform from Body Frame {R} to World Frame {W}
-            wx = robot_x + cx * c_th - cy * s_th
-            wy = robot_y + cx * s_th + cy * c_th
-
-            # Only ignore cluster if its exact center is already deep inside a static anchor wall (> 0.85)
-            # Never filter out boxes, obstacles, or people placed near walls!
-            if self.anchor_map_locked:
-                c_chk, r_chk = self.world_to_grid(wx, wy)
-                if self.is_inside(c_chk, r_chk) and self.log_odds[r_chk, c_chk] > 0.85:
-                    continue
-
-            # Compute effective physical bounding radius covering entire obstacle:
-            obs_type = getattr(cl, "obstacle_type", "")
-            length = float(getattr(cl, "length_m", 0.10))
-            width = float(getattr(cl, "width_m", 0.10))
-            half_max_dim = max(length, width) / 2.0
-            if obs_type in ("TABLE_LEG", "THIN_OBJECT"):
-                obs_radius = max(0.03, min(0.06, half_max_dim))
-            else:
-                # Bounding radius preserves full box/obstacle geometry (up to 0.40m)
-                obs_radius = max(0.05, min(0.40, half_max_dim))
-            new_active.append((wx, wy, obs_radius))
-
-        # Check if active clusters changed significantly (> 3.5cm) before triggering costmap update
-        clusters_changed = len(new_active) != len(self.active_clusters)
-        if not clusters_changed:
-            for (nx, ny, nr), (ox, oy, orad) in zip(new_active, self.active_clusters):
-                if math.hypot(nx - ox, ny - oy) > 0.035 or abs(nr - orad) > 0.01:
-                    clusters_changed = True
-                    break
-
-        self.active_clusters = new_active
-        if clusters_changed:
-            self._update_costmap()
-
     def _update_costmap(self):
-        """
-        Generates 2D costmap with Euclidean Distance Transform & Exponential Decay Inflation.
-        Academic Standard (ROS 2 Nav2 costmap_2d::InflationLayer):
-          - Inscribed lethal zone: d <= 0.11m -> cost = 254 (Lethal)
-          - Inflation gradient zone: 0.11m < d <= 0.28m -> cost = 253 * exp(-8.0 * (d - 0.11))
-          - Free zone: d > 0.28m -> cost = 0
-        Enables robot to keep comfortable clearance while squeezing through narrow corridors.
-        Execution latency: < 0.3ms on ARM Cortex-A57.
-        """
-        occ_mask = (self.log_odds > 0.62).astype(np.uint8)
-
-        # Include active obstacle clusters into the obstacle footprint mask
-        # so EDT calculates accurate clearance inflation around detected clusters
-        # without polluting long-term sensor log_odds.
-        if hasattr(self, "active_clusters") and self.active_clusters:
-            for wx, wy, obs_rad in self.active_clusters:
-                c_p, r_p = self.world_to_grid(wx, wy)
-                rad_cells = max(1, int(math.ceil(obs_rad / self.resolution)))
-                r_min = max(0, r_p - rad_cells)
-                r_max = min(self.height, r_p + rad_cells + 1)
-                c_min = max(0, c_p - rad_cells)
-                c_max = min(self.width, c_p + rad_cells + 1)
-                if r_min < r_max and c_min < c_max:
-                    ys, xs = np.ogrid[r_min - r_p : r_max - r_p, c_min - c_p : c_max - c_p]
-                    dist_sq = (xs * xs + ys * ys) * (self.resolution * self.resolution)
-                    c_mask = dist_sq <= (obs_rad * obs_rad)
-                    occ_mask[r_min:r_max, c_min:c_max][c_mask] = 1
-
+        """Generates 2D costmap with obstacle dilation and social bubbles."""
+        occ_mask = self.log_odds > 0.62
         self.costmap.fill(0)
-
+        self.costmap[occ_mask] = 254
         if np.any(occ_mask):
-            inscribed_m = 0.09   # physical robot radius safety margin (calibrated for 0.15-0.18m JetBot chassis)
-            inflation_m = 0.16   # safety clearance horizon (smooth exponential cost decay)
-            cost_scaling = 2.5   # gentle decay factor
-
             if HAS_CV2:
-                dist_cells = cv2.distanceTransform(1 - occ_mask, cv2.DIST_L2, 3)
+                kernel = self._inflation_mask.astype(np.uint8)
+                inflated = cv2.dilate(occ_mask.astype(np.uint8), kernel).astype(bool)
+                self.costmap[inflated & (~occ_mask)] = 200
             elif HAS_SCIPY_DILATE:
-                from scipy.ndimage import distance_transform_edt
-                dist_cells = distance_transform_edt(1 - occ_mask)
-            else:
-                dist_cells = None
+                inflated = binary_dilation(occ_mask, structure=self._inflation_mask)
+                self.costmap[inflated & (~occ_mask)] = 200
 
-            if dist_cells is not None:
-                dist_m = dist_cells * self.resolution
-                self.dist_m = dist_m
-
-                # 1. Lethal core zone
-                lethal_mask = dist_m <= inscribed_m
-                self.costmap[lethal_mask] = 254
-
-                # 2. Smooth exponential decay inflation zone
-                decay_mask = (dist_m > inscribed_m) & (dist_m <= inflation_m)
-                if np.any(decay_mask):
-                    decay_costs = 253.0 * np.exp(-cost_scaling * (dist_m[decay_mask] - inscribed_m))
-                    self.costmap[decay_mask] = np.clip(decay_costs, 1, 253).astype(np.uint8)
-            else:
-                self.dist_m = None
-                # Fallback dilation
-                self.costmap[occ_mask > 0] = 254
-        else:
-            self.dist_m = None
-            self.costmap.fill(0)
-
-        # Apply active obstacle clusters as lethal core overlay
-        if hasattr(self, "active_clusters") and self.active_clusters:
-            for wx, wy, obs_rad in self.active_clusters:
-                c_p, r_p = self.world_to_grid(wx, wy)
-                rad_cells = max(1, int(math.ceil(obs_rad / self.resolution)))
-                r_min = max(0, r_p - rad_cells)
-                r_max = min(self.height, r_p + rad_cells + 1)
-                c_min = max(0, c_p - rad_cells)
-                c_max = min(self.width, c_p + rad_cells + 1)
-                if r_min < r_max and c_min < c_max:
-                    ys, xs = np.ogrid[r_min - r_p : r_max - r_p, c_min - c_p : c_max - c_p]
-                    dist_sq = (xs * xs + ys * ys) * (self.resolution * self.resolution)
-                    c_mask = dist_sq <= (obs_rad * obs_rad)
-                    self.costmap[r_min:r_max, c_min:c_max][c_mask] = 254
-
-        # Re-apply any active social bubbles with 1.5s TTL
+        # Re-apply any active social bubbles
         if hasattr(self, "social_bubbles") and self.social_bubbles:
-            now = time.time()
-            if (now - getattr(self, "social_bubbles_ts", 0.0)) <= getattr(self, "social_bubble_ttl_sec", 1.5):
-                for px, py, rad in self.social_bubbles:
-                    self.add_social_bubble(px, py, radius_m=rad)
-            else:
-                self.social_bubbles = []
-
-        # Enforce physical arena boundaries (e.g. 2m x 1m testbed or 5m x 5m room)
-        if hasattr(self, "arena_bounds") and self.arena_bounds is not None:
-            min_x, max_x, min_y, max_y = self.arena_bounds
-            c_min, r_min = self.world_to_grid(min_x, min_y)
-            c_max, r_max = self.world_to_grid(max_x, max_y)
-            c_low = max(0, min(self.width, min(c_min, c_max)))
-            c_high = max(0, min(self.width, max(c_min, c_max)))
-            r_low = max(0, min(self.height, min(r_min, r_max)))
-            r_high = max(0, min(self.height, max(r_min, r_max)))
-            self.costmap[:r_low, :] = 254
-            self.costmap[r_high:, :] = 254
-            self.costmap[:, :c_low] = 254
-            self.costmap[:, c_high:] = 254
-
-        # Assign unknown-space penalty to unobserved cells so A* prefers mapped interior corridors
-        if self.anchor_map_locked:
-            unobserved = (abs(self.log_odds) < 0.25) & (self.costmap == 0)
-            self.costmap[unobserved] = 195
+            for px, py, rad in self.social_bubbles:
+                self.add_social_bubble(px, py, radius_m=rad)
 
     def add_social_bubble(
         self,
         center_x: float,
         center_y: float,
-        radius_m: float = 0.40,
-        core_radius_m: float = 0.20
+        radius_m: float = 0.9,
+        core_radius_m: float = 0.45
     ):
         """
         Injects a Hall's Proxemics Social Safety Bubble around a detected person.
-        Tuned for indoor navigation corridors:
         - Core zone (d <= core_radius_m): Cost = 254 (Lethal - Impassable)
         - Social zone (core_radius_m < d <= radius_m): Cost decays smoothly from 230 to 110.
         100% Vectorized in NumPy (< 0.05ms).
@@ -648,11 +294,10 @@ class OccupancyGridMap:
         robot_x: float,
         robot_y: float,
         robot_theta: float,
-        bubble_radius_m: float = 0.40
+        bubble_radius_m: float = 0.9
     ):
         """Extracts person detections and projects social bubbles into costmap."""
         self.social_bubbles = []
-        self.social_bubbles_ts = time.time()
         for det in detections:
             cname = det.get("class") or det.get("class_name") if isinstance(det, dict) else getattr(det, "class_name", "")
             if cname == "person":
@@ -681,27 +326,20 @@ class OccupancyGridMap:
         """
         Exports map in standard contract format for Web Dashboard:
         100% Vectorized in NumPy (C-speed: ~1ms on Jetson Nano ARM64 vs 200ms Python loop).
-        Renders true physical obstacles (log-odds > 0.62) as black (100).
-        Excludes dynamic clusters and inflation margins so the static room map stays 100% stationary.
         """
         data = np.zeros((self.height, self.width), dtype=np.int8)
         data[np.abs(self.log_odds) < 1e-4] = -1
-        # Physical static obstacles detected by LiDAR raycasting
-        data[self.log_odds > 0.62] = 100
+        data[(self.costmap >= 200) | (self.log_odds > 0.62)] = 100
         return data.flatten().tolist()
 
     def is_cell_free(self, col: int, row: int, check_inflated: bool = True) -> bool:
         if not self.is_inside(col, row):
             return False
         if check_inflated:
-            return self.costmap[row, col] < 240
+            return self.costmap[row, col] < 200
         return self.log_odds[row, col] <= 0.62
 
     def reset(self):
         self.log_odds.fill(0.0)
         self.costmap.fill(0)
         self.social_bubbles = []
-        self.social_bubbles_ts = 0.0
-        self.active_clusters = []
-        self.anchor_map_locked = False
-        self._anchor_log_odds = None
