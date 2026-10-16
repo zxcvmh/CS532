@@ -428,10 +428,11 @@ class D500LidarThread:
         self.running = True
 
     def start(self):
+        print(f"[INFO] Starting Official LDROBOT D500 LiDAR on {self.port} (baud {self.baudrate})...")
         self.driver.start()
 
     def run(self):
-        self.driver.start()
+        self.start()
 
     def stop(self):
         self.running = False

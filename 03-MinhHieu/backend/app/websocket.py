@@ -176,16 +176,20 @@ class WebSocketManager:
                             cur_map_ver = getattr(self.robot, "map_version", 0)
                             if cur_map_ver != getattr(self, "_last_broadcast_map_ver", -1):
                                 m = await self.robot.get_map()
-                                await self.broadcast({
+                                msg = {
                                     "type": "map_update",
                                     "resolution": m.resolution,
                                     "width": m.width,
                                     "height": m.height,
                                     "origin_x": m.origin_x,
                                     "origin_y": m.origin_y,
-                                    "data": m.data,
                                     "timestamp": time.time()
-                                })
+                                }
+                                if m.data_b64:
+                                    msg["data_b64"] = m.data_b64
+                                if m.data is not None and not m.data_b64:
+                                    msg["data"] = m.data
+                                await self.broadcast(msg)
                                 self._last_broadcast_map_ver = cur_map_ver
                             
                         elif key == "detections":

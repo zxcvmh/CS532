@@ -4,7 +4,7 @@ export interface MapData {
   height: number;
   originX: number;
   originY: number;
-  data: number[];
+  data: number[] | Int8Array | ArrayLike<number>;
   version?: number;
 }
 

@@ -85,10 +85,11 @@ class D500OfficialDriver:
         self.min_intensity = int(min_intensity)
         self.yaw_offset_deg = float(yaw_offset_deg)
 
-        # Threading state
+        # Threading state (Must be RLock to support re-entrant queries from scan_cache & hardware reflex)
         self.running = False
         self.thread: Optional[threading.Thread] = None
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()
+        self._first_scan_logged: bool = False
 
         # Telemetry & Scan storage
         self.latest_ranges: List[float] = [0.0] * 360
@@ -132,6 +133,7 @@ class D500OfficialDriver:
                     raise RuntimeError("pyserial is not installed. LiDAR hardware driver cannot open serial port.")
                 ser = serial.Serial(self.port, baudrate=self.baudrate, timeout=0.2)
                 buffer.clear()
+                print(f"[OK] D500 LiDAR serial opened on {self.port} @ {self.baudrate} baud.")
                 while self.running:
                     chunk = ser.read(ser.in_waiting or 47)
                     if not chunk:
@@ -164,6 +166,7 @@ class D500OfficialDriver:
                         self._process_packet(packet)
 
             except Exception as e:
+                print(f"[WARN] LiDAR serial connection error on {self.port}: {e}. Retrying in 1.0s...")
                 time.sleep(1.0)
             finally:
                 if ser and ser.is_open:
@@ -204,6 +207,10 @@ class D500OfficialDriver:
                 ]
 
             self._last_sweep_publish_time = now
+            if not self._first_scan_logged and len(self.latest_scan_list) > 10:
+                self._first_scan_logged = True
+                hz = (self.motor_speed_deg_s / 360.0) if self.motor_speed_deg_s > 0 else 10.0
+                print(f"[OK] D500 LiDAR active: receiving 360° sweeps ({len(self.latest_scan_list)} pts, spin: {hz:.1f}Hz / {self.motor_speed_deg_s:.0f}°/s)!")
             self._current_sweep_ranges = [0.0] * 360
             self._current_sweep_intensities = [0] * 360
             self._current_sweep_raw_pts = []

@@ -3,7 +3,7 @@ class Config:
     WS_RATES = {
         "robot_pose": 10,        # 10Hz synchronized with LiDAR
         "lidar_scan": 10,        # 10Hz
-        "map_update": 5,         # 5Hz (Synchronized with LiDAR & non-blocking CPU)
+        "map_update": 2,         # 2Hz (Decoupled rate for map visualization, non-blocking)
         "detections": 10,        # 10Hz
         "navigation_status": 5,  # 5Hz
         "battery": 0.5,          # 0.5Hz (every 2s)

@@ -485,23 +485,30 @@ class MockRobot(RobotController, SensorProvider, MapProvider, NavigationManager,
                         self._anchor_initialized = True
                         self._static_map_locked = True
                         self.map_data = self.grid_map.to_dashboard_data()
+                        self.map_data_b64 = self.grid_map.to_dashboard_b64()
                         self.map_version = getattr(self, "map_version", 0) + 1
-                        self._add_event("SUCCESS", f"🔒 Real LiDAR Anchor Map Locked ({len(valid_ranges)} real wall hits)!")
-                        print(f"[SLAM] >>> 🔒 Real LiDAR Anchor Map Locked ({len(valid_ranges)} real wall hits)!", flush=True)
+                        self._add_event("SUCCESS", f"🔒 Real LiDAR Anchor Map Initialized ({len(valid_ranges)} wall points)!")
+                        print(f"[SLAM] >>> 🔒 Real LiDAR Anchor Map Initialized ({len(valid_ranges)} wall points)!", flush=True)
 
-            # Clean 5Hz Map Update: updates rolling obstacle buffer inside floor while walls remain locked
-            if (now_t - getattr(self, '_last_map_update_time', 0.0) >= 0.20):
+            # Continuous 10Hz SLAM Map Update: Single-pass EDT costmap execution
+            if (now_t - getattr(self, '_last_map_update_time', 0.0) >= 0.09):
                 self.grid_map.update_scan(
                     self.pose.x, self.pose.y, self.pose.theta,
                     ranges=ranges,
-                    max_valid_range=Config.MAX_RANGE - 0.15
+                    max_valid_range=Config.MAX_RANGE - 0.15,
+                    defer_costmap=True
                 )
                 if hasattr(self, "latest_clusters") and self.latest_clusters:
                     self.grid_map.insert_obstacle_clusters(
-                        self.latest_clusters, self.pose.x, self.pose.y, self.pose.theta
+                        self.latest_clusters, self.pose.x, self.pose.y, self.pose.theta,
+                        defer_costmap=True
                     )
-                self.grid_map.clear_footprint(self.pose.x, self.pose.y, radius=0.15)
+                self.grid_map.clear_footprint(self.pose.x, self.pose.y, radius=0.15, defer_costmap=True)
+                # Single-pass Costmap generation: runs EDT exactly ONCE per 10Hz cycle
+                self.grid_map.update_costmap()
+
                 self.map_data = self.grid_map.to_dashboard_data()
+                self.map_data_b64 = self.grid_map.to_dashboard_b64()
                 self.map_version = getattr(self, "map_version", 0) + 1
                 self._last_map_update_time = now_t
         else:
@@ -651,7 +658,8 @@ class MockRobot(RobotController, SensorProvider, MapProvider, NavigationManager,
             height=Config.MAP_HEIGHT,
             origin_x=Config.MAP_ORIGIN_X,
             origin_y=Config.MAP_ORIGIN_Y,
-            data=self.map_data.copy()
+            data=self.map_data.copy() if isinstance(self.map_data, list) else [],
+            data_b64=getattr(self, "map_data_b64", None)
         )
 
     async def get_trajectory(self) -> List[LidarPoint]:

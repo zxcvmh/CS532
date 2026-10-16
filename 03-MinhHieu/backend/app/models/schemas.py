@@ -43,7 +43,8 @@ class MapData(BaseModel):
     height: int
     origin_x: float
     origin_y: float
-    data: List[int]
+    data: Optional[List[int]] = None
+    data_b64: Optional[str] = None
 
 class NavigationGoal(BaseModel):
     x: float

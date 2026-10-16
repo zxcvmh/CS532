@@ -81,17 +81,32 @@ export function useRobotState() {
       case 'lidar_scan':
         lidarPoints.current = lastMessage.points;
         break;
-      case 'map_update':
+      case 'map_update': {
+        let gridData = lastMessage.data;
+        if (lastMessage.data_b64) {
+          try {
+            const binaryStr = atob(lastMessage.data_b64);
+            const len = binaryStr.length;
+            const u8 = new Uint8Array(len);
+            for (let i = 0; i < len; i++) {
+              u8[i] = binaryStr.charCodeAt(i);
+            }
+            gridData = new Int8Array(u8.buffer);
+          } catch (e) {
+            console.error('Failed to decode base64 map data', e);
+          }
+        }
         mapData.current = {
           resolution: lastMessage.resolution,
           width: lastMessage.width,
           height: lastMessage.height,
           originX: lastMessage.origin_x,
           originY: lastMessage.origin_y,
-          data: lastMessage.data,
+          data: gridData,
           version: (mapData.current?.version ?? 0) + 1
         };
         break;
+      }
       case 'detections':
         detections.current = lastMessage.objects.map((d: any) => ({
           className: d.class_name,

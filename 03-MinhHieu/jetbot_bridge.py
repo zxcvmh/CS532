@@ -408,105 +408,53 @@ def start_camera_http_server(camera_thread: CSICameraThread, port: int = 8080):
 
 
 # ─────────────────────────────────────────────────────────────
-# 2. D500 LIDAR PARSER (47-byte sync + 360° Sliding Cache)
+# 2. OFFICIAL D500 LIDAR DRIVER (Table-Driven CRC-8 + Revolution Sync)
 # ─────────────────────────────────────────────────────────────
-class D500LidarThread(threading.Thread):
+from d500_driver import D500OfficialDriver
+
+class D500LidarThread:
+    """Official LDROBOT D500 LiDAR thread wrapper with CRC-8 and revolution sync."""
     def __init__(self, port="/dev/ttyUSB0", baudrate=230400):
-        super().__init__(daemon=True)
+        self.driver = D500OfficialDriver(
+            port=port,
+            baudrate=baudrate,
+            min_distance_m=0.12,
+            max_distance_m=6.00,
+            min_intensity=15,
+            yaw_offset_deg=LIDAR_YAW_OFFSET_DEG
+        )
         self.port = port
         self.baudrate = baudrate
-        self.latest_scan = []  # list of [angle_deg, dist_meters]
-        self.scan_cache = {}   # angle: (dist_m, timestamp)
-        self.cache_lock = threading.Lock()  # Mutex bảo vệ race condition đa luồng
         self.running = True
 
+    def start(self):
+        print(f"[INFO] Starting Official LDROBOT D500 LiDAR on {self.port} (baud {self.baudrate})...")
+        self.driver.start()
+
     def run(self):
-        while self.running:
-            try:
-                print(f"[INFO] Connecting to D500 LiDAR on {self.port} @ {self.baudrate} baud...")
-                ser = serial.Serial(self.port, baudrate=self.baudrate, timeout=0.5)
-                print("[OK] D500 LiDAR Serial Port opened!")
-
-                buffer = bytearray()
-                last_flush_time = time.time()
-
-                while self.running:
-                    chunk = ser.read(ser.in_waiting or 47)
-                    if chunk:
-                        buffer.extend(chunk)
-
-                    # Frame synchronization: look for 0x54 and process 47-byte packets
-                    while len(buffer) >= 47:
-                        if buffer[0] != 0x54:
-                            try:
-                                next_header = buffer.index(0x54, 1)
-                                del buffer[:next_header]
-                            except ValueError:
-                                buffer.clear()
-                                break
-
-                        if len(buffer) < 47:
-                            break
-
-                        packet = buffer[:47]
-                        del buffer[:47]
-
-                        # Packet structure:
-                        # Byte 4-5: Start angle (0.01 deg)
-                        start_angle = (packet[4] | (packet[5] << 8)) / 100.0
-                        # Byte 42-43: End angle (0.01 deg)
-                        end_angle = (packet[42] | (packet[43] << 8)) / 100.0
-
-                        if end_angle < start_angle:
-                            end_angle += 360.0
-
-                        step = (end_angle - start_angle) / 11.0
-                        now = time.time()
-
-                        # 12 measurement points (each 3 bytes: dist_lo, dist_hi, intensity)
-                        new_hits = []
-                        for i in range(12):
-                            offset = 6 + (i * 3)
-                            dist_mm = packet[offset] | (packet[offset + 1] << 8)
-                            raw_angle = (start_angle + (i * step)) % 360.0
-                            dist_m = dist_mm / 1000.0
-
-                            # Invert angle to standard CCW mathematical coordinate frame + apply hardware offset
-                            angle_ccw = (360 - int(round(raw_angle)) + int(round(LIDAR_YAW_OFFSET_DEG))) % 360
-
-                            if 0.12 <= dist_m <= 6.00:
-                                new_hits.append((angle_ccw, round(dist_m, 3), now))
-
-                        if new_hits:
-                            with self.cache_lock:
-                                for ang, dm, ts in new_hits:
-                                    self.scan_cache[ang] = (dm, ts)
-
-                    # Flush 360° scan every 100ms, retaining points younger than adaptive horizon
-                    now = time.time()
-                    if now - last_flush_time >= 0.10:
-                        # Adaptive horizon: During pivot turns (>150 deg/s), points older than 0.15s cause severe yaw smear
-                        # When driving straight or stationary, retain 0.35s to build a dense point cloud
-                        is_turning = (
-                            abs(globals().get('_active_cmd_w', 0.0)) > 0.05 or
-                            abs(globals().get('_current_pwm_l', 0.0) - globals().get('_current_pwm_r', 0.0)) > 0.05
-                        )
-                        cache_horizon = 0.15 if is_turning else 0.35
-                        with self.cache_lock:
-                            fresh_points = [
-                                [ang, dist] for ang, (dist, ts) in self.scan_cache.items()
-                                if now - ts < cache_horizon
-                            ]
-                        if len(fresh_points) > 15:
-                            self.latest_scan = fresh_points
-                        last_flush_time = now
-
-            except Exception as e:
-                print(f"[WARN] D500 LiDAR error: {e}. Retrying in 2 seconds...")
-                time.sleep(2.0)
+        self.start()
 
     def stop(self):
         self.running = False
+        self.driver.stop()
+
+    @property
+    def cache_lock(self):
+        """Thread-safe lock proxy for backward compatibility with 20Hz reflex tasks."""
+        return self.driver.lock
+
+    @property
+    def latest_scan(self):
+        """Thread-safe clean 360-degree scan list [[angle, dist], ...]"""
+        return self.driver.get_scan_list()
+
+    @property
+    def scan_cache(self):
+        """Thread-safe dictionary view for backward-compatible lookups"""
+        ranges = self.driver.get_ranges_360()
+        now = time.time()
+        return {ang: (d, now) for ang, d in enumerate(ranges) if d > 0.05}
+
 
 
 # ─────────────────────────────────────────────────────────────

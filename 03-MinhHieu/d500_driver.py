@@ -16,8 +16,13 @@ Key Specifications:
 
 import time
 import math
-import serial
 import threading
+try:
+    import serial
+except ImportError:
+    serial = None
+
+
 from typing import List, Tuple, Dict, Optional, Any
 import numpy as np
 
@@ -80,10 +85,11 @@ class D500OfficialDriver:
         self.min_intensity = int(min_intensity)
         self.yaw_offset_deg = float(yaw_offset_deg)
 
-        # Threading state
+        # Threading state (Must be RLock to support re-entrant queries from scan_cache & hardware reflex)
         self.running = False
         self.thread: Optional[threading.Thread] = None
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()
+        self._first_scan_logged: bool = False
 
         # Telemetry & Scan storage
         self.latest_ranges: List[float] = [0.0] * 360
@@ -97,10 +103,13 @@ class D500OfficialDriver:
         self.crc_error_count: int = 0
         self.scan_sweep_count: int = 0
 
-        # Revolution accumulator
+        # Revolution accumulator & timeout protection
         self._current_sweep_ranges: List[float] = [0.0] * 360
         self._current_sweep_intensities: List[int] = [0] * 360
+        self._current_sweep_raw_pts: List[List[float]] = []
+        self._current_sweep_point_count: int = 0
         self._last_pkg_end_angle: float = 0.0
+        self._last_sweep_publish_time: float = time.time()
 
     def start(self) -> bool:
         if self.running:
@@ -120,8 +129,11 @@ class D500OfficialDriver:
         while self.running:
             ser = None
             try:
+                if serial is None:
+                    raise RuntimeError("pyserial is not installed. LiDAR hardware driver cannot open serial port.")
                 ser = serial.Serial(self.port, baudrate=self.baudrate, timeout=0.2)
                 buffer.clear()
+                print(f"[OK] D500 LiDAR serial opened on {self.port} @ {self.baudrate} baud.")
                 while self.running:
                     chunk = ser.read(ser.in_waiting or 47)
                     if not chunk:
@@ -154,6 +166,7 @@ class D500OfficialDriver:
                         self._process_packet(packet)
 
             except Exception as e:
+                print(f"[WARN] LiDAR serial connection error on {self.port}: {e}. Retrying in 1.0s...")
                 time.sleep(1.0)
             finally:
                 if ser and ser.is_open:
@@ -176,24 +189,32 @@ class D500OfficialDriver:
 
         step = (end_angle - start_angle) / 11.0
 
-        # Check revolution boundary: crossing 360 deg indicates a complete 360-degree sweep
-        if start_angle < self._last_pkg_end_angle and self._last_pkg_end_angle > 300.0:
-            # Complete revolution finished! Publish clean synchronized sweep
+        # Revolution boundary check:
+        # Primary: crossing 360°/0° boundary.
+        # Fallback: time >= 110ms with >= 180 points (prevents 200ms lag when packet at 0° is dropped by CRC error)
+        time_since_sweep = now - getattr(self, "_last_sweep_publish_time", 0.0)
+        crossed_zero = (start_angle < self._last_pkg_end_angle and self._last_pkg_end_angle > 300.0)
+        timed_out_revolution = (time_since_sweep >= 0.11 and self._current_sweep_point_count >= 180)
+
+        if crossed_zero or timed_out_revolution:
             with self.lock:
                 self.latest_ranges = list(self._current_sweep_ranges)
                 self.latest_intensities = list(self._current_sweep_intensities)
                 self.latest_timestamp = now
                 self.scan_sweep_count += 1
+                self.latest_scan_list = list(self._current_sweep_raw_pts) if self._current_sweep_raw_pts else [
+                    [deg, dist] for deg, dist in enumerate(self.latest_ranges) if dist > 0.05
+                ]
 
-                scan_pts = []
-                for deg, dist in enumerate(self.latest_ranges):
-                    if dist > 0.05:
-                        scan_pts.append([deg, dist])
-                self.latest_scan_list = scan_pts
-
-            # Reset sweep accumulator
+            self._last_sweep_publish_time = now
+            if not self._first_scan_logged and len(self.latest_scan_list) > 10:
+                self._first_scan_logged = True
+                hz = (self.motor_speed_deg_s / 360.0) if self.motor_speed_deg_s > 0 else 10.0
+                print(f"[OK] D500 LiDAR active: receiving 360° sweeps ({len(self.latest_scan_list)} pts, spin: {hz:.1f}Hz / {self.motor_speed_deg_s:.0f}°/s)!")
             self._current_sweep_ranges = [0.0] * 360
             self._current_sweep_intensities = [0] * 360
+            self._current_sweep_raw_pts = []
+            self._current_sweep_point_count = 0
 
         self._last_pkg_end_angle = (end_angle % 360.0)
 
@@ -205,13 +226,19 @@ class D500OfficialDriver:
             raw_angle = (start_angle + (i * step)) % 360.0
             dist_m = dist_mm / 1000.0
 
-            # Convert Clockwise sensor angle to Right-Handed Cartesian CCW frame
-            angle_ccw = int(round((360.0 - raw_angle + self.yaw_offset_deg))) % 360
+            # Convert Clockwise sensor angle to Right-Handed Cartesian CCW frame with float sub-degree precision
+            raw_angle_ccw = (360.0 - raw_angle + self.yaw_offset_deg) % 360.0
+            angle_bin = int(round(raw_angle_ccw)) % 360
 
             # Filter noise, specular tile reflections, and chassis self-reflections
             if (self.min_dist <= dist_m <= self.max_dist) and (intensity >= self.min_intensity):
-                self._current_sweep_ranges[angle_ccw] = round(dist_m, 3)
-                self._current_sweep_intensities[angle_ccw] = intensity
+                self._current_sweep_raw_pts.append([round(raw_angle_ccw, 2), round(dist_m, 3)])
+                self._current_sweep_point_count += 1
+                # Preserve closest obstacle in degree bin
+                curr_r = self._current_sweep_ranges[angle_bin]
+                if curr_r <= 0.05 or dist_m < curr_r:
+                    self._current_sweep_ranges[angle_bin] = round(dist_m, 3)
+                    self._current_sweep_intensities[angle_bin] = intensity
 
     def get_ranges_360(self) -> List[float]:
         """Returns thread-safe copy of latest 360-degree range array."""
