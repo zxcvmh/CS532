@@ -37,6 +37,7 @@ class ObstacleCluster:
     closing_speed: float = 0.0                  # Radial approach speed towards robot in m/s
     ttc: float = 99.0                           # Time-to-collision (seconds)
     is_dynamic: bool = False                    # True if obstacle is moving (|v| > 0.08 m/s)
+    centroid_world: Optional[Tuple[float, float]] = None  # (wx, wy) center in World Frame {W}
 
     def predict_position(self, t: float) -> Tuple[float, float]:
         """Predicts obstacle centroid position at future time t (seconds)."""
@@ -45,10 +46,21 @@ class ObstacleCluster:
             self.centroid[1] + self.velocity[1] * t
         )
 
+    def predict_world_position(self, t: float) -> Tuple[float, float]:
+        """Predicts obstacle position in World Frame at future time t (seconds)."""
+        if self.centroid_world is not None:
+            return (
+                self.centroid_world[0] + self.velocity[0] * t,
+                self.centroid_world[1] + self.velocity[1] * t
+            )
+        return (self.centroid[0] + self.velocity[0] * t, self.centroid[1] + self.velocity[1] * t)
+
     def to_dict(self) -> Dict[str, Any]:
         """Converts cluster to JSON-serializable dictionary for Dashboard."""
         d = asdict(self)
         d["centroid"] = [round(self.centroid[0], 3), round(self.centroid[1], 3)]
+        if self.centroid_world is not None:
+            d["centroid_world"] = [round(self.centroid_world[0], 3), round(self.centroid_world[1], 3)]
         d["closest_point"] = [round(self.closest_point[0], 3), round(self.closest_point[1], 3)]
         d["min_distance"] = round(self.min_distance, 3)
         d["azimuth_deg"] = round(self.azimuth_deg, 1)
@@ -106,6 +118,8 @@ class DynamicObstacleTracker:
                 wy = ry + cx * s_th + cy * c_th
             else:
                 wx, wy = cx, cy
+
+            cl.centroid_world = (round(wx, 3), round(wy, 3))
 
             best_match = None
             min_dist = float("inf")
@@ -197,8 +211,8 @@ class LiDARClusterDetector:
         corridor_width: float = 0.35,
         critical_dist_m: float = 0.38,
         warning_dist_m: float = 0.85,
-        min_range_m: float = 0.12,
-        max_range_m: float = 2.0
+        min_range_m: float = 0.15,
+        max_range_m: float = 6.00
     ):
         self.eps_base = float(cluster_tolerance_m)
         self.min_size = int(min_cluster_size)
@@ -366,15 +380,19 @@ class LiDARClusterDetector:
                 ]
 
             # Obstacle shape classification
-            if length_m > 0.65 and linearity > 0.85:
+            # Extended structures (> 0.45m) or high linearity are classified as wall surfaces
+            if (length_m > 0.45 or width_m > 0.45) or linearity > 0.85:
                 obs_type = "WALL_SURFACE"
-            elif length_m <= 0.28 and width_m <= 0.28:
+            elif length_m <= 0.20 and width_m <= 0.20:
                 obs_type = "CYLINDER_LEG"
             else:
                 obs_type = "BOX_OBSTACLE"
 
             # Threat level assignment
-            if in_corridor and (closest_dist <= self.critical_dist_m):
+            # Static wall surfaces are managed by the static map/costmap; only real obstacles in corridor are threat
+            if obs_type == "WALL_SURFACE":
+                threat = "SAFE"
+            elif in_corridor and (closest_dist <= self.critical_dist_m):
                 threat = "CRITICAL"
             elif closest_dist <= self.warning_dist_m:
                 threat = "WARNING"
@@ -421,7 +439,7 @@ class LiDARClusterDetector:
 
 _default_detector = LiDARClusterDetector()
 
-def cluster_lidar_obstacles(ranges_or_pts, min_dist: float = 0.12, max_dist: float = 2.0, timestamp: Optional[float] = None) -> List[ObstacleCluster]:
+def cluster_lidar_obstacles(ranges_or_pts, min_dist: float = 0.15, max_dist: float = 6.0, timestamp: Optional[float] = None) -> List[ObstacleCluster]:
     """Convenience functional interface for 1D Range Jump obstacle clustering."""
     if ranges_or_pts is None:
         return []

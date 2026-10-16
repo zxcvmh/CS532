@@ -2,6 +2,7 @@ import asyncio
 import json
 import base64
 import time
+import math
 from typing import List
 from fastapi import WebSocket, WebSocketDisconnect
 from app.robot.mock_robot import MockRobot
@@ -96,7 +97,7 @@ class WebSocketManager:
                     angular = float(message.get("angular", 0.0))
                     # Clamp within safe limits
                     linear = max(-Config.MAX_SPEED, min(Config.MAX_SPEED, linear))
-                    angular = max(-Config.MAX_ANGULAR_SPEED, min(Config.MAX_ANGULAR_SPEED, angular))
+                    angular = max(-2.0, min(2.0, angular))
                     await self.robot.set_velocity(linear, angular)
                     return
                 except (ValueError, TypeError):
@@ -111,9 +112,9 @@ class WebSocketManager:
             elif manual_cmd == "BACKWARD":
                 linear = -speed_limit
             elif manual_cmd in ("LEFT", "ROTATE_LEFT"):
-                angular = Config.MAX_ANGULAR_SPEED * (speed_limit / Config.MAX_SPEED if Config.MAX_SPEED > 0 else 1.0)
+                angular = 2.0 * (speed_limit / Config.MAX_SPEED if Config.MAX_SPEED > 0 else 1.0)
             elif manual_cmd in ("RIGHT", "ROTATE_RIGHT"):
-                angular = -Config.MAX_ANGULAR_SPEED * (speed_limit / Config.MAX_SPEED if Config.MAX_SPEED > 0 else 1.0)
+                angular = -2.0 * (speed_limit / Config.MAX_SPEED if Config.MAX_SPEED > 0 else 1.0)
             elif manual_cmd == "STOP":
                 linear = 0.0
                 angular = 0.0

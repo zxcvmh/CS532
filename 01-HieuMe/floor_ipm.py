@@ -138,6 +138,12 @@ class FloorIPMTransformer:
             [32.0, 470.0]
         ])
 
+        # Cấu hình lọc vật cản thấp (< 16cm) trong vùng mù LiDAR
+        low_cfg = self.config.get("low_obstacle_filter", {})
+        self.min_area_px = int(low_cfg.get("min_contour_area_px", 50))
+        self.max_area_px = int(low_cfg.get("max_contour_area_px", 8000))
+        self.max_ground_height_cm = float(low_cfg.get("max_ground_height_cm", 16.0))
+
         # Khởi tạo bộ lọc thời gian Temporal Filter
         temp_cfg = self.config.get("temporal_filter", {})
         if temp_cfg.get("enabled", True):
@@ -288,8 +294,8 @@ class FloorIPMTransformer:
     def extract_low_obstacles_from_mask(
         self,
         obstacle_mask: np.ndarray,
-        min_area_px: int = 40,
-        max_area_px: int = 15000,
+        min_area_px: Optional[int] = None,
+        max_area_px: Optional[int] = None,
         apply_filter: bool = True
     ) -> List[List[float]]:
         """
@@ -298,6 +304,10 @@ class FloorIPMTransformer:
         Hỗ trợ bộ lọc Temporal Smoothing SOTA 2026.
         Trả về định dạng chuẩn: [[x1, y1], [x2, y2], ...]
         """
+        if min_area_px is None:
+            min_area_px = self.min_area_px
+        if max_area_px is None:
+            max_area_px = self.max_area_px
         if obstacle_mask is None or not np.any(obstacle_mask):
             if apply_filter and self.temporal_filter is not None:
                 return self.temporal_filter.update([])

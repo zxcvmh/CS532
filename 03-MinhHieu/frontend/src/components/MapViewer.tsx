@@ -389,18 +389,34 @@ export default function MapViewer({
       }
     }
 
-    // ── 5e. Pure Pursuit Lookahead Target Pin ──
+    // ── 5e. Pure Pursuit & Tangent Bug Lookahead Target Pin ("Chấm xanh đi trước") ──
     if (showXai && motionXai && motionXai.current && motionXai.current.lookahead_target && 
-        ['NAVIGATING', 'PLANNING'].includes(navigationStatus.status)) {
+        ['NAVIGATING', 'PLANNING', 'EVADING', 'WAITING_CLEARANCE'].includes(navigationStatus.status)) {
       const tgt = motionXai.current.lookahead_target;
       const tp = mapToScreen(tgt[0], tgt[1], transform, width, height, mData);
+
+      // 1. Soft glowing emerald aura (radiating carrot target)
+      const pulse = (Date.now() % 1200) / 1200;
+      const auraRad = 8 + pulse * 6;
       ctx.beginPath();
-      ctx.arc(tp.x, tp.y, 4.5, 0, Math.PI * 2);
-      ctx.fillStyle = isDark ? '#f97316' : '#0071e3';
+      ctx.arc(tp.x, tp.y, auraRad, 0, Math.PI * 2);
+      ctx.fillStyle = isDark ? 'rgba(34, 197, 94, 0.25)' : 'rgba(16, 185, 129, 0.20)';
+      ctx.fill();
+
+      // 2. Vibrant emerald outer circle ("chấm xanh đi trước")
+      ctx.beginPath();
+      ctx.arc(tp.x, tp.y, 6.0, 0, Math.PI * 2);
+      ctx.fillStyle = isDark ? '#22c55e' : '#10b981';
       ctx.fill();
       ctx.strokeStyle = '#ffffff';
-      ctx.lineWidth = 1.5;
+      ctx.lineWidth = 1.8;
       ctx.stroke();
+
+      // 3. Bright core pin
+      ctx.beginPath();
+      ctx.arc(tp.x, tp.y, 2.2, 0, Math.PI * 2);
+      ctx.fillStyle = '#ffffff';
+      ctx.fill();
     }
 
     // ── 6. Active Navigation Goal Marker (Apple Maps Pulse Pin) ──
@@ -779,6 +795,15 @@ export default function MapViewer({
               <div className="flex flex-col">
                 <strong className="text-[#1d1d1f] dark:text-[#f4f4f5]">{t.plannedRoute}</strong>
                 <span className="text-[10px] text-gray-500 dark:text-[#9ca3af]">{t.plannedRouteDesc}</span>
+              </div>
+            </div>
+
+            {/* Lookahead Carrot Target ("Chấm xanh đi trước") */}
+            <div className="flex items-start gap-2">
+              <span className="w-3.5 h-3.5 rounded-full bg-[#10b981] dark:bg-[#22c55e] border-2 border-white shadow-xs shrink-0 mt-0.5"></span>
+              <div className="flex flex-col">
+                <strong className="text-[#1d1d1f] dark:text-[#f4f4f5]">Chấm xanh đi trước (Carrot)</strong>
+                <span className="text-[10px] text-gray-500 dark:text-[#9ca3af]">Mục tiêu cục bộ dẫn hướng (Tangent Bug / RPP)</span>
               </div>
             </div>
 

@@ -10,6 +10,7 @@ Hardware Configuration:
 
 import sys
 import os
+import subprocess
 import time
 import math
 import json
@@ -18,6 +19,8 @@ import asyncio
 import threading
 import ctypes
 import numpy as np
+from http.server import HTTPServer, BaseHTTPRequestHandler
+import socketserver
 
 # Import Floor IPM transformer for LiDAR blind spot compensation
 try:
@@ -118,15 +121,54 @@ WS_URL = f"ws://{SERVER_HOST}:{SERVER_PORT}/ws/robot"
 
 LIDAR_PORT = os.environ.get("LIDAR_PORT", "/dev/ttyUSB0")
 LIDAR_BAUDRATE = 230400
-LIDAR_YAW_OFFSET_DEG = float(os.environ.get("LIDAR_YAW_OFFSET", "0.0"))
-for _p in ("/home/jetbot/03-MinhHieu/test-hardware/robot_dynamics.json", "/home/jetbot/setup/robot_dynamics.json", "setup/robot_dynamics.json"):
+
+ROBOT_DYNAMICS = {
+    "hardware": "JetBot-GA25-370",
+    "floor_surface": "glossy_ceramic_tile",
+    "tested_arena": "2m_x_1m",
+    "min_drive_speed": 0.12,
+    "cruise_speed": 0.14,
+    "trim_factor": 1.015,
+    "turn_speed": 0.14,
+    "turn_time_90_deg_sec": 4.5,
+    "turn_time_180_deg_sec": 9.0,
+    "soft_start_ramp_sec": 0.4,
+    "max_safe_speed_mps": 0.14,
+    "max_angular_speed_rads": 0.35,
+    "lidar_yaw_offset_deg": 0.0,
+    "note": "Cau hinh chuan an toan san gach men va lidar D500 quay mui xe (offset 0 deg)",
+    "motor_left_polarity": -1,
+    "motor_right_polarity": -1
+}
+
+for _p in (
+    "/home/jetbot/03-MinhHieu/test-hardware/robot_dynamics.json",
+    "/home/jetbot/setup/robot_dynamics.json",
+    os.path.join(os.path.dirname(__file__), "test-hardware", "robot_dynamics.json"),
+    os.path.join(os.path.dirname(__file__), "..", "setup", "robot_dynamics.json"),
+    "03-MinhHieu/test-hardware/robot_dynamics.json",
+    "setup/robot_dynamics.json"
+):
     try:
-        with open(_p, "r") as f:
-            _dyn = json.load(f)
-            LIDAR_YAW_OFFSET_DEG = float(_dyn.get("lidar_yaw_offset_deg", LIDAR_YAW_OFFSET_DEG))
+        if os.path.isfile(_p):
+            with open(_p, "r", encoding="utf-8") as f:
+                ROBOT_DYNAMICS.update(json.load(f))
+            print(f"[BRIDGE] Loaded robot dynamics from {_p}")
             break
     except Exception:
         pass
+
+LIDAR_YAW_OFFSET_DEG = float(ROBOT_DYNAMICS.get("lidar_yaw_offset_deg", 0.0))
+MIN_DRIVE_SPEED = float(ROBOT_DYNAMICS.get("min_drive_speed", 0.12))
+CRUISE_SPEED = float(ROBOT_DYNAMICS.get("cruise_speed", 0.14))
+TRIM_FACTOR = float(ROBOT_DYNAMICS.get("trim_factor", 1.0145555))
+TURN_SPEED = float(ROBOT_DYNAMICS.get("turn_speed", 0.14))
+TURN_TIME_90_SEC = float(ROBOT_DYNAMICS.get("turn_time_90_deg_sec", 4.5))
+SOFT_START_RAMP_SEC = float(ROBOT_DYNAMICS.get("soft_start_ramp_sec", 0.4))
+MAX_SAFE_SPEED_MPS = float(ROBOT_DYNAMICS.get("max_safe_speed_mps", 0.14))
+MAX_ANGULAR_SPEED_RADS = float(ROBOT_DYNAMICS.get("max_angular_speed_rads", 0.35))
+MOTOR_LEFT_POLARITY = int(ROBOT_DYNAMICS.get("motor_left_polarity", -1))
+MOTOR_RIGHT_POLARITY = int(ROBOT_DYNAMICS.get("motor_right_polarity", -1))
 
 CAMERA_WIDTH = 640
 CAMERA_HEIGHT = 480
@@ -171,8 +213,23 @@ def get_csi_pipeline(width=640, height=480, fps=20, flip=0):
         f"nvvidconv flip-method={flip} ! "
         f"video/x-raw, width={width}, height={height}, format=BGRx ! "
         f"videoconvert ! "
-        f"video/x-raw, format=BGR ! appsink drop=1"
+        f"video/x-raw, format=BGR ! appsink max-buffers=1 drop=true sync=false"
     )
+
+def try_restart_nvargus_daemon():
+    """Attempts to restart nvargus-daemon via passwordless sudo if CaptureSession failed."""
+    try:
+        res = subprocess.run(["sudo", "-n", "systemctl", "restart", "nvargus-daemon"],
+                             capture_output=True, timeout=5)
+        if res.returncode == 0:
+            print("[OK] nvargus-daemon restarted automatically via sudo systemctl.")
+            time.sleep(1.5)  # Allow daemon IPC socket to initialize
+            return True
+        else:
+            print("[INFO] sudo without password not configured for systemctl restart nvargus-daemon.")
+    except Exception as e:
+        print(f"[INFO] Systemctl restart check: {e}")
+    return False
 
 class CSICameraThread(threading.Thread):
     def __init__(self):
@@ -181,58 +238,173 @@ class CSICameraThread(threading.Thread):
         self.latest_frame = None
         self.latest_jpeg_b64 = ""
         self.running = True
+        self._init_failures = 0
+
+    def _release_cap(self):
+        """Cleanly releases and deletes any existing VideoCapture instance to prevent GStreamer memory corruption."""
+        if self.cap is not None:
+            try:
+                self.cap.release()
+            except Exception:
+                pass
+            self.cap = None
+        # Give GStreamer bus and kernel driver time to fully unload pipeline
+        time.sleep(0.3)
 
     def _open_camera(self):
+        self._release_cap()
         print(f"[INFO] Opening CSI Camera (flip={CAMERA_FLIP})...")
         pipeline = get_csi_pipeline(CAMERA_WIDTH, CAMERA_HEIGHT, CAMERA_FPS, CAMERA_FLIP)
-        cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
-        if not cap.isOpened():
-            print("[WARN] GStreamer failed. Trying USB /dev/video0...")
-            cap = cv2.VideoCapture(0)
-        return cap
+        try:
+            cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
+            if cap and cap.isOpened():
+                self._init_failures = 0
+                return cap
+            else:
+                if cap is not None:
+                    try:
+                        cap.release()
+                    except Exception:
+                        pass
+        except Exception as e:
+            print(f"[WARN] Error initializing GStreamer VideoCapture: {e}")
+
+        # Fallback to USB camera ONLY if explicitly configured by env var
+        if os.environ.get("USE_USB_CAMERA") == "1":
+            print("[INFO] Trying fallback USB /dev/video0...")
+            try:
+                cap = cv2.VideoCapture(0)
+                if cap and cap.isOpened():
+                    self._init_failures = 0
+                    return cap
+                if cap is not None:
+                    cap.release()
+            except Exception:
+                pass
+
+        self._init_failures += 1
+        return None
 
     def run(self):
+        # Initial camera open attempt
         self.cap = self._open_camera()
-        if self.cap.isOpened():
+        if self.cap and self.cap.isOpened():
             print("[OK] Camera opened successfully!")
         else:
-            print("[WARN] Camera could not be opened initially. Entering auto-reconnect loop...")
+            print("[WARN] Camera could not be opened initially. Entering resilient reconnect loop...")
+            # Try auto-restarting nvargus-daemon on initial failure
+            if try_restart_nvargus_daemon():
+                self.cap = self._open_camera()
 
-        encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 55]
+        # Quality 48 reduces base64 payload size by ~4x without visible degradation, eliminating WiFi lag
+        encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 48]
         failed_reads = 0
 
         while self.running:
             if not self.cap or not self.cap.isOpened():
-                time.sleep(1.5)
+                # Progressive backoff based on failure count
+                if self._init_failures <= 3:
+                    wait_time = 2.0
+                elif self._init_failures <= 6:
+                    wait_time = 5.0
+                    print("[WARN] nvargus-daemon may be hung. If needed, run on Jetson: 'sudo systemctl restart nvargus-daemon'")
+                else:
+                    wait_time = 15.0  # Slow backoff to prevent GStreamer C-level thrashing
+
+                time.sleep(wait_time)
+                if not self.running:
+                    break
+
                 self.cap = self._open_camera()
-                failed_reads = 0
+                if self.cap and self.cap.isOpened():
+                    print("[OK] Camera reconnected successfully!")
+                    failed_reads = 0
                 continue
 
-            ret, frame = self.cap.read()
+            try:
+                ret, frame = self.cap.read()
+            except Exception as e:
+                print(f"[WARN] Exception during cap.read(): {e}")
+                ret, frame = False, None
+
             if ret and frame is not None and frame.size > 0:
                 failed_reads = 0
-                self.latest_frame = frame.copy()
-                _, buffer = cv2.imencode('.jpg', frame, encode_param)
-                self.latest_jpeg_b64 = base64.b64encode(buffer).decode('ascii')
-                time.sleep(0.033)  # ~30 FPS live camera capture
+                self.latest_frame = frame
+                # Video is streamed independently via MJPEG HTTP server (/api/stream/mjpeg).
+                # Continuous base64 encoding removed to keep telemetry payload lightweight (<10KB) and eliminate CPU lag.
+                # No sleep here: cap.read() is hardware-synchronized to 20 FPS (prevents FIFO queue buildup)
             else:
                 failed_reads += 1
-                if failed_reads > 20:
-                    print("[WARN] Camera stream interrupted. Re-initializing GStreamer pipeline...")
-                    try:
-                        self.cap.release()
-                    except Exception:
-                        pass
-                    self.cap = None
+                if failed_reads > 15:
+                    print("[WARN] Camera stream interrupted. Safely releasing GStreamer pipeline...")
+                    self._release_cap()
                     failed_reads = 0
-                    time.sleep(1.5)
+                    # On stream stall, attempt to restart daemon once if possible
+                    if self._init_failures == 0:
+                        try_restart_nvargus_daemon()
                 else:
                     time.sleep(0.05)
 
     def stop(self):
         self.running = False
-        if self.cap:
-            self.cap.release()
+        self._release_cap()
+
+
+# ─────────────────────────────────────────────────────────────
+# 1.1 NATIVE MJPEG CAMERA HTTP SERVER (Port 8080 - Decoupled from WebSocket)
+# ─────────────────────────────────────────────────────────────
+class MJPEGStreamHandler(BaseHTTPRequestHandler):
+    camera_thread = None
+
+    def do_GET(self):
+        if self.path in ('/api/stream/mjpeg', '/video_feed', '/stream', '/'):
+            self.send_response(200)
+            self.send_header('Content-Type', 'multipart/x-mixed-replace; boundary=frame')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 50]
+            while True:
+                try:
+                    if self.camera_thread and self.camera_thread.latest_frame is not None:
+                        frame = self.camera_thread.latest_frame
+                        ret, jpeg = cv2.imencode('.jpg', frame, encode_param)
+                        if ret:
+                            self.wfile.write(b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + jpeg.tobytes() + b'\r\n')
+                    time.sleep(0.066)  # ~15 FPS native stream
+                except Exception:
+                    break
+        elif self.path == '/snapshot':
+            if self.camera_thread and self.camera_thread.latest_frame is not None:
+                ret, jpeg = cv2.imencode('.jpg', self.camera_thread.latest_frame, [int(cv2.IMWRITE_JPEG_QUALITY), 65])
+                if ret:
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'image/jpeg')
+                    self.send_header('Access-Control-Allow-Origin', '*')
+                    self.end_headers()
+                    self.wfile.write(jpeg.tobytes())
+                    return
+            self.send_response(503)
+            self.end_headers()
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+    def log_message(self, format, *args):
+        pass  # Suppress continuous access logs in console
+
+
+def start_camera_http_server(camera_thread: CSICameraThread, port: int = 8080):
+    MJPEGStreamHandler.camera_thread = camera_thread
+    class ThreadedHTTPServer(socketserver.ThreadingMixIn, HTTPServer):
+        daemon_threads = True
+        allow_reuse_address = True
+    try:
+        server = ThreadedHTTPServer(('0.0.0.0', port), MJPEGStreamHandler)
+        print(f"[OK] Native Camera MJPEG Stream active at http://0.0.0.0:{port}/api/stream/mjpeg (also /video_feed)")
+        t = threading.Thread(target=server.serve_forever, daemon=True)
+        t.start()
+    except Exception as e:
+        print(f"[WARN] Could not bind camera HTTP stream on port {port}: {e}")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -302,7 +474,7 @@ class D500LidarThread(threading.Thread):
                             # Invert angle to standard CCW mathematical coordinate frame + apply hardware offset
                             angle_ccw = (360 - int(round(raw_angle)) + int(round(LIDAR_YAW_OFFSET_DEG))) % 360
 
-                            if 0.05 < dist_m < 12.0:
+                            if 0.12 <= dist_m <= 6.00:
                                 new_hits.append((angle_ccw, round(dist_m, 3), now))
 
                         if new_hits:
@@ -310,13 +482,20 @@ class D500LidarThread(threading.Thread):
                                 for ang, dm, ts in new_hits:
                                     self.scan_cache[ang] = (dm, ts)
 
-                    # Flush 360° scan every 100ms, retaining points younger than 0.6s
+                    # Flush 360° scan every 100ms, retaining points younger than adaptive horizon
                     now = time.time()
                     if now - last_flush_time >= 0.10:
+                        # Adaptive horizon: During pivot turns (>150 deg/s), points older than 0.15s cause severe yaw smear
+                        # When driving straight or stationary, retain 0.35s to build a dense point cloud
+                        is_turning = (
+                            abs(globals().get('_active_cmd_w', 0.0)) > 0.05 or
+                            abs(globals().get('_current_pwm_l', 0.0) - globals().get('_current_pwm_r', 0.0)) > 0.05
+                        )
+                        cache_horizon = 0.15 if is_turning else 0.35
                         with self.cache_lock:
                             fresh_points = [
                                 [ang, dist] for ang, (dist, ts) in self.scan_cache.items()
-                                if now - ts < 0.6
+                                if now - ts < cache_horizon
                             ]
                         if len(fresh_points) > 15:
                             self.latest_scan = fresh_points
@@ -534,16 +713,8 @@ class TensorRTYOLOThread(threading.Thread):
                     self.latest_detections = dets
 
                     # ── 2. TRÍCH XUẤT VẬT CẢN SÁT SÀN BÙ ĐIỂM MÙ LIDAR (Floor IPM) ──
-                    roi_y = int(h_orig * 0.70)
-                    roi = frame[roi_y:h_orig, 0:w_orig]
-                    gray_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-                    blurred = cv2.GaussianBlur(gray_roi, (5, 5), 0)
-                    _, bin_obs = cv2.threshold(blurred, 150, 255, cv2.THRESH_BINARY_INV)
-                    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
-                    cleaned = cv2.morphologyEx(bin_obs, cv2.MORPH_OPEN, kernel)
-                    full_mask = np.zeros((h_orig, w_orig), dtype=np.uint8)
-                    full_mask[roi_y:h_orig, 0:w_orig] = cleaned
-                    self.latest_low_obstacles = self.ipm.extract_low_obstacles_from_mask(full_mask)[:4]
+                    # Vô hiệu hóa Floor IPM: tránh bóng phản chiếu sàn gạch men gây ra báo động va chạm giả
+                    self.latest_low_obstacles = []
 
                     # Terminal visual feedback when objects detected
                     if dets:
@@ -571,59 +742,170 @@ class TensorRTYOLOThread(threading.Thread):
 # ─────────────────────────────────────────────────────────────
 _last_cmd_time = 0.0
 _is_motor_moving = False
+_current_pwm_l = 0.0
+_current_pwm_r = 0.0
+_last_slew_time = 0.0
 
-def set_raw_motor_speeds(left_norm: float, right_norm: float):
+# Slew-Rate Filter State for Smooth Acceleration (Soft-Start Ramp)
+_active_cmd_v = 0.0
+_active_cmd_w = 0.0
+_current_spin_pwm = 0.0
+_last_vel_cmd_time = 0.0
+
+def set_raw_motor_speeds(target_l: float, target_r: float):
     """Differential drive normalized motor control [-1.0 .. 1.0].
-    Applies JetBot physical wiring polarity correction (negative duty cycle drives forward).
+    Applies:
+      1. Trim compensation factor (trim_factor = 1.0145555) to ensure straight line drive
+      2. Physical wiring polarity correction
+      3. Safe motor dispatch to Adafruit MotorHAT or jetbot.Robot
     """
-    left_norm = max(-1.0, min(1.0, left_norm))
-    right_norm = max(-1.0, min(1.0, right_norm))
+    global _current_pwm_l, _current_pwm_r, _is_motor_moving
 
-    # Wiring polarity inversion: negative speed spins wheels forward on JetBot chassis
-    hw_left = -left_norm
-    hw_right = -right_norm
+    _current_pwm_l = max(-1.0, min(1.0, float(target_l)))
+    _current_pwm_r = max(-1.0, min(1.0, float(target_r)))
 
-    # Scale down motor speed (default 0.32 for gentle, controllable driving and real-time obstacle evasion)
-    SPEED_FACTOR = float(os.environ.get("SPEED_FACTOR", "0.32"))
-    # Minimum PWM threshold to overcome static friction (min_drive_speed: 0.18-0.20 from robot_dynamics.json)
-    MIN_PWM = 40          # ~0.16 * 255 = 40 PWM (gentle roll)
-    MIN_JETBOT_SPEED = 0.16
+    # Apply trim balancing and polarity correction
+    # Left motor is scaled by TRIM_FACTOR (calibrated 1.0145555)
+    hw_left = _current_pwm_l * TRIM_FACTOR * MOTOR_LEFT_POLARITY
+    hw_right = _current_pwm_r * MOTOR_RIGHT_POLARITY
+
+    # Clamp duty cycles
+    hw_left = max(-1.0, min(1.0, hw_left))
+    hw_right = max(-1.0, min(1.0, hw_right))
+
+    _is_motor_moving = (abs(_current_pwm_l) > 0.01 or abs(_current_pwm_r) > 0.01)
 
     if HAS_MOTOR:
         try:
             if left_motor_dev and right_motor_dev:
-                left_speed = int(min(255, max(MIN_PWM, abs(hw_left) * 255 * SPEED_FACTOR))) if abs(left_norm) > 0.02 else 0
-                right_speed = int(min(255, max(MIN_PWM, abs(hw_right) * 255 * SPEED_FACTOR))) if abs(right_norm) > 0.02 else 0
-                left_motor_dev.setSpeed(left_speed)
-                right_motor_dev.setSpeed(right_speed)
+                l_pwm = int(round(min(255, max(0, abs(hw_left) * 255))))
+                r_pwm = int(round(min(255, max(0, abs(hw_right) * 255))))
+                left_motor_dev.setSpeed(l_pwm)
+                right_motor_dev.setSpeed(r_pwm)
                 left_motor_dev.run(1 if hw_left >= 0 else 2)
                 right_motor_dev.run(1 if hw_right >= 0 else 2)
             elif 'jetbot_robot' in globals() and jetbot_robot:
-                cmd_l = math.copysign(max(MIN_JETBOT_SPEED, abs(hw_left) * SPEED_FACTOR), hw_left) if abs(left_norm) > 0.02 else 0.0
-                cmd_r = math.copysign(max(MIN_JETBOT_SPEED, abs(hw_right) * SPEED_FACTOR), hw_right) if abs(right_norm) > 0.02 else 0.0
-                jetbot_robot.set_motors(cmd_l, cmd_r)
+                jetbot_robot.set_motors(hw_left, hw_right)
         except Exception as e:
             print(f"[ERROR] Motor drive: {e}")
     else:
-        if abs(left_norm) > 0.02 or abs(right_norm) > 0.02:
-            print(f"[MOTOR RAW] L={hw_left*SPEED_FACTOR:.2f}, R={hw_right*SPEED_FACTOR:.2f}")
+        if _is_motor_moving:
+            print(f"[MOTOR RAW] L={_current_pwm_l:+.3f} (hw={hw_left:+.3f}), R={_current_pwm_r:+.3f} (hw={hw_right:+.3f})")
 
 def set_motor_speeds(linear: float, angular: float):
-    """Convert linear (m/s) and angular (rad/s) to differential drive normalized speeds.
-    Standard differential drive equations without double negation.
+    """Convert linear (m/s) and angular (rad/s) to calibrated motor outputs.
+    Adheres strictly to physical dynamics on glossy ceramic tile:
+      1. Slew-Rate Soft-Start: Smoothly ramps speed up from 0 to target over SOFT_START_RAMP_SEC (0.4s)
+         without resetting on continuous streaming commands.
+      2. True Bidirectional Support: Full support for both FORWARD (linear > 0) and BACKWARD (linear < 0).
+      3. Precise In-Place Turn: Spins at TURN_SPEED (0.16) with gentle spin acceleration.
+      4. Differential Steering: Smooth curving without motor stall deadband.
+      5. Trim Compensation: Keeps straight trajectory without lateral veer.
     """
-    track_width = 0.115
-    max_speed = 0.20  # Max safe linear velocity matching min_drive_speed requirement (0.18 - 0.20 m/s)
+    global _active_cmd_v, _active_cmd_w, _last_vel_cmd_time
+    now = time.time()
+    dt = 0.05
+    if _last_vel_cmd_time > 0:
+        dt = max(0.01, min(0.2, now - _last_vel_cmd_time))
+    _last_vel_cmd_time = now
 
-    left = linear - (angular * track_width / 2.0)
-    right = linear + (angular * track_width / 2.0)
+    # 1. Full stop
+    if abs(linear) < 0.005 and abs(angular) < 0.02:
+        _active_cmd_v = 0.0
+        _active_cmd_w = 0.0
+        set_raw_motor_speeds(0.0, 0.0)
+        return
 
-    left_norm = max(-1.0, min(1.0, left / max_speed))
-    right_norm = max(-1.0, min(1.0, right / max_speed))
-    set_raw_motor_speeds(left_norm, right_norm)
+    # Slew-Rate Limiting for Linear Speed (Acc: cruise_speed / soft_start_ramp_sec)
+    ramp_duration = max(0.1, SOFT_START_RAMP_SEC)  # 0.4s
+    max_accel = max(0.2, CRUISE_SPEED / ramp_duration)  # ~0.35 m/s^2
+    max_step_v = max_accel * dt
+
+    # Smooth linear velocity tracking
+    diff_v = linear - _active_cmd_v
+    if abs(diff_v) <= max_step_v:
+        _active_cmd_v = linear
+    else:
+        _active_cmd_v += math.copysign(max_step_v, diff_v)
+
+    # Slew-Rate Limiting for Angular Speed
+    # When transitioning from pivot turn (v=0) to linear drive (v>0), snap angular velocity immediately
+    # to prevent residual 3.14 rad/s pivot turn rate from jerking the robot into the wall
+    if abs(linear) > 0.01 and abs(_active_cmd_v) < 0.01:
+        _active_cmd_w = angular
+    else:
+        max_step_w = (1.5 / 0.25) * dt
+        diff_w = angular - _active_cmd_w
+        if abs(diff_w) <= max_step_w:
+            _active_cmd_w = angular
+        else:
+            _active_cmd_w += math.copysign(max_step_w, diff_w)
+
+    v = _active_cmd_v
+    w = _active_cmd_w
+    # 2. In-place turn (Stop-Turn-Go / Soft Pivot Spin to prevent SLAM slip drift)
+    global _current_spin_pwm
+    if abs(v) < 0.01 and abs(w) >= 0.02:
+        # Scale target spin PWM proportionally with |w| relative to max angular speed
+        max_w = float(ROBOT_DYNAMICS.get("max_angular_speed_rads", 0.50))
+        w_ratio = min(1.0, abs(w) / max_w)
+
+        # Soft spin bounds: minimum PWM to overcome gearbox stiction (MIN_DRIVE_SPEED), up to TURN_SPEED
+        min_spin_pwm = MIN_DRIVE_SPEED if "MIN_DRIVE_SPEED" in globals() else 0.10
+        max_spin_pwm = TURN_SPEED if "TURN_SPEED" in globals() else 0.14
+        target_spin = min_spin_pwm + (max_spin_pwm - min_spin_pwm) * w_ratio
+
+        # Slew-Rate Limiting for Spin PWM (gentle ramp: max 0.40 PWM units/sec to prevent rotational slip)
+        spin_slew_rate = 0.40
+        max_spin_step = spin_slew_rate * dt
+        diff_spin = target_spin - _current_spin_pwm
+        if abs(diff_spin) <= max_spin_step:
+            _current_spin_pwm = target_spin
+        else:
+            _current_spin_pwm += math.copysign(max_spin_step, diff_spin)
+
+        u_spin = _current_spin_pwm
+
+        if w > 0:
+            # Turn Left (CCW)
+            set_raw_motor_speeds(-u_spin, u_spin)
+        else:
+            # Turn Right (CW)
+            set_raw_motor_speeds(u_spin, -u_spin)
+        return
+    else:
+        _current_spin_pwm = 0.0
+
+    # 3. Linear drive (Forward or Backward) with True Differential Drive Kinematics
+    # Unicycle Kinematics: v_L = v - w * (L/2), v_R = v + w * (L/2) with track width L = 0.12m
+    half_track = 0.06
+    vl = v - (w * half_track)
+    vr = v + (w * half_track)
+
+    def velocity_to_pwm(wheel_v: float) -> float:
+        if abs(wheel_v) < 0.005:
+            return 0.0
+        sign = 1.0 if wheel_v >= 0 else -1.0
+        v_norm = min(1.0, abs(wheel_v) / max(0.05, MAX_SAFE_SPEED_MPS))
+        # Deadband compensation: map [0, 1] to [MIN_DRIVE_SPEED, CRUISE_SPEED]
+        return sign * (MIN_DRIVE_SPEED + (CRUISE_SPEED - MIN_DRIVE_SPEED) * v_norm)
+
+    target_l = max(-1.0, min(1.0, velocity_to_pwm(vl)))
+    target_r = max(-1.0, min(1.0, velocity_to_pwm(vr)))
+
+    set_raw_motor_speeds(target_l, target_r)
 
 def stop_motors():
-    global _is_motor_moving
+    global _is_motor_moving, _current_pwm_l, _current_pwm_r, _last_slew_time
+    global _active_cmd_v, _active_cmd_w, _current_spin_pwm, _last_vel_cmd_time
+    was_moving = _is_motor_moving
+    _current_pwm_l = 0.0
+    _current_pwm_r = 0.0
+    _last_slew_time = 0.0
+    _active_cmd_v = 0.0
+    _active_cmd_w = 0.0
+    _current_spin_pwm = 0.0
+    _last_vel_cmd_time = 0.0
     if HAS_MOTOR:
         try:
             if left_motor_dev and right_motor_dev:
@@ -634,7 +916,8 @@ def stop_motors():
         except Exception:
             pass
     _is_motor_moving = False
-    print("[MOTOR] STOPPED")
+    if was_moving:
+        print("[MOTOR] STOPPED")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -666,7 +949,6 @@ async def bridge_loop(camera: CSICameraThread, lidar: D500LidarThread, yolo: Ten
                         payload = {
                             "type": "robot_telemetry",
                             "timestamp": now,
-                            "camera": camera.latest_jpeg_b64,
                             "lidar": lidar.latest_scan,
                             "detections": yolo.latest_detections,
                             "low_obstacles": getattr(yolo, "latest_low_obstacles", []),
@@ -674,7 +956,7 @@ async def bridge_loop(camera: CSICameraThread, lidar: D500LidarThread, yolo: Ten
                             "yolo_active": HAS_TRT and getattr(yolo, "engine", None) is not None
                         }
                         await ws.send(json.dumps(payload))
-                        await asyncio.sleep(0.066)  # 15 FPS
+                        await asyncio.sleep(0.045)  # ~22 FPS responsive rate
 
                 async def receive_commands():
                     global _last_cmd_time, _is_motor_moving
@@ -714,7 +996,40 @@ async def bridge_loop(camera: CSICameraThread, lidar: D500LidarThread, yolo: Ten
                             print("[WATCHDOG] 1.5s timeout with no drive command! Safety Auto-Stop triggered.")
                             stop_motors()
 
-                await asyncio.gather(send_telemetry(), receive_commands(), watchdog_task())
+                # Internal Hardware Safety Reflex Task: 20 Hz (Dual-Tier Safety Architecture)
+                # Dynamic Stopping Distance Profile: D_crit(v) = max(0.22, 0.18 + 0.35 * v)
+                # Prevents mechanical collisions caused by sensor-actuator latency & slip on tile
+                async def hardware_reflex_task():
+                    global _is_motor_moving, _active_cmd_v
+                    while True:
+                        await asyncio.sleep(0.05)  # 20 Hz check
+                        if _is_motor_moving and _active_cmd_v > 0.02:
+                            curr_v = _active_cmd_v
+                            # Dynamic critical distance based on real forward speed (forward drive protection)
+                            d_crit = max(0.20, 0.16 + 0.35 * curr_v)
+                            if lidar and hasattr(lidar, "scan_cache"):
+                                with lidar.cache_lock:
+                                    cache_items = list(lidar.scan_cache.items())
+                                now_l = time.time()
+                                frontal_dists = [
+                                    dist_m for raw_ang, (dist_m, ts) in cache_items
+                                    if (now_l - ts < 0.35) and (0.12 <= dist_m < d_crit) and
+                                    (raw_ang <= 28.0 or raw_ang >= 332.0)
+                                ]
+                                if frontal_dists:
+                                    min_d = min(frontal_dists)
+                                    print(f"[FAIL-SAFE REFLEX] Frontal obstacle at {min_d:.2f}m < D_crit({d_crit:.2f}m)! Triggering Emergency Dynamic Brake.")
+                                    stop_motors()
+                                    try:
+                                        await ws.send(json.dumps({
+                                            "type": "hardware_emergency_brake",
+                                            "reason": f"Obstacle at {min_d:.2f}m closer than D_crit({d_crit:.2f}m)",
+                                            "timestamp": time.time()
+                                        }))
+                                    except Exception:
+                                        pass
+
+                await asyncio.gather(send_telemetry(), receive_commands(), watchdog_task(), hardware_reflex_task())
 
         except Exception as e:
             print(f"[DISCONNECTED] Lost connection ({e}). Reconnecting in 2 seconds...")
@@ -727,10 +1042,18 @@ async def bridge_loop(camera: CSICameraThread, lidar: D500LidarThread, yolo: Ten
 # ─────────────────────────────────────────────────────────────
 def main():
     global WS_URL, SERVER_HOST, SERVER_PORT
-    if len(sys.argv) > 1 and not sys.argv[1].startswith("-"):
-        SERVER_HOST = sys.argv[1]
-    if len(sys.argv) > 2 and sys.argv[2].isdigit():
-        SERVER_PORT = int(sys.argv[2])
+    import argparse
+    parser = argparse.ArgumentParser(description="NVIDIA JetBot Hardware Bridge")
+    parser.add_argument("pos_host", nargs="?", default=None, help="Dashboard host IP (positional)")
+    parser.add_argument("pos_port", nargs="?", type=int, default=None, help="Dashboard port (positional)")
+    parser.add_argument("--host", dest="flag_host", default=None, help="Dashboard host IP (--host)")
+    parser.add_argument("--port", dest="flag_port", type=int, default=None, help="Dashboard port (--port)")
+    args, _ = parser.parse_known_args()
+
+    host = args.flag_host or args.pos_host or os.environ.get("DASHBOARD_HOST") or os.environ.get("DASHBOARD_IP") or "192.168.1.8"
+    port = args.flag_port or args.pos_port or int(os.environ.get("DASHBOARD_PORT", "8000"))
+    SERVER_HOST = host
+    SERVER_PORT = port
     WS_URL = f"ws://{SERVER_HOST}:{SERVER_PORT}/ws/robot"
 
     print("=" * 65)
@@ -744,6 +1067,7 @@ def main():
 
     cam = CSICameraThread()
     cam.start()
+    start_camera_http_server(cam, port=8080)
 
     lidar = D500LidarThread(port=LIDAR_PORT, baudrate=LIDAR_BAUDRATE)
     lidar.start()

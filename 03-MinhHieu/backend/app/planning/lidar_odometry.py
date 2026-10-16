@@ -11,6 +11,8 @@ Academic Standard (2024-2026 IEEE Robotics & Autonomous Systems):
 ==============================================================
 """
 
+import os
+import json
 import math
 import time
 from typing import List, Tuple, Optional, Dict, Any
@@ -32,7 +34,7 @@ class Lidar2DOdometry:
     def __init__(
         self,
         min_range_m: float = 0.15,
-        max_range_m: float = 2.40,
+        max_range_m: float = 6.00,
         decimation_step: int = 2,
         max_iterations: int = 8,
         convergence_tol_dist: float = 5e-4,
@@ -40,7 +42,7 @@ class Lidar2DOdometry:
         max_correspondence_dist: float = 0.25,
         min_inlier_ratio: float = 0.35,
         max_physical_speed_mps: float = 0.35,
-        max_physical_yaw_rate_rads: float = 2.0
+        max_physical_yaw_rate_rads: float = 4.0
     ):
         self.min_range_m = float(min_range_m)
         self.max_range_m = float(max_range_m)
@@ -52,6 +54,11 @@ class Lidar2DOdometry:
         self.min_inlier_ratio = float(min_inlier_ratio)
         self.max_physical_speed = float(max_physical_speed_mps)
         self.max_physical_yaw_rate = float(max_physical_yaw_rate_rads)
+
+        # Calibrated pivot turn rate (bounded to <= 0.35 rad/s for stable scan matching)
+        self.turn_time_90_deg_sec: float = 4.5
+        self.calibrated_pivot_yaw_rate: float = 0.35
+        self.load_dynamics_config()
 
         # Integrated Global Pose (x, y, theta)
         self.x: float = 0.0
@@ -76,6 +83,41 @@ class Lidar2DOdometry:
         self.last_fitness_score: float = 0.0
         self.last_inlier_count: int = 0
         self.last_status: str = "INITIALIZING"
+
+    def load_dynamics_config(self, config_path: Optional[str] = None):
+        """Loads physical motor dynamics and turn calibration from JSON config."""
+        if config_path is None:
+            search_paths = [
+                os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", "setup", "robot_dynamics.json"),
+                os.path.join(os.path.dirname(__file__), "..", "..", "setup", "robot_dynamics.json"),
+                os.path.join(os.path.dirname(__file__), "..", "setup", "robot_dynamics.json"),
+                os.path.join(os.path.dirname(__file__), "robot_dynamics.json"),
+                os.path.join(os.path.dirname(__file__), "..", "..", "03-MinhHieu", "test-hardware", "robot_dynamics.json"),
+                os.path.join(os.path.dirname(__file__), "..", "test-hardware", "robot_dynamics.json"),
+                os.path.expanduser("~/setup/robot_dynamics.json"),
+                os.path.expanduser("~/03-MinhHieu/test-hardware/robot_dynamics.json"),
+                os.path.expanduser("~/CS532-main/setup/robot_dynamics.json"),
+            ]
+            for p in search_paths:
+                if os.path.isfile(p):
+                    config_path = p
+                    break
+        if config_path and os.path.isfile(config_path):
+            try:
+                with open(config_path, "r", encoding="utf-8") as f:
+                    cfg = json.load(f)
+                if "max_angular_speed_rads" in cfg:
+                    self.calibrated_pivot_yaw_rate = min(0.35, float(cfg["max_angular_speed_rads"]))
+                elif "turn_time_90_deg_sec" in cfg:
+                    t90 = float(cfg["turn_time_90_deg_sec"])
+                    if t90 > 0:
+                        self.turn_time_90_deg_sec = t90
+                        self.calibrated_pivot_yaw_rate = min(0.35, (math.pi / 2.0) / t90)
+                self.max_physical_yaw_rate = max(1.0, self.calibrated_pivot_yaw_rate * 2.0)
+                if "max_safe_speed_mps" in cfg:
+                    self.max_physical_speed = float(cfg["max_safe_speed_mps"])
+            except Exception:
+                pass
 
     def reset_pose(self, x: float = 0.0, y: float = 0.0, theta: float = 0.0):
         """Reset integrated odometry pose."""
@@ -318,12 +360,120 @@ class Lidar2DOdometry:
 
         return dx_est, dy_est, dtheta_est, is_reliable, info
 
+    def match_scan_to_map(
+        self,
+        current_cloud: np.ndarray,
+        grid_map: Any,
+        prior_x: float,
+        prior_y: float,
+        prior_theta: float,
+        max_iterations: int = 6
+    ) -> Tuple[float, float, float, bool, Dict[str, Any]]:
+        """
+        Gauss-Newton Scan-to-Map Matching (Kohlbrecher et al., Hector SLAM 2011).
+        Directly optimizes robot pose xi = (x, y, theta) against the continuous
+        occupancy probability field M(x, y) of grid_map.
+        
+        Cost function: min sum (1 - M(S_i(xi)))^2
+        Hessian: H = sum J_i^T J_i + lambda * I
+        Gradient: g = sum J_i^T (1 - M(S_i(xi)))
+        
+        Returns:
+            est_x, est_y, est_theta, is_reliable, info_dict
+        """
+        if current_cloud is None or len(current_cloud) < 15 or grid_map is None:
+            return prior_x, prior_y, prior_theta, False, {"reason": "INSUFFICIENT_POINTS_OR_NO_MAP"}
+
+        curr_x = float(prior_x)
+        curr_y = float(prior_y)
+        curr_th = float(prior_theta)
+
+        converged = False
+        final_residual = 1.0
+        inlier_count = 0
+
+        # Damping parameter for Levenberg-Marquardt regularization
+        lambda_lm = 1e-2
+
+        pts_rx = current_cloud[:, 0]
+        pts_ry = current_cloud[:, 1]
+
+        for it in range(max_iterations):
+            c_th = math.cos(curr_th)
+            s_th = math.sin(curr_th)
+
+            # Transform body points to world frame: S_i(xi)
+            p_wx = c_th * pts_rx - s_th * pts_ry + curr_x
+            p_wy = s_th * pts_rx + c_th * pts_ry + curr_y
+            world_pts = np.column_stack((p_wx, p_wy))
+
+            # Query interpolated occupancy probabilities and spatial gradients nabla M
+            m_vals, grad_x, grad_y, valid_mask = grid_map.get_interpolated_value_and_gradient(world_pts)
+
+            inlier_count = int(np.count_nonzero(valid_mask))
+            if inlier_count < 12:
+                break
+
+            m_v = m_vals[valid_mask]
+            gx_v = grad_x[valid_mask]
+            gy_v = grad_y[valid_mask]
+
+            dx_w = world_pts[valid_mask, 0] - curr_x
+            dy_w = world_pts[valid_mask, 1] - curr_y
+
+            # Jacobian J_i = [dM/dx, dM/dy, -dM/dx * dy_w + dM/dy * dx_w]
+            j_th = -gx_v * dy_w + gy_v * dx_w
+            J = np.column_stack((gx_v, gy_v, j_th))
+
+            # Residual: r_i = 1.0 - M(p_i)
+            residuals = 1.0 - m_v
+            final_residual = float(np.mean(np.abs(residuals)))
+
+            # Approximate Hessian H = J^T J + lambda * I
+            H = J.T @ J
+            H[0, 0] += lambda_lm
+            H[1, 1] += lambda_lm
+            H[2, 2] += lambda_lm * 0.1
+
+            g = J.T @ residuals
+
+            try:
+                delta = np.linalg.solve(H, g)
+            except np.linalg.LinAlgError:
+                break
+
+            step_x = float(np.clip(delta[0], -0.06, 0.06))
+            step_y = float(np.clip(delta[1], -0.06, 0.06))
+            step_th = float(np.clip(delta[2], -0.12, 0.12))
+
+            curr_x += step_x
+            curr_y += step_y
+            curr_th = (curr_th + step_th + math.pi) % (2.0 * math.pi) - math.pi
+
+            step_dist = math.hypot(step_x, step_y)
+            if step_dist < self.convergence_tol_dist and abs(step_th) < self.convergence_tol_angle:
+                converged = True
+                break
+
+        is_reliable = (inlier_count >= 15) and (final_residual < 0.65)
+        info = {
+            "method": "GAUSS_NEWTON_SCAN_TO_MAP",
+            "iterations": it + 1,
+            "converged": converged,
+            "inliers": inlier_count,
+            "residual_m": round(final_residual, 4),
+            "reason": "OK" if is_reliable else "DEGRADED_MAP_MATCH"
+        }
+
+        return curr_x, curr_y, curr_th, is_reliable, info
+
     def update(
         self,
         ranges: List[float],
         dt: float = 0.1,
         v_cmd: float = 0.0,
-        w_cmd: float = 0.0
+        w_cmd: float = 0.0,
+        grid_map: Optional[Any] = None
     ) -> Tuple[float, float, float, Dict[str, Any]]:
         """
         Processes an incoming 360-degree LiDAR scan at 10Hz.
@@ -336,9 +486,17 @@ class Lidar2DOdometry:
         dt = max(0.001, min(0.5, dt))
 
         # Kinematic Motion Prior (Dead-reckoning guess for local step)
-        prior_dx = v_cmd * dt * math.cos(0.5 * w_cmd * dt)
-        prior_dy = v_cmd * dt * math.sin(0.5 * w_cmd * dt)
-        prior_dtheta = (w_cmd * dt + math.pi) % (2.0 * math.pi) - math.pi
+        # Check if in pivot turn mode: negligible linear speed, active angular command
+        is_pivot = (abs(v_cmd) < 0.02 and abs(w_cmd) > 0.05)
+        if is_pivot:
+            eff_w = w_cmd if abs(w_cmd) > 0.01 else math.copysign(self.calibrated_pivot_yaw_rate, w_cmd)
+        else:
+            eff_w = w_cmd
+        eff_w = max(-self.max_physical_yaw_rate, min(self.max_physical_yaw_rate, eff_w))
+
+        prior_dx = v_cmd * dt * math.cos(0.5 * eff_w * dt)
+        prior_dy = v_cmd * dt * math.sin(0.5 * eff_w * dt)
+        prior_dtheta = (eff_w * dt + math.pi) % (2.0 * math.pi) - math.pi
 
         # 1. Convert scan to 2D cloud
         curr_cloud = self.scan_to_point_cloud(ranges)
@@ -377,85 +535,107 @@ class Lidar2DOdometry:
                 "dx": 0.0, "dy": 0.0, "dtheta": 0.0
             }
         else:
-            # 2. Run Fast Vectorized 2D ICP
-            dx_matched, dy_matched, dth_matched, is_reliable, match_info = self.match_scans(
-                curr_cloud,
-                prior_dx=prior_dx,
-                prior_dy=prior_dy,
-                prior_dtheta=prior_dtheta
+            # 2. Tier 1 Primary Localizer: Hector SLAM Gauss-Newton (Scan-to-Map against Anchor Field)
+            has_map_geometry = (
+                grid_map is not None and 
+                hasattr(grid_map, "get_interpolated_value_and_gradient") and
+                (getattr(grid_map, "anchor_map_locked", False) or np.count_nonzero(getattr(grid_map, "log_odds", np.zeros((1, 1))) > 0.5) >= 20)
             )
 
-            # Physical limit gating (prevent unphysical teleportation)
-            max_allowed_step_dist = max(0.04, self.max_physical_speed * dt * 1.8)
-            max_allowed_step_yaw = max(0.08, self.max_physical_yaw_rate * dt * 1.8)
+            # Prior from kinematic control commands
+            c_prior = math.cos(self.theta)
+            s_prior = math.sin(self.theta)
+            cand_x = self.x + (c_prior * prior_dx - s_prior * prior_dy)
+            cand_y = self.y + (s_prior * prior_dx + c_prior * prior_dy)
+            cand_th = (self.theta + prior_dtheta + math.pi) % (2.0 * math.pi) - math.pi
 
-            dist_step = math.hypot(dx_matched, dy_matched)
-            if dist_step > max_allowed_step_dist or abs(dth_matched) > max_allowed_step_yaw:
-                is_reliable = False
-                match_info["reason"] = "EXCEEDED_PHYSICAL_LIMITS"
+            scan_to_map_succeeded = False
+            match_info = {}
+            dx_res = prior_dx
+            dy_res = prior_dy
+            dth_res = prior_dtheta
+            is_reliable = False
 
-            if is_reliable:
-                dx_res = dx_matched
-                dy_res = dy_matched
-                dth_res = dth_matched
-                self.last_status = "LIDAR_MATCH_SUCCESS"
-                # Update reference keyframe
-                self.prev_points_2d = curr_cloud
-                self.prev_normals, self.prev_valid_normals = self._compute_point_cloud_normals(curr_cloud)
-                if HAS_CKDTREE:
-                    self.prev_kdtree = cKDTree(curr_cloud)
-            else:
-                # Graceful fallback to command kinematics for this single tick
-                dx_res = prior_dx
-                dy_res = prior_dy
-                dth_res = prior_dtheta
-                self.last_status = f"FALLBACK_KINEMATIC_{match_info.get('reason', 'UNKNOWN')}"
+            if has_map_geometry and len(curr_cloud) >= 15:
+                gn_x, gn_y, gn_th, gn_reliable, gn_info = self.match_scan_to_map(
+                    curr_cloud, grid_map, cand_x, cand_y, cand_th
+                )
+                delta_p = math.hypot(gn_x - self.x, gn_y - self.y)
+                delta_th = abs((gn_th - self.theta + math.pi) % (2.0 * math.pi) - math.pi)
+                
+                # Hard constraint: During pure rotation (v_cmd ~ 0), clamp translation to <= 1cm
+                if is_pivot or abs(v_cmd) < 0.02:
+                    max_allowed_p = 0.012  # <= 1.2 cm max allowed drift during rotation
+                else:
+                    max_allowed_p = max(0.08, self.max_physical_speed * dt * 2.2)
+                max_allowed_th = max(0.25, self.max_physical_yaw_rate * dt * 2.2)
 
-        # 3. Integrate into Global Coordinate Frame (World Frame)
-        c_world = math.cos(self.theta)
-        s_world = math.sin(self.theta)
+                if gn_reliable and delta_p <= max_allowed_p and delta_th <= max_allowed_th:
+                    dx_res = (gn_x - self.x) * c_prior + (gn_y - self.y) * s_prior
+                    dy_res = -(gn_x - self.x) * s_prior + (gn_y - self.y) * c_prior
+                    dth_res = (gn_th - self.theta + math.pi) % (2.0 * math.pi) - math.pi
+                    self.x = gn_x
+                    self.y = gn_y
+                    self.theta = gn_th
+                    self.last_status = "HECTOR_SCAN_TO_MAP_PRIMARY_SUCCESS"
+                    is_reliable = True
+                    match_info = gn_info
+                    scan_to_map_succeeded = True
 
-        world_dx = c_world * dx_res - s_world * dy_res
-        world_dy = s_world * dx_res + c_world * dy_res
+                    # Update reference keyframe
+                    self.prev_points_2d = curr_cloud
+                    self.prev_normals, self.prev_valid_normals = self._compute_point_cloud_normals(curr_cloud)
+                    if HAS_CKDTREE:
+                        self.prev_kdtree = cKDTree(curr_cloud)
 
-        cand_x = self.x + world_dx
-        cand_y = self.y + world_dy
-        cand_th = (self.theta + dth_res + math.pi) % (2.0 * math.pi) - math.pi
+            if not scan_to_map_succeeded:
+                # Tier 2 Fallback: Fast 2D ICP Scan-to-Scan or Kinematics
+                dx_matched, dy_matched, dth_matched, icp_reliable, icp_info = self.match_scans(
+                    curr_cloud,
+                    prior_dx=prior_dx,
+                    prior_dy=prior_dy,
+                    prior_dtheta=prior_dtheta
+                )
+                if is_pivot or abs(v_cmd) < 0.02:
+                    max_allowed_step_dist = 0.012  # Strict 1.2cm bound during in-place pivot
+                else:
+                    max_allowed_step_dist = max(0.04, self.max_physical_speed * dt * 1.8)
+                max_allowed_step_yaw = max(0.15, self.max_physical_yaw_rate * dt * 1.8)
+                dist_step = math.hypot(dx_matched, dy_matched)
+                if dist_step > max_allowed_step_dist or abs(dth_matched) > max_allowed_step_yaw:
+                    icp_reliable = False
+                    icp_info["reason"] = "EXCEEDED_PHYSICAL_LIMITS"
 
-        # 4. Scan-to-Anchor Correction (Anchor Map Alignment)
-        # Pulls rotation & translation back to static room walls to eliminate drift
-        if self.anchor_cloud is not None and len(self.anchor_cloud) >= 15 and is_reliable:
-            c_c = math.cos(cand_th)
-            s_c = math.sin(cand_th)
-            curr_world = np.column_stack((
-                c_c * curr_cloud[:, 0] - s_c * curr_cloud[:, 1] + cand_x,
-                s_c * curr_cloud[:, 0] + c_c * curr_cloud[:, 1] + cand_y
-            )).astype(np.float32)
+                if icp_reliable:
+                    dx_res = dx_matched
+                    dy_res = dy_matched
+                    dth_res = dth_matched
+                    self.last_status = "LIDAR_MATCH_SUCCESS"
+                    is_reliable = True
+                    match_info = icp_info
+                    self.prev_points_2d = curr_cloud
+                    self.prev_normals, self.prev_valid_normals = self._compute_point_cloud_normals(curr_cloud)
+                    if HAS_CKDTREE:
+                        self.prev_kdtree = cKDTree(curr_cloud)
+                else:
+                    dx_res = prior_dx
+                    dy_res = prior_dy
+                    dth_res = prior_dtheta
+                    self.last_status = f"FALLBACK_KINEMATIC_{icp_info.get('reason', 'UNKNOWN')}"
+                    match_info = icp_info
 
-            dists, idxs = self._find_nearest_neighbors(curr_world, self.anchor_cloud, self.anchor_kdtree)
-            inliers = dists < 0.20
-            min_inliers = max(15, int(len(curr_cloud) * 0.30))
+                # Clamp residual translation during pivot
+                if is_pivot or abs(v_cmd) < 0.02:
+                    step_norm = math.hypot(dx_res, dy_res)
+                    if step_norm > 0.01:
+                        dx_res = (dx_res / step_norm) * 0.01
+                        dy_res = (dy_res / step_norm) * 0.01
 
-            if np.count_nonzero(inliers) >= min_inliers:
-                matched_curr = curr_world[inliers]
-                matched_anchor = self.anchor_cloud[idxs[inliers]]
-                corr_dx, corr_dy, corr_dth = self._solve_2d_rigid_transform(matched_curr, matched_anchor)
-
-                # Sanity gate anchor correction with lever-arm compensation
-                # Rigid transform: P_anchor ~ R_corr * P_world + t_corr
-                # Robot pose transforms as: X' = R_corr * X + t_corr => delta_X = (R_corr - I) * X + t_corr
-                if math.hypot(corr_dx, corr_dy) < 0.12 and abs(corr_dth) < 0.20:
-                    c_corr = math.cos(corr_dth)
-                    s_corr = math.sin(corr_dth)
-                    delta_x = (c_corr - 1.0) * cand_x - s_corr * cand_y + corr_dx
-                    delta_y = s_corr * cand_x + (c_corr - 1.0) * cand_y + corr_dy
-                    cand_x += delta_x * 0.5
-                    cand_y += delta_y * 0.5
-                    cand_th = (cand_th + corr_dth * 0.5 + math.pi) % (2.0 * math.pi) - math.pi
-
-        self.x = cand_x
-        self.y = cand_y
-        self.theta = cand_th
+                world_dx = c_prior * dx_res - s_prior * dy_res
+                world_dy = s_prior * dx_res + c_prior * dy_res
+                self.x += world_dx
+                self.y += world_dy
+                self.theta = (self.theta + dth_res + math.pi) % (2.0 * math.pi) - math.pi
 
         self.match_count += 1
         self.last_computation_time_ms = (time.time() - t0) * 1000.0

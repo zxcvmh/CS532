@@ -76,3 +76,47 @@
   - [ ] Cài đặt mô hình động học xe vi sai có ràng buộc gia tốc thực tế trong `simulation/virtual_robot.py`.
   - [ ] Cung cấp cờ cấu hình chuyển đổi (Mock toggle) để `planning` và `web` kiểm thử toàn bộ hệ thống ngay trên máy tính mà không cần phần cứng.
 
+---
+
+## 📌 SPRINT THỰC ĐỊA: XỬ LÝ DỨT ĐIỂM 3 LỖI THỰC ĐỊA TRÊN JETBOT
+
+---
+
+### Ticket TK-FIELD-01: [CONTROLLER] Khắc phục Actuation Deadlock v=0 làm liệt w trong controller.py
+- **Agent gán trách nhiệm:** `motion-planning-algorithm-agent`
+- **Mức độ ưu tiên:** 🔴 **P0 — Critical Blocker (HOÀN THÀNH - 100%)**
+- **Mô tả vấn đề:**
+  Khi $v = 0.0$ (dừng vì vật cản, cushion giảm tốc hoặc tiếp cận đích), Pure Pursuit tính $w = v \cdot \kappa = 0$, đồng thời logic cũ bắt buộc $|\alpha| > 20^\circ$ mới kích hoạt pivot turn. Sai lệch góc trong khoảng $3^\circ - 20^\circ$ bị ép $w = 0.0$, đánh dấu nhầm `is_path_blocked = True` khiến xe bị liệt xoay tại chỗ.
+- **Tiêu chuẩn Hoàn thành (Definition of Done):**
+  - [x] Tách rời $w$ khỏi $v$ khi $v = 0.0$: Nếu $|\alpha| > 3^\circ$, kích hoạt bộ điều khiển xoay góc độc lập ($w = \text{clamp}(1.2 \cdot |\alpha|, 0.12, w_{\max})$).
+  - [x] Cập nhật trạng thái `PIVOT_ALIGNING` khi $v = 0.0$ và $|w| \ge 0.01$, không đánh dấu nhầm `is_path_blocked`.
+  - [x] Đồng bộ triệt để trên cả 3 file: `04-hieu-MotionControl/planning/controller.py`, `02-DuyHieu/planning/controller.py`, `03-MinhHieu/backend/app/planning/controller.py`.
+
+---
+
+### Ticket TK-FIELD-02: [PLANNING] Thiết lập Khung Giới Hạn ARENA_BOUNDS trong astar_planner.py
+- **Agent gán trách nhiệm:** `motion-planning-algorithm-agent`
+- **Mức độ ưu tiên:** 🔴 **P0 — Critical Blocker (HOÀN THÀNH - 100%)**
+- **Mô tả vấn đề:**
+  Thiếu khung giới hạn vật lý `ARENA_BOUNDS` chuẩn trong thuật toán A*, dẫn đến nguy cơ start/goal hoặc các điểm nắn mượt (shortcut/raycast) văng ra ngoài phạm vi sa bàn $2\text{m} \times 1\text{m}$.
+- **Tiêu chuẩn Hoàn thành (Definition of Done):**
+  - [x] Định nghĩa hằng số biên chuẩn: `DEFAULT_ARENA_BOUNDS = (-0.25, 2.05, -0.65, 0.65)`.
+  - [x] Hỗ trợ tham số `arena_bounds` linh hoạt trong `__init__` của `AStarPlanner`.
+  - [x] Kẹp chặt (clamp) tọa độ `start_world` và `goal_world` cách tường tối thiểu $8\text{cm}$ buffer.
+  - [x] Ràng buộc chặt chẽ $100\%$ các waypoints trả về trong `world_path` nằm trọn vẹn trong lòng sa bàn.
+  - [x] Đồng bộ trên `02-DuyHieu`, `04-hieu-MotionControl`, và `03-MinhHieu/backend/app/planning/astar_planner.py`.
+
+---
+
+### Ticket TK-FIELD-03: [HARDWARE BRIDGE] Điều Biến Xung Quay u_spin Vi Sai Chống Trượt SLAM
+- **Agent gán trách nhiệm:** `interface-comms-agent`
+- **Mức độ ưu tiên:** 🔴 **P0 — Critical Blocker (HOÀN THÀNH - 100%)**
+- **Mô tả vấn đề:**
+  Xung quay tại chỗ `u_spin = TURN_SPEED` dập trực tiếp xung vuông đột ngột không qua Slew-rate và không phụ thuộc độ lớn $w$, gây giật mô-men xoắn trượt bánh trên sàn gạch men, làm trôi góc quét 2D LiDAR ICP và sai lệch bản đồ SLAM.
+- **Tiêu chuẩn Hoàn thành (Definition of Done):**
+  - [x] Tỷ lệ hóa xung quay mục tiêu: $u_{\text{spin}} = \text{MIN\_DRIVE\_SPEED} + (\text{TURN\_SPEED} - \text{MIN\_DRIVE\_SPEED}) \cdot (|w| / w_{\max})$.
+  - [x] Tích hợp bộ lọc dốc mềm Slew-rate ($\text{max } 0.40\text{ PWM/s}$) cho `_current_spin_pwm` để loại bỏ giật đột ngột.
+  - [x] Tự động reset `_current_spin_pwm = 0.0` khi dừng khẩn cấp hoặc chuyển sang chạy thẳng.
+  - [x] Triệt tiêu hiện tượng văng trôi SLAM khi xoay tại chỗ trên sàn gạch men bóng.
+
+

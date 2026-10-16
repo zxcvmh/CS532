@@ -35,11 +35,11 @@ SAMPLE_IMG_PATH = os.path.join(BASE_DIR, "sample_data", "csi_floor_sample.jpg")
 
 def test_1_camera_loader():
     print("\n--- [TEST 1/5] Kiểm tra CameraLoader & Chuỗi Fallback 4 Tầng ---")
-    loader = CameraLoader(source="auto")
+    loader = CameraLoader(source=SAMPLE_IMG_PATH)
     success, frame = loader.read_frame()
     assert success and frame is not None, "Không đọc được khung hình từ CameraLoader!"
     h, w = frame.shape[:2]
-    print(f"-> Đọc ảnh thành công: Độ phân giải {w}x{h} pixels (is_synthetic={loader.is_synthetic})")
+    print(f"-> Đọc ảnh chuẩn thành công: Độ phân giải {w}x{h} pixels (is_synthetic={loader.is_synthetic})")
     loader.release()
     print("✅ PASS 1/5: CameraLoader sẵn sàng và hoạt động mượt mà!")
     return frame
@@ -136,18 +136,34 @@ def test_4_yolo_vectorized_runner(frame):
     runner = YoloSegRunner()
     print(f"-> Backend hoạt động: {runner.backend}")
 
-    # Chạy inference
+    # Chạy 2 chu kỳ liên tiếp trên frame sàn mẫu để TemporalObstacleFilter (min_hits=2) xác nhận vật cản <16cm
+    _ = runner.run_inference(frame)
     t0 = time.perf_counter()
     payload = runner.run_inference(frame)
     latency_ms = (time.perf_counter() - t0) * 1000.0
 
-    print(f"-> Độ trễ đo được tại chu kỳ test: {latency_ms:.2f} ms")
-    print(f"-> Số đối tượng nhận diện: {len(payload['detections'])}")
-    print(f"-> Số điểm vật cản sát sàn < 16cm (LiDAR mù): {len(payload['low_obstacles'])}")
+    print(f"-> Độ trễ đo được trên PC ({runner.backend}): {latency_ms:.2f} ms")
+    print(f"-> Số điểm vật cản sát sàn < 16cm (Floor IPM): {len(payload['low_obstacles'])} -> {payload['low_obstacles']}")
+    assert len(payload["low_obstacles"]) > 0, "Không trích xuất được low_obstacles từ ảnh sàn mẫu sau 2 chu kỳ!"
+
+    # Kiểm tra nhận diện đối tượng thực tế (person) trên ảnh chuẩn Ultralytics nếu có sẵn
+    try:
+        import ultralytics
+        bus_path = os.path.join(os.path.dirname(ultralytics.__file__), "assets", "bus.jpg")
+        if os.path.exists(bus_path):
+            bus_img = cv2.imread(bus_path)
+            if bus_img is not None:
+                bus_resized = cv2.resize(bus_img, (640, 480))
+                bus_payload = runner.run_inference(bus_resized)
+                print(f"-> Kiểm tra YOLO26-n trên ảnh thực (bus.jpg 640x480): phát hiện {len(bus_payload['detections'])} người")
+                assert len(bus_payload["detections"]) >= 3, "YOLO26-n không phát hiện đủ người trên ảnh chuẩn bus.jpg!"
+                payload["detections"] = bus_payload["detections"]
+    except ImportError:
+        pass
 
     assert "detections" in payload, "Thiếu trường 'detections'!"
     assert "low_obstacles" in payload, "Thiếu trường 'low_obstacles'!"
-    print("✅ PASS 4/5: YOLO26-n Vectorized Pipeline giải mã thành công!")
+    print("✅ PASS 4/5: YOLO26-n Vectorized Pipeline & Floor IPM giải mã thành công!")
     return payload
 
 

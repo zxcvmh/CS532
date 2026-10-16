@@ -27,7 +27,7 @@ class CBFSafetyFilter:
         d_safe: float = 0.15,               # Physical safety margin around bumper (m)
         gamma: float = 2.8,                 # Class-K barrier decay rate (higher = more reactive)
         v_max: float = 0.10,                # Maximum safe linear speed (m/s)
-        w_max: float = 0.28,                # Maximum safe angular speed (rad/s, matched with calibrated dynamics)
+        w_max: float = 0.20,                # Maximum safe angular speed (rad/s, matched with calibrated dynamics)
         w_v: float = 1.0,                   # Cost weight for linear speed change
         w_w: float = 0.35                   # Cost weight for angular speed change (lower = prefer turning to slow-down)
     ):
@@ -178,9 +178,9 @@ class CBFSafetyFilter:
                 escape_dir = -1.0 if obs_y >= 0.0 else 1.0
                 # If nominal command is already steering in the escape direction, preserve it up to safe limit
                 if (w_cand * escape_dir) > 0.03:
-                    w_safe = math.copysign(min(0.22, abs(w_cand)), escape_dir)
+                    w_safe = math.copysign(min(0.20, abs(w_cand)), escape_dir)
                 else:
-                    w_safe = escape_dir * 0.18
+                    w_safe = escape_dir * 0.16
             else:
                 w_safe = 0.0
 

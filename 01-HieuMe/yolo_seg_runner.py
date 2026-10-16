@@ -50,6 +50,83 @@ COCO_CLASSES = [
     "refrigerator", "book", "clock", "vase", "scissors", "teddy bear", "hair drier", "toothbrush"
 ]
 
+MODEL_INPUT_SIZE = 640
+
+
+def letterbox_blob(frame: np.ndarray, size: int = MODEL_INPUT_SIZE) -> Tuple[np.ndarray, float, Tuple[float, float]]:
+    """
+    Tiền xử lý giống Ultralytics: giữ tỉ lệ khung hình, đệm viền xám 114 (letterbox).
+    Kéo giãn 640x480 -> 640x640 làm méo vật thể và giảm confidence so với lúc huấn luyện.
+    Trả về: (blob 1x3xSxS float32 RGB [0,1], ratio, (pad_x, pad_y)).
+    """
+    h, w = frame.shape[:2]
+    ratio = min(size / float(h), size / float(w))
+    new_w, new_h = int(round(w * ratio)), int(round(h * ratio))
+    pad_x, pad_y = (size - new_w) / 2.0, (size - new_h) / 2.0
+    resized = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_LINEAR) if (new_w, new_h) != (w, h) else frame
+    top, bottom = int(round(pad_y - 0.1)), int(round(pad_y + 0.1))
+    left, right = int(round(pad_x - 0.1)), int(round(pad_x + 0.1))
+    padded = cv2.copyMakeBorder(resized, top, bottom, left, right, cv2.BORDER_CONSTANT, value=(114, 114, 114))
+    # blobFromImage gộp BGR->RGB, scale 1/255 và HWC->NCHW trong một lần gọi C++
+    blob = cv2.dnn.blobFromImage(padded, scalefactor=1.0 / 255.0, swapRB=True)
+    return np.ascontiguousarray(blob, dtype=np.float32), ratio, (float(left), float(top))
+
+
+def decode_yolo_output(
+    raw_output: np.ndarray,
+    orig_w: int,
+    orig_h: int,
+    ratio: float,
+    pad: Tuple[float, float],
+    conf_threshold: float,
+    iou_threshold: float = 0.45,
+) -> List[Tuple[List[int], float, int]]:
+    """
+    Giải mã vector hóa tensor (1, 84, N) / (84, N) -> danh sách (bbox_xyxy, conf, class_id) sau NMS.
+    Lọc ngưỡng trước khi argmax để chỉ argmax trên các anchor ứng viên.
+    """
+    out = raw_output[0] if raw_output.ndim == 3 else raw_output
+    if out.shape[0] != 84 and out.shape[-1] == 84:
+        out = out.T
+    scores = out[4:, :]
+    confidences = scores.max(axis=0)
+    keep = np.nonzero(confidences >= conf_threshold)[0]
+    if keep.size == 0:
+        return []
+
+    confs = confidences[keep]
+    cls_ids = scores[:, keep].argmax(axis=0)
+    cx, cy, bw, bh = out[0, keep], out[1, keep], out[2, keep], out[3, keep]
+
+    pad_x, pad_y = pad
+    x1 = np.clip((cx - bw / 2.0 - pad_x) / ratio, 0, orig_w - 1)
+    y1 = np.clip((cy - bh / 2.0 - pad_y) / ratio, 0, orig_h - 1)
+    x2 = np.clip((cx + bw / 2.0 - pad_x) / ratio, 0, orig_w - 1)
+    y2 = np.clip((cy + bh / 2.0 - pad_y) / ratio, 0, orig_h - 1)
+
+    boxes_xywh = np.stack([x1, y1, np.maximum(x2 - x1, 1), np.maximum(y2 - y1, 1)], axis=1).astype(np.int32).tolist()
+    confs_list = confs.astype(float).tolist()
+    indices = cv2.dnn.NMSBoxes(boxes_xywh, confs_list, conf_threshold, iou_threshold)
+    if len(indices) == 0:
+        return []
+
+    results = []
+    for idx in np.array(indices).flatten():
+        i = int(idx)
+        results.append((
+            [int(x1[i]), int(y1[i]), int(x2[i]), int(y2[i])],
+            confs_list[i],
+            int(cls_ids[i]),
+        ))
+    return results
+
+
+def pixel_to_azimuth_deg(cx: float, img_w: int, fov_deg: float) -> float:
+    """Góc phương vị chuẩn ROS REP-103 (CCW): trái (+), phải (-), xấp xỉ tuyến tính theo FOV ngang."""
+    half_w = img_w / 2.0
+    ratio = max(-1.0, min(1.0, (half_w - cx) / half_w))
+    return round(float(ratio * fov_deg / 2.0), 1)
+
 
 class YoloSegRunner:
     def __init__(self, model_path: Optional[str] = None, config_path: Optional[str] = None):
@@ -65,9 +142,11 @@ class YoloSegRunner:
             "default": 0.30
         })
 
-        # Danh sách mô hình theo thứ tự ưu tiên: Engine -> ONNX -> PT -> Fallback
+        # Danh sách mô hình theo thứ tự ưu tiên: 480 Engine -> 640 Engine -> ONNX -> PT -> Fallback
         self.model_candidates = [
             model_path,
+            os.path.join(self.base_dir, "yolo26n_480.engine"),
+            "/home/jetbot/yolo26n_480.engine",
             os.path.join(self.base_dir, "yolo26n.engine"),
             "/home/jetbot/yolo26n.engine",
             os.path.join(self.base_dir, "yolov8n.engine"),
@@ -126,13 +205,22 @@ class YoloSegRunner:
                         cudart.cudaFree.restype = ctypes.c_int
                         self.cudart = cudart
 
-                        self.input_bytes = 1 * 3 * 640 * 640 * 4
-                        self.output_bytes = 1 * 84 * 8400 * 4
+                        in_shape = engine.get_binding_shape(0)
+                        out_shape = engine.get_binding_shape(1)
+                        in_h = int(in_shape[-2]) if len(in_shape) >= 2 and in_shape[-2] > 0 else 640
+                        in_w = int(in_shape[-1]) if len(in_shape) >= 1 and in_shape[-1] > 0 else 640
+                        self.input_size = max(in_h, in_w)
+
+                        out_anchors = int(out_shape[-1]) if len(out_shape) >= 1 and out_shape[-1] > 0 else 8400
+                        out_channels = int(out_shape[-2]) if len(out_shape) >= 2 and out_shape[-2] > 0 else 84
+
+                        self.input_bytes = int(1 * 3 * in_h * in_w * 4)
+                        self.output_bytes = int(1 * out_channels * out_anchors * 4)
                         self.d_input = ctypes.c_void_p()
                         self.d_output = ctypes.c_void_p()
                         self.cudart.cudaMalloc(ctypes.byref(self.d_input), self.input_bytes)
                         self.cudart.cudaMalloc(ctypes.byref(self.d_output), self.output_bytes)
-                        self.h_output = np.zeros((1, 84, 8400), dtype=np.float32)
+                        self.h_output = np.zeros((1, out_channels, out_anchors), dtype=np.float32)
                         self.trt_bindings = [int(self.d_input.value), int(self.d_output.value)]
 
                         self.backend = "tensorrt"
@@ -204,13 +292,7 @@ class YoloSegRunner:
           - Vật thể bên PHẢI (cx > W/2) -> Góc Azimuth ÂM (-)
         theta_azimuth = ((W/2 - cx) / (W/2)) * (FOV/2) in [-80.0°, +80.0°].
         """
-        half_w = img_w / 2.0
-        half_fov = fov_deg / 2.0
-        ratio = (half_w - cx) / half_w
-        # Kẹp trong đoạn [-1.0, 1.0]
-        ratio = max(-1.0, min(1.0, ratio))
-        angle_deg = ratio * half_fov
-        return round(float(angle_deg), 1)
+        return pixel_to_azimuth_deg(cx, img_w, fov_deg)
 
     def compute_dynamic_proxemics(
         self,
@@ -254,101 +336,61 @@ class YoloSegRunner:
 
         return 0.25, None
 
+    def _build_detection(self, bbox_xyxy: List[int], conf: float, cid: int, img_w: int) -> Optional[Dict[str, Any]]:
+        """Đóng gói 1 detection theo INTERFACE.md (dùng chung cho mọi backend)."""
+        cname = self.classes[cid] if 0 <= cid < len(self.classes) else f"obj_{cid}"
+        if conf < self.conf_threshold:
+            return None
+        if self.target_classes and cname not in self.target_classes:
+            return None
+
+        x1, y1, x2, y2 = [int(v) for v in bbox_xyxy]
+        center_x = (x1 + x2) / 2.0
+        azimuth = self.compute_azimuth_deg(center_x, img_w=img_w, fov_deg=self.ipm.fov_deg)
+
+        # Ước lượng khoảng cách từ điểm chân bbox (y2) qua IPM; fallback quang học nếu ngoài vùng sàn
+        est_x, est_y = self.ipm.image_pixel_to_robot_metric(center_x, y2)
+        if est_x < 900.0:
+            est_dist = round(math.hypot(est_x, est_y), 2)
+        else:
+            est_dist = round(220.0 / max(y2 - y1, 1), 2)
+
+        margin, prox_env = self.compute_dynamic_proxemics(azimuth, cname)
+        det_obj = {
+            "class_id": cid,
+            "class_name": cname,
+            "confidence": round(float(conf), 2),
+            "azimuth_deg": azimuth,
+            "estimated_dist": est_dist,
+            "distance": est_dist,  # alias cho Backend/Dashboard (schema Detection.distance)
+            "safety_margin_m": margin,
+            "bbox": [x1, y1, x2, y2]
+        }
+        if prox_env is not None:
+            det_obj["proxemics"] = prox_env
+        return det_obj
+
     def _decode_vectorized_tensor(
         self,
         raw_output: np.ndarray,
         orig_w: int,
-        orig_h: int
+        orig_h: int,
+        ratio: Optional[float] = None,
+        pad: Tuple[float, float] = (0.0, 0.0)
     ) -> List[Dict[str, Any]]:
         """
-        Giải mã tensor đầu ra shape (1, 84, 8400) hoặc (84, 8400) thuần túy bằng NumPy vectorization.
-        Độ trễ: < 1.0ms (Loại bỏ 100% vòng lặp duyệt 8400 phần tử Python).
+        Giải mã tensor (1, 84, 8400) bằng NumPy vectorization (xem decode_yolo_output).
+        ratio/pad lấy từ letterbox_blob(); nếu None thì mặc định letterbox của ảnh orig_w x orig_h.
         """
-        # Đảm bảo mảng 2D: (8400, 84)
-        if raw_output.ndim == 3:
-            raw_output = raw_output[0]
-        if raw_output.shape[0] == 84:
-            preds = raw_output.T  # (8400, 84)
-        else:
-            preds = raw_output
-
-        boxes_raw = preds[:, :4]        # cx, cy, w, h trong không gian 640x640
-        scores_matrix = preds[:, 4:]    # 80 class scores
-
-        # Tìm class có điểm cao nhất cho từng anchor box
-        class_ids = np.argmax(scores_matrix, axis=1)
-        confidences = np.max(scores_matrix, axis=1)
-
-        # Lọc nhanh bằng Boolean Masking
-        mask = confidences >= self.conf_threshold
-        if not np.any(mask):
-            return []
-
-        filt_boxes = boxes_raw[mask]
-        filt_confs = confidences[mask]
-        filt_cls_ids = class_ids[mask]
-
-        # Chuyển đổi tọa độ từ 640x640 về kích thước ảnh gốc
-        scale_x = orig_w / 640.0
-        scale_y = orig_h / 640.0
-
-        cx = filt_boxes[:, 0]
-        cy = filt_boxes[:, 1]
-        bw = filt_boxes[:, 2]
-        bh = filt_boxes[:, 3]
-
-        x1 = np.clip((cx - bw / 2.0) * scale_x, 0, orig_w - 1).astype(np.int32)
-        y1 = np.clip((cy - bh / 2.0) * scale_y, 0, orig_h - 1).astype(np.int32)
-        box_w = np.clip(bw * scale_x, 1, orig_w).astype(np.int32)
-        box_h = np.clip(bh * scale_y, 1, orig_h).astype(np.int32)
-
-        # Non-Maximum Suppression (NMS)
-        boxes_list = np.stack([x1, y1, box_w, box_h], axis=1).tolist()
-        confs_list = filt_confs.astype(float).tolist()
-
-        indices = cv2.dnn.NMSBoxes(boxes_list, confs_list, self.conf_threshold, self.iou_threshold)
+        if ratio is None:
+            ratio = min(MODEL_INPUT_SIZE / float(orig_h), MODEL_INPUT_SIZE / float(orig_w))
+            pad = ((MODEL_INPUT_SIZE - orig_w * ratio) / 2.0, (MODEL_INPUT_SIZE - orig_h * ratio) / 2.0)
+        raw = decode_yolo_output(raw_output, orig_w, orig_h, ratio, pad, self.conf_threshold, self.iou_threshold)
         detections = []
-
-        if len(indices) > 0:
-            indices = np.array(indices).flatten()
-            for idx in indices:
-                bx, by, bw_i, bh_i = boxes_list[idx]
-                conf = confs_list[idx]
-                cid = int(filt_cls_ids[idx])
-                cname = self.classes[cid] if cid < len(self.classes) else f"obj_{cid}"
-                if self.target_classes and cname not in self.target_classes:
-                    continue
-
-                x2 = min(orig_w, bx + bw_i)
-                y2 = min(orig_h, by + bh_i)
-                center_x = (bx + x2) / 2.0
-
-                azimuth = self.compute_azimuth_deg(center_x, img_w=orig_w, fov_deg=self.ipm.fov_deg)
-
-                # Ước lượng khoảng cách từ điểm chân của bounding box (y2) qua IPM
-                est_x, est_y = self.ipm.image_pixel_to_robot_metric(center_x, y2)
-                if est_x < 900.0:
-                    est_dist = round(math.hypot(est_x, est_y), 2)
-                else:
-                    # Optical fallback nếu vật thể ở xa ngoài tầm IPM mặt sàn
-                    est_dist = round(220.0 / max(bh_i, 1), 2)
-
-                margin, prox_env = self.compute_dynamic_proxemics(azimuth, cname)
-
-                det_obj = {
-                    "class_id": cid,
-                    "class_name": cname,
-                    "confidence": round(conf, 2),
-                    "azimuth_deg": azimuth,
-                    "estimated_dist": est_dist,
-                    "safety_margin_m": margin,
-                    "bbox": [int(bx), int(by), int(x2), int(y2)]
-                }
-                if prox_env is not None:
-                    det_obj["proxemics"] = prox_env
-
-                detections.append(det_obj)
-
+        for bbox, conf, cid in raw:
+            det = self._build_detection(bbox, conf, cid, orig_w)
+            if det is not None:
+                detections.append(det)
         return detections
 
     def run_inference(self, frame: np.ndarray) -> Dict[str, Any]:
@@ -369,12 +411,9 @@ class YoloSegRunner:
         low_obstacles = []
 
         # ── 1. NHÁNH OBJECT DETECTION (YOLO26-n) ──
+        target_size = getattr(self, "input_size", MODEL_INPUT_SIZE)
         if self.backend == "tensorrt" and hasattr(self, "context") and self.context is not None:
-            # Tiền xử lý tensor 1x3x640x640
-            img_resized = cv2.resize(frame, (640, 640))
-            img_rgb = cv2.cvtColor(img_resized, cv2.COLOR_BGR2RGB)
-            img_norm = (img_rgb.astype(np.float32) / 255.0).transpose(2, 0, 1)
-            blob = np.ascontiguousarray(np.expand_dims(img_norm, axis=0))
+            blob, ratio, pad = letterbox_blob(frame, size=target_size)
 
             # Copy to GPU
             import ctypes
@@ -384,63 +423,33 @@ class YoloSegRunner:
             # Copy output from GPU
             self.cudart.cudaMemcpy(self.h_output.ctypes.data_as(ctypes.c_void_p), self.d_output, self.output_bytes, 2)
 
-            detections = self._decode_vectorized_tensor(self.h_output, w, h)
+            detections = self._decode_vectorized_tensor(self.h_output, w, h, ratio, pad)
 
         elif self.backend == "onnxruntime" and self.session is not None:
-            # Tiền xử lý tensor 1x3x640x640
-            img_resized = cv2.resize(frame, (640, 640))
-            img_rgb = cv2.cvtColor(img_resized, cv2.COLOR_BGR2RGB)
-            img_norm = (img_rgb.astype(np.float32) / 255.0).transpose(2, 0, 1)
-            blob = np.ascontiguousarray(np.expand_dims(img_norm, axis=0))
-
+            blob, ratio, pad = letterbox_blob(frame, size=target_size)
             outputs = self.session.run(None, {self.input_name: blob})[0]
-            detections = self._decode_vectorized_tensor(outputs, w, h)
+            detections = self._decode_vectorized_tensor(outputs, w, h, ratio, pad)
 
         elif self.backend == "ultralytics" and self.model is not None:
-            results = self.model(frame, verbose=False, imgsz=max(w, h))
+            results = self.model(frame, verbose=False, imgsz=MODEL_INPUT_SIZE,
+                                 conf=self.conf_threshold, iou=self.iou_threshold)
             if results and len(results) > 0:
                 res = results[0]
                 boxes = res.boxes
-                if boxes is not None:
-                    for i in range(len(boxes)):
-                        xyxy = boxes.xyxy[i].cpu().numpy()
-                        conf = float(boxes.conf[i].cpu().numpy())
-                        cls_id = int(boxes.cls[i].cpu().numpy())
-                        cls_name = self.model.names.get(cls_id, f"obj_{cls_id}")
+                if boxes is not None and len(boxes) > 0:
+                    xyxy_all = boxes.xyxy.cpu().numpy()
+                    conf_all = boxes.conf.cpu().numpy()
+                    cls_all = boxes.cls.cpu().numpy().astype(int)
+                    for xyxy, conf, cls_id in zip(xyxy_all, conf_all, cls_all):
+                        det = self._build_detection(xyxy.tolist(), float(conf), int(cls_id), w)
+                        if det is not None:
+                            detections.append(det)
 
-                        x1, y1, x2, y2 = xyxy
-                        cx = (x1 + x2) / 2.0
-                        azimuth = self.compute_azimuth_deg(cx, img_w=w, fov_deg=self.ipm.fov_deg)
-
-                        est_x, est_y = self.ipm.image_pixel_to_robot_metric(cx, y2)
-                        if est_x < 900.0:
-                            est_dist = round(math.hypot(est_x, est_y), 2)
-                        else:
-                            est_dist = round(220.0 / max(y2 - y1, 1), 2)
-
-                        margin, prox_env = self.compute_dynamic_proxemics(azimuth, cls_name)
-
-                        det_obj = {
-                            "class_id": cls_id,
-                            "class_name": cls_name,
-                            "confidence": round(conf, 2),
-                            "azimuth_deg": azimuth,
-                            "estimated_dist": est_dist,
-                            "safety_margin_m": margin,
-                            "bbox": [int(x1), int(y1), int(x2), int(y2)]
-                        }
-                        if prox_env is not None:
-                            det_obj["proxemics"] = prox_env
-
-                        detections.append(det_obj)
-
-                if hasattr(res, "masks") and res.masks is not None:
-                    masks_data = res.masks.data.cpu().numpy()
-                    for m_idx in range(len(masks_data)):
-                        m = (masks_data[m_idx] * 255).astype(np.uint8)
-                        m_resized = cv2.resize(m, (w, h))
-                        low_obs_pts = self.ipm.extract_low_obstacles_from_mask(m_resized)
-                        low_obstacles.extend(low_obs_pts)
+                # Gộp mọi mask thành 1 mask để Temporal Filter chỉ cập nhật 1 lần/khung hình
+                if hasattr(res, "masks") and res.masks is not None and len(res.masks.data) > 0:
+                    union = (res.masks.data.cpu().numpy().max(axis=0) * 255).astype(np.uint8)
+                    union = cv2.resize(union, (w, h), interpolation=cv2.INTER_NEAREST)
+                    low_obstacles.extend(self.ipm.extract_low_obstacles_from_mask(union))
 
         # ── 2. NHÁNH BÙ ĐIỂM MÙ LIDAR BẰNG FLOOR IPM (Academic Contribution 1) ──
         # Tự động phân đoạn vật cản sàn (<16cm) trong vùng quan sát mặt sàn (ROI)
@@ -461,6 +470,12 @@ class YoloSegRunner:
             full_obs_mask = np.zeros((h, w), dtype=np.uint8)
             full_obs_mask[roi_y_start:h, 0:w] = cleaned_obs
 
+            # Loại trừ vùng bbox của các vật thể lớn (person, chair, ...) đã được YOLO phát hiện
+            # để tránh nhân đôi chân người/ghế thành low_obstacle (< 16cm)
+            for det in detections:
+                bx1, by1, bx2, by2 = det["bbox"]
+                full_obs_mask[max(0, by1):min(h, by2), max(0, bx1):min(w, bx2)] = 0
+
             extracted = self.ipm.extract_low_obstacles_from_mask(full_obs_mask)
             low_obstacles.extend(extracted[:4])
 
@@ -473,6 +488,7 @@ class YoloSegRunner:
                 "confidence": 0.88,
                 "azimuth_deg": -15.4,
                 "estimated_dist": 1.85,
+                "distance": 1.85,
                 "safety_margin_m": margin,
                 "proxemics": prox_env,
                 "bbox": [180, 180, 250, 340]

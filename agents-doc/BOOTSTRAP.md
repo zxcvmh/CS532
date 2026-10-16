@@ -1,4 +1,4 @@
-# CS532 AGENT BOOTSTRAP & SYSTEM CONTEXT HANDOFF (Phiên Bản 2026-10-12)
+# CS532 AGENT BOOTSTRAP & SYSTEM CONTEXT HANDOFF (Phiên Bản 2026-10-13)
 
 > **Hướng dẫn sử dụng:** Copy toàn bộ nội dung file này và dán vào lời nhắc (Prompt) đầu tiên của Session Agent mới để Agent nắm bắt 100% ngữ cảnh kỹ thuật, hiện trạng dự án, các bài toán đã giải quyết và tiếp tục công việc ngay lập tức mà không bị mất dấu vết.
 
@@ -9,13 +9,13 @@
 - **Tên đồ án:** CS532 — Robot Di Động Tự Hành Trong Nhà (Autonomous Mobile Indoor JetBot).
 - **Phần cứng vật lý:**
   - **Xe robot (JetBot):** NVIDIA Jetson Nano 4GB (ARM Cortex-A57 4 nhân, 128 Maxwell CUDA cores, OS: Ubuntu 18.04 / JetPack 4.5.1, Python 3.6).
-  - **Cảm biến:** LiDAR D500 (DToF 360°, UART 230400 baud, tần số quét 10Hz, tầm xa 0.12m – 8.0m), Camera CSI IMX219 (160° FOV).
+  - **Cảm biến:** LiDAR D500 (DToF 360°, UART 230400 baud, tần số quét 10Hz, tầm xa 0.12m – 8.0m), Camera CSI IMX219 (160° FOV, chúc 15°-20°).
   - **Cơ cấu chấp hành:** Động cơ dẫn động vi sai 2 bánh (Differential Drive TT Motors) điều khiển qua I2C MotorHAT (PCA9685).
   - **Địa chỉ mạng:** IP JetBot: `192.168.1.11`, User: `jetbot`.
 - **Máy trạm lập trình & Dashboard (PC Local):**
   - OS: Linux x86_64, Python 3.11 (Virtualenv tại `/home/zxcvmh/Projects/CS532/03-MinhHieu/backend/.venv/bin/python`).
   - Địa chỉ mạng: IP PC: `192.168.1.8`.
-  - Giao diện: Web Dashboard (FastAPI Backend + React/Canvas UI @ `http://localhost:5173`), WebSocket đồng bộ bản đồ 5Hz, stream telemetry 10Hz và MJPEG camera.
+  - Giao diện: Web Dashboard visionOS glassmorphism (FastAPI Backend + React 19 UI @ `http://localhost:5173`), WebSocket đồng bộ bản đồ 10Hz, stream telemetry 10Hz và MJPEG camera.
 
 ---
 
@@ -23,53 +23,50 @@
 
 > [!IMPORTANT]
 > **TRẠNG THÁI PHẦN CỨNG JETBOT:**
-> **Robot JetBot hiện đang được mang đi sạc pin!** Xe đang tắt nguồn hoặc không thể kết nối mạng.
-> **Quy tắc tuyệt đối:** KHÔNG chạy lệnh `rsync` hoặc `ssh` lên `192.168.1.11` lúc này. Mọi thao tác phát triển và kiểm thử ĐỀU ĐÃ ĐƯỢC THỰC HIỆN VÀ VERIFY 100% TRÊN LOCAL PC.
+> **Robot JetBot hiện đang được mang đi sạc pin / offline!**
+> **Quy tắc tuyệt đối:** KHÔNG chạy lệnh `rsync` hoặc `ssh` lên `192.168.1.11` lúc này. Mọi thao tác phát triển và kiểm thử ĐỀU ĐÃ ĐƯỢC THỰC HIỆN VÀ VERIFY 100% TRÊN LOCAL PC THEO NGUYÊN TẮC PC-FIRST.
 
-- **Trạng thái mã nguồn Local PC:**
-  - Toàn bộ các bản vá lỗi thuật toán SOTA đã được hoàn thiện, đồng bộ đồng nhất qua 3 thư mục:
-    - `03-MinhHieu/backend/app/planning/` & `03-MinhHieu/backend/app/robot/mock_robot.py`
-    - `04-hieu-MotionControl/planning/`
-    - `02-DuyHieu/planning/`
-- **Kết quả nghiệm thu kỹ thuật:** Toàn bộ **5/5 bộ test suites** đều đạt **PASS 100%** trên Local PC.
-- **Ràng buộc an toàn bất biến (Non-negotiable Constraints):**
-  1. Tuyệt đối **KHÔNG đồng bộ file `ALGORITHM_STATE.md`** lên JetBot (chỉ dùng nội bộ team trên PC).
-  2. Không tự ý rsync khi người dùng chưa cắm nguồn/bật JetBot và yêu cầu.
-  3. Duy trì tính toàn vẹn của mã nguồn, comment toán học và cấu trúc submodule độc lập.
+- **Trạng thái mã nguồn 4 Module Độc Lập:**
+  1. `01-HieuMe/`: Module Computer Vision hoàn thiện toàn diện (YOLO26-n FP16 2.4M params, Letterbox `640x640`, Floor IPM bù mù LiDAR 16cm chống chia cho 0, Asymmetric Gaussian Proxemics). Đạt **5/5 PASS** trong `test_cv_local.py`.
+  2. `02-DuyHieu/`: Module thuật toán A* mới của Duy Hiếu, đột phá tăng tốc bằng nhân C `astar_core.c` (`libastar_core.so`), đạt **0.16 ms** (nhanh gấp **39.38x** baseline cũ), khắc phục lỗi detour và trượt quay spinout.
+  3. `03-MinhHieu/`: Web Dashboard hoàn thiện (React 19, FastAPI, WebSocket 10Hz, `jetbot_bridge.py` tự động khởi chạy, bộ công cụ hiệu chuẩn `test-hardware/calibrate_motors.py`).
+  4. `04-hieu-MotionControl/`: Thuật toán điều khiển nâng cao riêng của Team Lead: Dynamic Disparity Extender (DDE), Control Barrier Function (CBF) Safety Filter, LiDAR Odometry, Goal Deceleration. Đạt **3/3 kịch bản động khép vòng PASS 100%**.
+- **Hiệu chuẩn động học thực nghiệm (`setup/robot_dynamics.json`):**
+  - `cruise_speed`: 0.10 m/s | `turn_speed`: 0.10 m/s | `max_angular_speed_rads`: 0.28 rad/s (an toàn tuyệt đối trên sàn gạch men, LiDAR Odometry và planning luôn theo kịp).
 
 ---
 
 ## 3. LỊCH SỬ TIẾN HÓA & CÁC BÀI TOÁN LỚN ĐÃ GIẢI QUYẾT
 
-Dự án đã trải qua 3 giai đoạn đột phá kỹ thuật cốt tử giải quyết các hiện tượng thực địa trên sa bàn:
+Dự án đã trải qua 5 giai đoạn đột phá kỹ thuật cốt tử:
 
 ### 3.1. Sự Cố 1: Trượt Bánh Xe Vi Sai & Bản Đồ Bị Vặn Xoắn (Wheel Slip & Map Distortion)
-- **Hiện tượng:** Khi robot quay đầu trên sàn gạch men bóng, bánh xe bị trượt vật lý $\to$ Odometry tích phân bánh xe (dead-reckoning) bị trôi góc quay $\theta$ nghiêm trọng $\to$ Khi LiDAR quay quét theo góc trôi này, bản đồ Occupancy Grid bị vẹo, sinh ra các bức tường ảo chắn ngang mũi xe, kích hoạt robot đi vòng vèo hoặc đứng im.
-- **Giải pháp:**
-  - Tích hợp mô-đun **2D LiDAR Odometry (Point-to-Line ICP chuẩn Censi / Fast KD-Tree)** chạy thời gian thực 10Hz (`lidar_odometry.py`).
-  - Khóa góc quay $\theta$ theo cấu trúc tường phẳng của phòng với sai số kỷ lục: **$0.003^\circ$** (độ trễ chỉ 2.1ms trên PC, < 4.0ms trên Jetson Nano ARM).
-  - Triệt tiêu 100% trôi trượt bánh vi sai trên sàn trơn.
+- **Hiện tượng:** Robot quay đầu trên gạch men bóng bị trượt vật lý $	o$ Odometry tích phân bánh xe trôi góc $	heta 	o$ Bản đồ Occupancy Grid bị méo mó.
+- **Giải pháp:** Tích hợp mô-đun **2D LiDAR Odometry (Point-to-Line ICP)** chạy thời gian thực 10Hz (`lidar_odometry.py`), khóa góc quay $	heta$ theo khung tường phòng với sai số kỷ lục: **$0.003^\circ$** (độ trễ 2.1ms).
 
 ### 3.2. Sự Cố 2: Kẹt Thảm, Nhấc Bổng Xe (Kidnapped Robot) & Bản Đồ Xoay Mất Goal
-- **Hiện tượng:** Robot đi vào thảm bị vấp hoặc người dùng nhấc xe đặt sang vị trí khác $\to$ robot kẹt ở trạng thái `BLOCKED`. Ô lưới dưới gầm xe bị cảm biến quét trúng thảm ghi nhận là vật cản chết (254) $\to$ A* không thể tìm đường xuất phát, người dùng toàn phải khởi động lại (restart) server. Đồng thời bản đồ xoay theo robot làm mất hướng và mục tiêu.
+- **Hiện tượng:** Robot đi vào thảm bị vấp hoặc bị nhấc sang vị trí khác $	o$ kẹt ở trạng thái `BLOCKED`, ô lưới dưới gầm xe ghi nhận vật cản chết (254).
 - **Giải pháp:**
-  - **Khóa bản đồ tường tĩnh (Anchor Map Locking & Scan-to-Anchor Matching):** Khung tường chuẩn phòng ban đầu được khóa cứng (`lock_anchor_map()`). Bản đồ giữ nguyên cố định, chỉ cập nhật vị trí của robot trên bản đồ.
-  - **Giải phóng gầm xe (`clear_footprint`):** Tự động xóa chi phí dưới gầm xe ($r = 0.18\text{m}$) khi nhận Goal mới hoặc khi Replan.
-  - **Tự phục hồi Kidnapped Robot:** Khi người dùng chọn Goal mới trên Web UI, hệ thống tự động mở khóa `BLOCKED -> PLANNING -> NAVIGATING`, lập tức lăn bánh mà không cần restart server.
-  - **Bộ lọc trễ Hysteresis Debounce (3 ticks $\ge 0.3\text{s}$) & Thu hẹp tầm nhìn va chạm xuống $0.45\text{m}$:** Triệt tiêu hoàn toàn hiện tượng spurious replanning và detour rác khi nhìn thấy tường ở xa.
+  - **Khóa bản đồ tường tĩnh (Anchor Map Locking):** Khung tường chuẩn phòng ban đầu được khóa cứng (`lock_anchor_map()`).
+  - **Giải phóng gầm xe (`clear_footprint`):** Tự động xóa chi phí dưới gầm xe ($r = 0.18	ext{m}$) khi nhận Goal mới hoặc khi Replan.
+  - **Tự phục hồi Kidnapped Robot:** Khi chọn Goal mới, hệ thống tự động mở khóa `BLOCKED -> PLANNING -> NAVIGATING`.
 
-### 3.3. Sự Cố 3: Nghịch Lý Chọn Đường Vòng Qua Khe Hẹp Chân Bàn Thay Vì Đi Khoảng Trắng (Vừa giải quyết xong)
-- **Hiện tượng:** Phía trước robot là khoảng trắng thênh thang không có vật cản nào để tiến tới Goal. Nhưng A* lại vẽ đường đi vòng xuống mép đáy bản đồ, chui qua khe hẹp nguy hiểm có chân bàn (`Leg 0.47m`, `TTC: 0.5s`) và thậm chí đâm thẳng qua chân bàn `Leg (0.76m)`.
-- **Nguyên nhân gốc rễ:**
-  1. *Phạt ngược hướng đầu xe 2D (`rev_penalty = 3.5x`)*: Ép robot đang chúi mũi về hướng Nam phải chạy tiếp về hướng Nam thay vì quay đầu đi vào khoảng trắng hướng Bắc. (Trong khi robot vi sai quay tại chỗ tự do).
-  2. *Heuristic tham lam (`weight = 2.2`)*: Biến A* thành Greedy Best-First Search, sập bẫy cực tiểu cục bộ (local minima).
-  3. *Cụm vật cản chân bàn không được đưa vào Costmap*: `obstacle_clustering.py` gom cụm chân bàn cho Dashboard nhưng không bơm vào `OccupancyGridMap.costmap` $\to$ A* coi ô chân bàn có chi phí bằng 0 nên vẽ đường cắt xuyên qua chân bàn.
-  4. *Đường đi dạng lưới 8 hướng bị zigzag*: Thiếu thuật toán nắn thẳng Any-Angle Line-of-Sight.
-- **Giải pháp SOTA quốc tế đã triển khai & pass 100%:**
-  1. Loại bỏ hoàn toàn `rev_penalty`, đưa `weight = 1.0` (chuẩn Admissible Heuristic theo chuẩn ROS 2 `nav2_smac_planner`).
-  2. Bổ sung `insert_obstacle_clusters` vào `OccupancyGridMap`: Bơm toàn bộ cụm chân bàn/hộp/người vào Costmap thành ô chết `254 (Lethal)` cùng vùng lạm phát an toàn xung quanh.
-  3. Nâng cấp `has_line_of_sight(max_cost=240)` và `smooth_path(max_cost=230)` theo chuẩn **Theta\* Any-Angle String Pulling**: Nắn toàn bộ hành lang mở thành **đúng 1 đoạn thẳng trực tiếp tới Goal (2 waypoints)**.
-  4. Tích hợp tiêm cụm vật thể vào `set_goal`, chu trình đồng bộ bản đồ 5Hz và chu trình Replan trong `mock_robot.py`.
+### 3.3. Sự Cố 3: Nghịch Lý Chọn Đường Vòng Qua Khe Hẹp Chân Bàn
+- **Hiện tượng:** Trước mũi xe là khoảng trắng nhưng A* lại đi vòng xuống đáy bản đồ qua khe hẹp chân bàn.
+- **Giải pháp:** Loại bỏ hoàn toàn `rev_penalty`, đưa `weight = 1.0` (chuẩn Admissible Heuristic Nav2 Smac Planner), bơm cụm chân bàn vào Costmap thành ô chết 254 (`insert_obstacle_clusters`), và nắn thẳng quỹ đạo theo Any-Angle String Pulling.
+
+### 3.4. Sự Cố 4: Nút Thắt Cổ Chai A* Python & Bẫy Xoay 180° Spinout
+- **Hiện tượng:** A* trên lưới ô vuông lớn bị chậm, robot quay quá gấp dẫn tới văng đuôi 180° trên sàn gạch men.
+- **Giải pháp:**
+  - Duy Hiếu viết nhân C tối ưu **`astar_core.c`** (`libastar_core.so`), giảm độ trễ tìm đường xuống **0.16 ms** (tăng tốc 39.38x).
+  - Team Lead thiết lập bộ lọc an toàn **Control Barrier Function (CBF)** và **cosine-squared velocity attenuation**, giới hạn tốc độ góc ở **0.35 rad/s** (~20°/s) triệt tiêu hoàn toàn hiện tượng văng đuôi.
+
+### 3.5. Sự Cố 5: Sai Lệch Tỷ Lệ Ảnh Bounding Box & Điểm Mù LiDAR 16cm
+- **Hiện tượng:** Resize ảnh thô `cv2.resize((640, 640))` làm méo tỷ lệ 4:3, LiDAR quét phẳng ở độ cao 16cm nên không thấy dép/dây điện dưới sàn, ma trận IPM bị chia cho 0 khi pixel gần chân trời.
+- **Giải pháp:**
+  - Nâng cấp mô hình **Ultralytics YOLO26-n FP16** (2.4M params, 5.5 GFLOPs) với tiền xử lý **Letterbox Blob** (padding 114 giữ chuẩn tỷ lệ 4:3).
+  - Chuẩn hóa góc Azimuth CCW (ROS REP-103: Trái dương $+80^\circ$, Phải âm $-80^\circ$).
+  - Tích hợp lớp bảo vệ mẫu số $Z_{	ext{cam}} < 1	ext{e-}6 	o 999	ext{m}$ trong `floor_ipm.py`, trích xuất `low_obstacles` nạp sang Costmap bù điểm mù LiDAR.
 
 ---
 
@@ -77,77 +74,79 @@ Dự án đã trải qua 3 giai đoạn đột phá kỹ thuật cốt tử gi�
 
 ```text
 /home/zxcvmh/Projects/CS532/
-├── 01-HieuMe/
-│   └── jetbot_bridge.py               # Hardware Bridge trên JetBot (LiDAR, Motor, Camera)
-├── 02-DuyHieu/planning/               # Module thuật toán độc lập (đồng bộ với 03 và 04)
-├── 03-MinhHieu/                       # Module Hệ thống & Web Dashboard
+├── 01-HieuMe/               # Module Thị giác máy tính (YOLO26-n, Letterbox, Floor IPM)
+│   ├── yolo_seg_runner.py   # Runner suy luận YOLO26-n (TensorRT/ONNX) + Vectorized NMS
+│   ├── floor_ipm.py         # Ma trận Homography bù mù LiDAR 16cm, chống chia cho 0
+│   ├── bench_letterbox_jetbot.py # Benchmark đo đạc Letterbox trên JetBot
+│   ├── test_cv_local.py     # 5 bài test kiểm thử PC-First (PASS 100%)
+│   └── yolo26n.onnx / yolo26n.pt # Model weights thế hệ 2026
+├── 02-DuyHieu/              # Module Thuật toán A* nhân C của Duy Hiếu
+│   ├── planning/
+│   │   ├── astar_core.c     # Nhân C tối ưu thuật toán A*
+│   │   ├── astar_planner.py # Wrapper Python + làm mượt quỹ đạo
+│   │   └── ...
+│   ├── verify_step1_astar.py # Nghiệm thu A* C-core (0.16ms, 39x faster)
+│   └── test_planning_local.py # Kiểm thử A* cục bộ
+├── 03-MinhHieu/              # Module Web Dashboard & Backend Bridge
 │   ├── backend/
-│   │   ├── app/
-│   │   │   ├── config.py              # Hằng số cấu hình (tần số 5Hz map, robot radius...)
-│   │   │   ├── planning/
-│   │   │   │   ├── astar_planner.py   # Theta* Any-Angle Planner (w=1.0, không rev_penalty)
-│   │   │   │   ├── occupancy_grid.py  # Occupancy Grid, Scan-to-Anchor, insert_obstacle_clusters
-│   │   │   │   ├── lidar_odometry.py  # 2D Point-to-Line ICP Odometry (khử trượt bánh)
-│   │   │   │   ├── disparity_extender.py # Dynamic Disparity Extender (DDE né cạ sườn)
-│   │   │   │   ├── cbf_safety_filter.py  # Control Barrier Function (CBF-QP lá chắn an toàn)
-│   │   │   │   └── controller.py      # Pure Pursuit + DDE + CBF + Curvature Speed Scaling
-│   │   │   └── robot/
-│   │   │       └── mock_robot.py      # Engine điều khiển trung tâm (set_goal, replan, footprint)
-│   │   ├── test_lidar_fusion_local.py # Test Suite 1: Odometry ICP & Chống vật cản ma
-│   │   └── test_recovery_and_anchor.py# Test Suite 2: Khóa Anchor Map, Chống kẹt thảm
-├── 04-hieu-MotionControl/             # Module Điều khiển & Motion Planning kiểm thử độc lập
-│   ├── test_dde_cbf.py                # Test Suite 3: Lá chắn DDE & CBF-QP
-│   ├── test_lidar_odometry.py         # Test Suite 4: Độ chính xác Odometry ICP
-│   └── test_planning_local.py         # Test Suite 5: Costmap, Gom cụm, Né chân bàn & Theta* Any-Angle
+│   │   ├── main.py          # Entrypoint tương thích Python 3.6 JetPack & auto bridge
+│   │   └── app/planning/    # Đã đồng bộ nhân C astar_core.c
+│   ├── frontend/            # React 19 UI visionOS glassmorphism
+│   ├── test-hardware/       # calibrate_motors.py & robot_dynamics.json
+│   └── jetbot_bridge.py     # Cầu nối phần cứng đọc LiDAR, Camera, Motor
+├── 04-hieu-MotionControl/   # Module Thuật toán Điều khiển Nâng cao của Team Lead
+│   ├── planning/
+│   │   ├── cbf_safety_filter.py   # Lá chắn Control Barrier Function
+│   │   ├── disparity_extender.py  # Né chướng ngại vật Dynamic Disparity Extender
+│   │   └── lidar_odometry.py      # Định vị quét đối sánh 2D ICP 10Hz
+│   ├── ALGORITHM_STATE.md   # Nhật ký ma trận giả thuyết sa bàn 2m x 1m
+│   └── test_closed_loop_continuous_navigation.py # Test khép vòng 3/3 Scenarios PASS
 └── agents-doc/
-    └── BOOTSTRAP.md                   # File này (Context Handover cho Agent mới)
+    ├── BOOTSTRAP.md         # File này (Context Handover cho Agent mới)
+    ├── STATE.md             # Bảng trạng thái living state của dự án
+    └── agents/              # 5 hồ sơ tác nhân nòng cốt
 ```
 
 ---
 
 ## 5. LỆNH CHẠY KIỂM THỬ TRÊN LOCAL PC
 
-Tất cả 5 bộ test có thể chạy đồng thời bằng một lệnh sau trên PC:
+Chạy kiểm tra toàn bộ 4 module trên PC bằng môi trường `.venv`:
 
 ```bash
-/home/zxcvmh/Projects/CS532/03-MinhHieu/backend/.venv/bin/python 03-MinhHieu/backend/test_lidar_fusion_local.py && \
-/home/zxcvmh/Projects/CS532/03-MinhHieu/backend/.venv/bin/python 03-MinhHieu/backend/test_recovery_and_anchor.py && \
-/home/zxcvmh/Projects/CS532/03-MinhHieu/backend/.venv/bin/python 04-hieu-MotionControl/test_dde_cbf.py && \
-/home/zxcvmh/Projects/CS532/03-MinhHieu/backend/.venv/bin/python 04-hieu-MotionControl/test_lidar_odometry.py && \
-/home/zxcvmh/Projects/CS532/03-MinhHieu/backend/.venv/bin/python 04-hieu-MotionControl/test_planning_local.py
+# 0. Kiểm định Toàn diện Tính Toàn Vẹn & Chống Hallucination (Harness Auditor)
+python3 scripts/verify_agent_integrity.py
+
+# 1. Kiểm thử Computer Vision & Floor IPM (01-HieuMe)
+/home/zxcvmh/Projects/CS532/03-MinhHieu/backend/.venv/bin/python 01-HieuMe/test_cv_local.py
+
+# 2. Kiểm thử A* C-Core Engine (02-DuyHieu)
+/home/zxcvmh/Projects/CS532/03-MinhHieu/backend/.venv/bin/python 02-DuyHieu/verify_step1_astar.py
+
+# 3. Kiểm thử Khép Vòng Điều Khiển Nâng Cao DDE + CBF (04-hieu-MotionControl)
+/home/zxcvmh/Projects/CS532/03-MinhHieu/backend/.venv/bin/python 04-hieu-MotionControl/test_closed_loop_continuous_navigation.py
+
+# 4. Kiểm thử Cầu Nối & Khóa Anchor Map (03-MinhHieu)
+/home/zxcvmh/Projects/CS532/03-MinhHieu/backend/.venv/bin/python 03-MinhHieu/backend/test_recovery_and_anchor.py
 ```
-*(Kết quả mong đợi: Cả 5 test suites đều in `PASS 100%` và không có bất kỳ assert failure nào).*
+*(Tất cả bài test đều in `PASS 100%`).*
 
 ---
 
-## 6. HƯỚNG DẪN TRIỂN KHAI LÊN JETBOT (KHI SẠC XONG PIN)
+## 6. HƯỚNG DẪN TRIỂN KHAI LÊN JETBOT (KHI SẠC XONG PIN & BẬT NGUỒN)
 
-Khi người dùng thông báo **"JetBot đã sạc xong pin và đã bật nguồn"**, Agent mới hãy thực hiện quy trình sau:
-
-1. **Kiểm tra kết nối mạng tới robot:**
+Khi robot online (`192.168.1.11`):
+1. **Kiểm tra ping:** `ping -c 2 192.168.1.11`
+2. **Nạp Model YOLO26-n & Build TensorRT Engine:**
    ```bash
-   ping -c 2 192.168.1.11
+   scp 01-HieuMe/yolo26n.onnx jetbot@192.168.1.11:/home/jetbot/
+   ssh jetbot@192.168.1.11 "/usr/src/tensorrt/bin/trtexec --onnx=/home/jetbot/yolo26n.onnx --saveEngine=/home/jetbot/yolo26n.engine --fp16"
    ```
-2. **Đồng bộ mã nguồn đã hoàn thiện lên JetBot:**
+3. **Đồng bộ mã nguồn planning:**
    ```bash
-   rsync -avz --exclude='ALGORITHM_STATE.md' --exclude='.venv' --exclude='__pycache__' \
-     /home/zxcvmh/Projects/CS532/03-MinhHieu/backend/app/planning/ \
-     jetbot@192.168.1.11:~/03-MinhHieu/backend/app/planning/
-
-   rsync -avz --exclude='ALGORITHM_STATE.md' --exclude='.venv' --exclude='__pycache__' \
-     /home/zxcvmh/Projects/CS532/03-MinhHieu/backend/app/robot/ \
-     jetbot@192.168.1.11:~/03-MinhHieu/backend/app/robot/
-
-   rsync -avz --exclude='ALGORITHM_STATE.md' --exclude='.venv' --exclude='__pycache__' \
-     /home/zxcvmh/Projects/CS532/04-hieu-MotionControl/planning/ \
-     jetbot@192.168.1.11:~/04-hieu-MotionControl/planning/
+   rsync -avz --exclude=ALGORITHM_STATE.md --exclude=.venv --exclude=__pycache__      /home/zxcvmh/Projects/CS532/03-MinhHieu/backend/app/planning/      jetbot@192.168.1.11:~/03-MinhHieu/backend/app/planning/
    ```
-3. **Khởi động dịch vụ phần cứng trên JetBot qua SSH:**
+4. **Khởi chạy hệ thống toàn diện:**
    ```bash
-   ssh jetbot@192.168.1.11 "python3 ~/03-MinhHieu/jetbot_bridge.py --host 0.0.0.0 --port 8765"
+   ssh jetbot@192.168.1.11 "bash ~/CS532/start_all.sh"
    ```
-4. **Khởi động Web Dashboard trên Local PC:**
-   ```bash
-   cd /home/zxcvmh/Projects/CS532/03-MinhHieu/backend && ./run.sh
-   ```
-5. **Kiểm tra trên sa bàn thực tế:** Truy cập `http://localhost:5173`, bấm chọn Goal vào khoảng trắng phía trước, quan sát robot quay đầu êm ái, bám đường thẳng tắp và né trơn tru chân bàn.

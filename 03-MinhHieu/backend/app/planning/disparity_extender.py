@@ -45,6 +45,7 @@ class DisparityExtender:
         self.warning_horizon_m = warning_horizon_m
         self.critical_stop_m = critical_stop_m
         self.min_gap_width_deg = min_gap_width_deg
+        self.last_chosen_sign: int = 0
 
     def preprocess_ranges(self, raw_ranges: List[float]) -> Tuple[List[float], List[int]]:
         """
@@ -217,39 +218,48 @@ class DisparityExtender:
         # Gap threshold: if front is blocked, threshold must be deeper than the obstacle to avoid driving into it
         gap_thresh = self.safe_clearance_m
         if is_front_blocked:
-            gap_thresh = max(self.safe_clearance_m, min(1.2, front_min_dist + 0.25))
+            gap_thresh = max(self.safe_clearance_m, min(1.2, front_min_dist + 0.08))
 
         # Try to find gaps with gap threshold
         gaps = self.find_max_gaps(inflated_ranges, fov_angles, threshold=gap_thresh)
 
-        # Fallback 1: If no gap found, try standard safe_clearance
-        if not gaps:
+        # Fallback 1: If no gap found and front is not blocked, try standard safe_clearance
+        if not gaps and not is_front_blocked:
             gaps = self.find_max_gaps(inflated_ranges, fov_angles, threshold=self.safe_clearance_m)
 
-        # Fallback 2: If still no gap, try relaxed threshold (0.28m)
-        if not gaps:
+        # Fallback 2: If still no gap and front is not blocked, try relaxed threshold (0.28m)
+        if not gaps and not is_front_blocked:
             gaps = self.find_max_gaps(inflated_ranges, fov_angles, threshold=max(0.25, self.safe_clearance_m - 0.08))
 
-        # Fallback 2: If still no gap, pick the direction of maximum depth in inflated ranges
+        # SOTA 2026: Corridor-Constrained Evasion & Path-Adherence Penalty
+        max_corridor_heading_deg = 26.0
+
+        # Fallback: If still no gap, pick the direction of maximum depth in corridor
         if not gaps:
-            max_idx = int(max(range(len(inflated_ranges)), key=lambda k: inflated_ranges[k]))
-            best_deg = fov_angles[max_idx]
-            max_d = inflated_ranges[max_idx]
+            corridor_indices = [i for i, deg in enumerate(fov_angles) if abs(deg) <= max_corridor_heading_deg]
+            if corridor_indices:
+                max_idx = int(max(corridor_indices, key=lambda k: inflated_ranges[k]))
+                best_deg = fov_angles[max_idx]
+                max_d = inflated_ranges[max_idx]
+            else:
+                max_idx = int(max(range(len(inflated_ranges)), key=lambda k: inflated_ranges[k]))
+                best_deg = max(-max_corridor_heading_deg, min(max_corridor_heading_deg, fov_angles[max_idx]))
+                max_d = inflated_ranges[max_idx]
             return {
                 "status": "EVASION_FALLBACK",
                 "target_heading_rad": math.radians(best_deg),
-                "target_heading_deg": best_deg,
+                "target_heading_deg": round(best_deg, 1),
                 "clearance_m": max_d,
                 "front_obstacle_dist": round(front_min_dist, 3),
                 "is_blocked": is_front_blocked,
                 "gaps": [],
                 "chosen_gap": None,
-                "reason": "Narrow corridor fallback: tracking maximum depth ray"
+                "reason": "Narrow corridor fallback: tracking maximum depth ray within corridor"
             }
 
         goal_deg = math.degrees(goal_heading_rad)
 
-        # Greedy Goal Projection: evaluate each gap
+        # SOTA 2026 Goal Projection: evaluate each gap with corridor limits and path-adherence penalty
         best_gap = None
         best_heading_deg = 0.0
         best_score = -1e9
@@ -262,20 +272,39 @@ class DisparityExtender:
             inset = min(5.0, (end_a - start_a) / 4.0)
             clamped_goal = max(start_a + inset, min(end_a - inset, goal_deg))
 
+            # Bound evasion angle within corridor to prevent wandering into walls/rooms
+            if is_front_blocked:
+                clamped_goal = max(-max_corridor_heading_deg, min(max_corridor_heading_deg, clamped_goal))
+
             # Score combines:
             # 1. Alignment with goal heading: cos(clamped_goal - goal_deg)
             # 2. Gap width & clearance depth: weight deeper and wider gaps
+            # 3. SOTA 2026 Path-Adherence Penalty: penalizes lateral divergence from global path
             angle_error_rad = math.radians(clamped_goal - goal_deg)
             alignment = math.cos(angle_error_rad)
             depth_factor = min(2.0, gap["avg_depth"]) / 2.0
             width_factor = min(60.0, gap["width_deg"]) / 60.0
 
-            score = 2.0 * alignment + 1.2 * depth_factor + 0.8 * width_factor
+            persistence = 0.0
+            if self.last_chosen_sign != 0:
+                gap_sign = 1 if gap["center_angle"] >= 0 else -1
+                if gap_sign == self.last_chosen_sign:
+                    persistence = 0.60  # Continuity bonus eliminates symmetric bifurcation chattering
+
+            dev_deg = abs(clamped_goal - goal_deg)
+            path_dev_penalty = 1.8 * ((dev_deg / max_corridor_heading_deg) ** 2)
+
+            score = 3.0 * alignment + 0.8 * depth_factor + 0.5 * width_factor + persistence - path_dev_penalty
 
             if score > best_score:
                 best_score = score
                 best_gap = gap
                 best_heading_deg = clamped_goal
+
+        if is_front_blocked and best_gap is not None:
+            self.last_chosen_sign = 1 if best_heading_deg >= 0.0 else -1
+        elif not is_front_blocked:
+            self.last_chosen_sign = 0
 
         return {
             "status": "EVASION_ACTIVE" if is_front_blocked else "CLEAR",

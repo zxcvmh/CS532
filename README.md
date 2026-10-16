@@ -1,35 +1,49 @@
 # CS532 — AUTONOMOUS JETBOT NAVIGATION & PERCEPTION SYSTEM
 
+---
 
 ## 📂 1. Cấu Trúc Dự Án (Repository Structure)
 
-Dự án được phân chia thành **các module độc lập** theo nguyên tắc **Một người — Một thư mục** để tránh xung đột code (Merge Conflict) khi `git pull / push`:
+Dự án được phân chia thành **các module độc lập** theo nguyên tắc **Một người / Một tính năng — Một thư mục** để tránh xung đột code (Merge Conflict) và tối ưu hóa quy trình kiểm thử PC-First:
 
 ```text
 CS532/
-├── 01-HieuMe/               # [THỊ GIÁC] Module Computer Vision, YOLOv8n, Phân đoạn sàn IPM
-│   ├── requirements.txt     # Thư viện Python cho máy tính cá nhân
+├── 01-HieuMe/               # [THỊ GIÁC HOÀN THIỆN] Computer Vision, YOLO26-n, Letterbox, Floor IPM, Proxemics
+│   ├── requirements.txt     # Thư viện Python (ultralytics, onnxruntime, opencv...)
 │   ├── sample_data/         # Ảnh chụp thực tế từ camera CSI JetBot để căn chỉnh IPM
-│   ├── test_cv_local.py     # Script kiểm thử độc lập trên PC (Không cần robot thật)
+│   ├── floor_ipm.py         # Ma trận Homography H3x3 bù mù LiDAR 16cm & chống chia cho 0
+│   ├── yolo_seg_runner.py   # Runner YOLO26-n FP16 / ONNX Runtime vectorized
+│   ├── test_cv_local.py     # Script kiểm thử độc lập 5 bài test trên PC (Pass 100%)
 │   └── ...
-├── 02-DuyHieu/              # [ĐIỀU HƯỚNG] Thuật toán A*, Occupancy Grid, Pure Pursuit, Gom cụm
-│   ├── planning/            # Mã nguồn lõi thuật toán
+├── 02-DuyHieu/              # [ĐIỀU HƯỚNG C-CORE] Thuật toán A* nhân C, Occupancy Grid, Detour Fix của Duy Hiếu
+│   ├── planning/            # Mã nguồn lõi thuật toán điều hướng
+│   │   ├── astar_core.c     # Nhân thuật toán A* tối ưu bằng C
+│   │   └── ...
 │   ├── requirements.txt     # Thư viện Python cho máy tính cá nhân
-│   ├── test_planning_local.py # Script kiểm thử giả lập trên PC (Không cần robot thật)
+│   ├── test_planning_local.py # Script kiểm thử A* trên PC
+│   ├── verify_step1_astar.py  # Đánh giá benchmark A* C-core
 │   └── ...
-├── 03-MinhHieu/              # [GIAO DIỆN & CẦU NỐI] Web Dashboard & Backend Bridge
-│   ├── frontend/            # Giao diện điều khiển Apple glassmorphism (React + Vite + Tailwind)
-│   ├── backend/             # Server điều phối WebSocket & REST API (FastAPI)
-│   └── jetbot_bridge.py     # Cầu nối phần cứng đọc LiDAR, Camera và điều khiển động cơ
+├── 03-MinhHieu/              # [GIAO DIỆN & CẦU NỐI] Web Dashboard visionOS & Backend Bridge
+│   ├── frontend/            # Giao diện Apple visionOS glassmorphism (React 19 + Vite + Tailwind)
+│   ├── backend/             # Server điều phối WebSocket 10Hz & REST API (FastAPI)
+│   └── jetbot_bridge.py     # Cầu nối phần cứng đọc LiDAR D500, Camera CSI và điều khiển động cơ
+├── 04-hieu-MotionControl/   # [ĐIỀU KHIỂN NÂNG CAO] Thuật toán riêng cải tiến của Team Lead
+│   ├── planning/            # Lõi thuật toán DDE, CBF Safety Filter, LiDAR Odometry
+│   │   ├── cbf_safety_filter.py   # Bộ lọc an toàn Control Barrier Function
+│   │   ├── disparity_extender.py  # Thuật toán né chướng ngại vật Dynamic Disparity Extender
+│   │   └── lidar_odometry.py      # Định vị tương đối bằng quét đối sánh LiDAR
+│   ├── ALGORITHM_STATE.md   # Nhật ký ma trận giả thuyết và thông số sa bàn 2m x 1m
+│   ├── test_closed_loop_continuous_navigation.py # Test vòng lặp điều khiển kín liên tục
+│   └── ...
 ├── task-team/               # [KẾ HOẠCH CHI TIẾT] File giao việc và tiêu chuẩn nghiệm thu
-│   ├── plan_algorithm_duyhieu.md      # Kế hoạch chi tiết cho Duy Hiếu
-│   └── plan_computer_vision_hieume.md  # Kế hoạch chi tiết cho Hiếu me
-├── agents-doc/              # [HIẾN PHÁP DỰ ÁN] Hợp đồng dữ liệu & chuẩn giao tiếp
-│   ├── INTERFACE.md         # Chuẩn dữ liệu LaserScan, SemanticDetections, TelemetryState
-│   └── WORKFLOW.MD          # Quy chế phân tầng đa tần số và an toàn phần cứng
-├── setup/                   # Script kiểm tra phần cứng và đo đạc benchmark trên Jetson
-├── .env.example             # File mẫu cấu hình biến môi trường
-└── README.md                # Tài liệu hướng dẫn này
+│   ├── plan_algorithm_duyhieu.md      # Kế hoạch kỹ thuật chi tiết cho Duy Hiếu
+│   └── plan_computer_vision_hieume.md  # Kế hoạch kỹ thuật chi tiết cho Hiếu me & CV
+├── agents-doc/              # [HIẾN PHÁP DỰ ÁN] Hợp đồng dữ liệu & hồ sơ tác nhân
+│   ├── INTERFACE.md         # Chuẩn dữ liệu LaserScan, SemanticDetections, low_obstacles
+│   ├── STATE.md             # Bảng trạng thái living state của toàn bộ dự án
+│   ├── WORKFLOW.MD          # Quy chế phân tầng đa tần số và an toàn phần cứng
+│   └── agents/              # Đặc tả các Agent nòng cốt (Supervisor, Algorithm, Perception, Comms, Helpdesk)
+└── setup/                   # Script kiểm tra phần cứng và đo đạc benchmark trên Jetson
 ```
 
 ---
@@ -37,81 +51,65 @@ CS532/
 ## 🚀 2. Hướng Dẫn Dành Cho Thành Viên (Developer Quick Start)
 
 > [!IMPORTANT]
-> **LƯU Ý:** Cả **Duy Hiếu** và **Hiếu me** hiện **KHÔNG GIỮ ROBOT THỰC TẾ**.  
-> Tất cả công việc phát triển được thiết kế để các bạn **tự code, debug và test 100% trên Laptop/PC cá nhân**!
+> **NGUYÊN TẮC PC-FIRST:**
+> Các thành viên phát triển và kiểm thử thuật toán độc lập trên PC cá nhân trước. Chỉ nạp lên JetBot (`192.168.1.11`) khi bộ test cục bộ đạt 100% PASS!
 
-### 2.1. Dành cho Duy Hiếu (Phụ trách Thuật toán Điều hướng)
+### 2.1. Dành cho Duy Hiếu (`02-DuyHieu/`)
 * Đọc kỹ kế hoạch tại: [`task-team/plan_algorithm_duyhieu.md`](task-team/plan_algorithm_duyhieu.md)
-* Cài đặt môi trường trên PC:
+* Chạy bộ test A* C-core và kiểm tra vượt vật cản:
   ```bash
   cd 02-DuyHieu
-  pip install -r requirements.txt
+  python3 test_planning_local.py
+  python3 verify_step1_astar.py
   ```
-* Chạy bộ test giả lập trên PC (tự sinh dữ liệu LiDAR 360 tia, kiểm tra A*, né hình thang Plateau, điều tốc vào cua):
-  ```bash
-  python test_planning_local.py
-  ```
-* **Khi xong việc:** Đóng gói code trong `planning/` và gửi script test cho Team Lead để nạp lên xe thật đo đạc.
 
----
-
-### 2.2. Dành cho Hiếu me (Phụ trách Thị giác Máy tính)
+### 2.2. Dành cho Hiếu me (`01-HieuMe/`)
 * Đọc kỹ kế hoạch tại: [`task-team/plan_computer_vision_hieume.md`](task-team/plan_computer_vision_hieume.md)
-* Cài đặt môi trường trên PC:
+* Chạy bộ test thị giác trên PC (kiểm tra góc lệch Azimuth, Social Bubble Proxemics và ma trận IPM):
   ```bash
   cd 01-HieuMe
-  pip install -r requirements.txt
+  python3 test_cv_local.py
   ```
-* Chạy bộ test thị giác trên PC (dùng ảnh mẫu CSI camera trong `sample_data/` để test góc lệch Azimuth, Social Bubble và ma trận IPM):
-  ```bash
-  python test_cv_local.py
-  ```
-* **Khi xong việc:** Export mô hình `yolov8n-seg.onnx`, gửi file model và code cho Team Lead để build TensorRT FP16 trên Jetson Nano.
 
----
-
-### 2.3. Dành cho Team Lead (Người giữ robot & Tích hợp)
-* Cài đặt cấu hình môi trường:
+### 2.3. Dành cho Team Lead (`04-hieu-MotionControl/` & Tích hợp)
+* Chạy kiểm thử thuật toán điều khiển kín DDE + CBF:
   ```bash
-  cp .env.example .env
+  cd 04-hieu-MotionControl
+  python3 test_closed_loop_continuous_navigation.py
   ```
-* Khởi động Web Dashboard và Backend trên Laptop điều khiển:
+* Khởi động Web Dashboard và Backend:
   ```bash
-  cd 03-MinhHieu
-  ./run_laptop.sh
-  ```
-* Nạp cầu nối phần cứng trên JetBot (qua SSH):
-  ```bash
-  ssh jetbot-at-home "cd ~/mhieu && ./run_bridge.sh"
+  cd 03-MinhHieu/backend
+  python3 run.py --host 0.0.0.0 --port 8000
   ```
 
 ---
 
 ## 📡 3. Chuẩn Hợp Đồng Dữ Liệu (`agents-doc/INTERFACE.md`)
 
-* **Hiếu me $\to$ Team Lead (`SemanticDetections` & `low_obstacles`):**
+* **Perception $	o$ Planning / Backend (`SemanticDetections` & `low_obstacles`):**
   ```json
   {
     "timestamp": 1727500000.150,
+    "frame_id": 1024,
     "detections": [
-      {"class_name": "person", "azimuth_deg": -15.4, "confidence": 0.88, "safety_margin_m": 0.90}
+      {
+        "class_name": "person",
+        "azimuth_deg": 15.4,
+        "confidence": 0.88,
+        "safety_margin_m": 0.80,
+        "distance": 1.85
+      }
     ],
-    "low_obstacles": [[0.65, 0.12], [0.70, -0.15]]
+    "low_obstacles": [[0.65, 0.12], [0.70, -0.15]],
+    "latency_ms": 21.5
   }
   ```
-* **Duy Hiếu $\to$ Team Lead (`TelemetryState`):**
-  * `robot_pose`: $(x, y, \theta)$ tính bằng mét và radian.
-  * `path`: Danh sách waypoints $[[x_1, y_1], [x_2, y_2], ...]$ đã làm mượt.
-  * Phản xạ phanh khẩn cấp: Tự ngắt $v = 0, \omega = 0$ khi vật cản $< 0.20\text{ m}$.
 
 ---
 
 ## 🔒 4. Quy Ước Git (Git Rules)
 
-1. Mỗi thành viên chỉ chỉnh sửa trong thư mục được phân công:
-   * Hiếu me: chỉ sửa trong `01-HieuMe/`
-   * Duy Hiếu: chỉ sửa trong `02-DuyHieu/`
-2. Trước khi push code, đảm bảo đã chạy pass script test trên PC:
-   * Duy Hiếu: `python 02-DuyHieu/test_planning_local.py`
-   * Hiếu me: `python 01-HieuMe/test_cv_local.py`
-3. Không commit file nặng không cần thiết (`.engine`, `__pycache__`, `node_modules`).
+1. Mỗi thành viên chỉ chỉnh sửa trong thư mục được phân công (`01-HieuMe/`, `02-DuyHieu/`, `03-MinhHieu/`, `04-hieu-MotionControl/`).
+2. Trước khi push code, bắt buộc chạy pass bộ test PC tương ứng.
+3. Không commit file nhị phân nặng không cần thiết (`.engine`, `__pycache__`, `node_modules`).

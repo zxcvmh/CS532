@@ -47,28 +47,38 @@
    * Làm mịn tọa độ theo hàm mũ: $X_t = \alpha X_{\text{new}} + (1 - \alpha) X_{\text{old}}$ với $\alpha = 0.65$.
    * Chỉ xuất ra vật cản khi xuất hiện liên tục $\ge 2$ frames, hoặc cự ly $< 0.35\text{ m}$ (kích hoạt khẩn cấp ngay frame đầu).
 
-### 2.4. Khắc phục Quản lý Bộ nhớ TensorRT trên Jetson Nano
-* Bổ sung ctypes binding 64-bit an toàn (`data_as(ctypes.c_void_p)`) tương thích TensorRT 7.1.3 trên kiến trúc aarch64.
-* Thêm hàm dọn dẹp `__del__` giải phóng `cudaFree` các buffer GPU `d_input` và `d_output`, loại bỏ hoàn toàn nguy cơ rò rỉ VRAM khi chạy lâu.
+### 2.4. Khắc phục Quản lý Bộ nhớ TensorRT, Letterbox & Đồng bộ Đa Module
+* **Letterbox Preprocessing (`640x640`):** Thay thế `cv2.resize` méo tỷ lệ bằng `letterbox_blob` (padding `(114, 114, 114)` giữ nguyên tỷ lệ khung hình `4:3` của camera `640x480`), giúp tọa độ bounding box của `yolo26n.onnx` khớp chính xác với Ultralytics gốc (`max_diff <= 1 px`).
+* **Đồng bộ dấu Góc Phương vị CCW với Planning (`occupancy_grid.py`):** Khắc phục lỗi đảo dấu `-math.radians(det["azimuth_deg"])` trong `update_social_bubbles_from_detections()`, đảm bảo người ở bên trái (`+azimuth_deg`) tạo Social Bubble đúng ở bên trái (`+Y`) trên Costmap.
+* **Loại trừ BBox đối tượng lớn khỏi Floor IPM Mask:** Khi YOLO phát hiện `person`/`chair`, vùng bounding box của chúng được xóa khỏi `full_obs_mask` ở đáy ảnh để chân người/ghế không bị nhân đôi thành vật cản thấp `< 16cm`.
+* **Đồng bộ sang `03-MinhHieu/`:** Đã đồng bộ `jetbot_bridge.py`, `floor_ipm.py`, `camera_config.json` và trường `estimated_dist` / `distance` sang nhánh Backend Dashboard để khi chạy `start_all.sh` hệ thống sử dụng đúng bản mới nhất.
+* **Quản lý bộ nhớ CUDA an toàn:** Bổ sung ctypes binding 64-bit (`data_as(ctypes.c_void_p)`) và giải phóng `cudaFree` cho `d_input`, `d_output` khi kết thúc.
 
 ---
 
-## 🔬 3. KẾT QUẢ KIỂM THỬ THỰC TẾ TRÊN PHẦN CỨNG JETBOT (192.168.1.11)
+## 🔬 3. KẾT QUẢ KIỂM THỬ THỰC TẾ (TRUNG THỰC TRÊN CẢ PC VÀ JETBOT)
+
+> [!NOTE]
+> **Làm rõ kiến trúc thực tế:**
+> - `yolo26n.onnx` / `yolo26n.engine` là mô hình **Object Detection** với đầu ra `(1, 84, 8400)` (4 tọa độ box + 80 lớp COCO), chịu trách nhiệm phát hiện người và vật cản lớn (`person`, `chair`, `backpack`...).
+> - Nhánh phát hiện vật cản thấp sát sàn `< 16cm` (`low_obstacles`) sử dụng phân đoạn tương phản Grayscale + lọc hình thái học `MORPH_OPEN` trên vùng ROI 30% đáy ảnh (`y: 336..480`), kết hợp ma trận Homography `H_metric` và `TemporalObstacleFilter` (`min_hits=2`).
 
 ### 3.1. Bộ Unit Test `test_cv_local.py` (5/5 PASS - 100%)
 ```text
-✅ PASS 1/5: CameraLoader GStreamer CSI nvarguscamerasrc (Zero-Buffer Grabber OK).
+✅ PASS 1/5: CameraLoader đọc ảnh chuẩn csi_floor_sample.jpg (640x480).
 ✅ PASS 2/5: Trích xuất góc phương vị Azimuth CCW & Asymmetric Proxemics (0.8m / 0.4m).
 ✅ PASS 3/5: Ma trận IPM, bảo vệ Division-by-Zero, Temporal Filter & Batch Metric.
-✅ PASS 4/5: YOLO26-n Vectorized Tensor Pipeline (1, 84, 8400) giải mã TensorRT.
+✅ PASS 4/5: YOLO26-n Vectorized Tensor Pipeline (1, 84, 8400) + Floor IPM (<16cm) + Nhận diện thực trên bus.jpg.
 ✅ PASS 5/5: Hợp đồng dữ liệu JSON khớp 100% với agents-doc/INTERFACE.md.
 🎉 TẤT CẢ 5/5 BÀI KIỂM THỬ ĐÃ ĐẠT TIÊU CHUẨN HOÀN TOÀN!
 ```
 
-### 3.2. Đo đạc toàn trình `pipeline_demo.py` (CSI Camera + YOLO26-n FP16)
-* **Phần cứng:** Jetson Nano 4GB, IMX219 CSI Camera, TensorRT 7.1.3 FP16.
-* **Thời gian tính toán trung bình:** **$82.54\text{ ms}$** ($\approx 12.1\text{ FPS}$).
-* **Độ ổn định:** Jitter dao động nhỏ ($80.56\text{ ms} - 85.67\text{ ms}$), không rớt khung hình.
+### 3.2. Số liệu đo đạc thực tế: PC CPU vs. Phần cứng JetBot (`192.168.1.11`)
+* **Trên PC (CPU ONNX Runtime, `yolo26n.onnx`):**
+  * Thời gian suy luận trung bình sau warmup (`pipeline_demo.py`, 10 frames): **$59.80\text{ ms/frame}$** ($\text{min } 51.28\text{ ms} - \text{max } 73.12\text{ ms}$, tương đương **$\approx 16.7\text{ FPS}$** trên CPU; chu kỳ đầu tiên chưa warmup khoảng $\sim 95\text{ ms}$).
+* **Trên Phần cứng JetBot (Jetson Nano 4GB, Maxwell GPU 128-core, TensorRT 7.1.3 FP16, `yolo26n.engine`):**
+  * Độ trễ suy luận GPU thuần (`trtexec` FP16): **$48.25\text{ ms}$** ($\approx 20.4\text{ FPS}$).
+  * Độ trễ toàn trình `pipeline_demo.py` (CSI Camera + YOLO26-n FP16 + Floor IPM): **$82.54\text{ ms}$** ($\approx 12.1\text{ FPS}$), độ dao động thấp ($80.56\text{ ms} - 85.67\text{ ms}$).
 
 ---
 

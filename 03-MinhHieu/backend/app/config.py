@@ -14,10 +14,25 @@ class Config:
         "motion_xai": 5,         # 5Hz Explainable Motion & Obstacle telemetry
     }
 
-    # Robot parameters
-    MAX_SPEED = 0.10           # m/s (safe gentle cruise speed on ceramic tile, reduced from 0.14)
-    MAX_ANGULAR_SPEED = 0.28   # rad/s (anti-slip gentle turn rate, reduced from 0.50 to let odometry & planning keep up)
-    ROBOT_UPDATE_RATE = 20     # Hz
+    # Environment Profile: "ARENA_2X1" (Sa ban test 2mx1m) or "SEMINAR_5X5" (Phong hoc 5mx5m)
+    ENVIRONMENT_MODE = "ARENA_2X1"
+
+    # Virtual Arena Bounds for 2m x 1m testbed (meters in World frame)
+    # Strictly bounds A* search space so it never routes into infinite empty void outside arena
+    ARENA_BOUNDS = {"x_min": -0.1, "x_max": 2.1, "y_min": -0.6, "y_max": 0.6}
+    ARENA_BOUNDS_TUPLE = (-0.1, 2.1, -0.6, 0.6)
+
+    # Robot parameters (calibrated to setup/robot_dynamics.json & ceramic tile physics)
+    MAX_SPEED = 0.14               # m/s (matching calibrated max_safe_speed_mps)
+    CRUISE_SPEED = 0.17            # m/s (calibrated cruise_speed)
+    MIN_DRIVE_SPEED = 0.12         # m/s (GA25 static deadband compensation)
+    TURN_SPEED = 0.14              # m/s
+    MAX_ANGULAR_SPEED = 0.40       # rad/s (calibrated zero-slip rotation on glossy tile and stable ICP scan matching)
+    CENTRIFUGAL_LIMIT_MPS2 = 0.176 # m/s^2 (|v*w| <= 0.176 prevents slip on glossy tile)
+    TACTICAL_YIELD_DIST = 0.30     # m (Tactical Yielding stop distance)
+    PASSAGE_CLEARANCE_MIN = 0.18   # m (minimum passable corridor width for 0.15m JetBot, allows passing 18cm-25cm corridors)
+    ROBOT_UPDATE_RATE = 20         # Hz
+    NAVIGATION_CONTROLLER = "pure_pursuit" # "pure_pursuit" (RPP active) or "mppi"
 
     # Map parameters
     MAP_RESOLUTION = 0.05      # meters per cell
@@ -28,7 +43,7 @@ class Config:
 
     # LiDAR parameters
     NUM_RAYS = 360             # 1 degree resolution
-    MAX_RANGE = 8.0            # meters
+    MAX_RANGE = 6.0            # meters (supporting both 2m x 1m arena and 5m x 5m seminar room)
 
     # Simulated environment
     # Walls: (x1, y1, x2, y2) line segments

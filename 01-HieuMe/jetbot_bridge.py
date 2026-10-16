@@ -20,10 +20,16 @@ import ctypes
 import numpy as np
 
 # Import Floor IPM transformer for LiDAR blind spot compensation
-try:
-    from floor_ipm import FloorIPMTransformer
-except ImportError:
-    from .floor_ipm import FloorIPMTransformer
+_BRIDGE_DIR = os.path.dirname(os.path.abspath(__file__))
+for _cv_dir in (
+    _BRIDGE_DIR,
+    os.path.join(_BRIDGE_DIR, "backend", "app", "cv"),
+    os.path.join(_BRIDGE_DIR, "app", "cv"),
+    os.path.abspath(os.path.join(_BRIDGE_DIR, "..", "01-HieuMe")),
+):
+    if os.path.isdir(_cv_dir) and _cv_dir not in sys.path:
+        sys.path.insert(0, _cv_dir)
+from floor_ipm import FloorIPMTransformer
 
 # ─────────────────────────────────────────────────────────────
 # DEPENDENCY CHECKS
@@ -345,13 +351,13 @@ class TensorRTYOLOThread(threading.Thread):
 
         # Khởi tạo Floor IPM Transformer bù điểm mù LiDAR
         self.ipm = FloorIPMTransformer()
-        self.safety_margins = {
+        self.safety_margins = self.ipm.config.get("safety_margins_m", {
             "person": {"front_m": 0.80, "side_m": 0.40, "back_m": 0.30},
             "chair": 0.30,
             "backpack": 0.20,
             "bottle": 0.15,
             "default": 0.25
-        }
+        })
 
     def compute_dynamic_proxemics(self, azimuth_deg: float, cls_name: str):
         c_lower = cls_name.lower()
@@ -381,6 +387,9 @@ class TensorRTYOLOThread(threading.Thread):
             return
 
         print(f"[INFO] Loading TensorRT YOLO engine from {self.engine_path}...")
+        cudart = None
+        d_input = ctypes.c_void_p()
+        d_output = ctypes.c_void_p()
         try:
             cudart = ctypes.CDLL('libcudart.so')
 
@@ -389,6 +398,8 @@ class TensorRTYOLOThread(threading.Thread):
             cudart.cudaMalloc.restype = ctypes.c_int
             cudart.cudaMemcpy.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int]
             cudart.cudaMemcpy.restype = ctypes.c_int
+            cudart.cudaFree.argtypes = [ctypes.c_void_p]
+            cudart.cudaFree.restype = ctypes.c_int
 
             TRT_LOGGER = trt.Logger(trt.Logger.WARNING)
             with open(self.engine_path, 'rb') as f:
@@ -404,8 +415,6 @@ class TensorRTYOLOThread(threading.Thread):
             input_bytes = 1 * 3 * 640 * 640 * 4
             output_bytes = 1 * 84 * 8400 * 4
 
-            d_input = ctypes.c_void_p()
-            d_output = ctypes.c_void_p()
             cudart.cudaMalloc(ctypes.byref(d_input), input_bytes)
             cudart.cudaMalloc(ctypes.byref(d_output), output_bytes)
 
@@ -421,8 +430,15 @@ class TensorRTYOLOThread(threading.Thread):
                         continue
 
                     h_orig, w_orig = frame.shape[:2]
-                    img_resized = cv2.resize(frame, (640, 640))
-                    img_rgb = cv2.cvtColor(img_resized, cv2.COLOR_BGR2RGB)
+                    # Letterbox preprocessing giữ nguyên tỷ lệ khung hình chuẩn Ultralytics
+                    ratio = min(640.0 / h_orig, 640.0 / w_orig)
+                    new_w, new_h = int(round(w_orig * ratio)), int(round(h_orig * ratio))
+                    dw, dh = (640 - new_w) / 2.0, (640 - new_h) / 2.0
+                    img_resized = cv2.resize(frame, (new_w, new_h)) if (w_orig, h_orig) != (new_w, new_h) else frame
+                    top, bottom = int(round(dh - 0.1)), int(round(dh + 0.1))
+                    left_p, right_p = int(round(dw - 0.1)), int(round(dw + 0.1))
+                    padded = cv2.copyMakeBorder(img_resized, top, bottom, left_p, right_p, cv2.BORDER_CONSTANT, value=(114, 114, 114))
+                    img_rgb = cv2.cvtColor(padded, cv2.COLOR_BGR2RGB)
                     img_norm = img_rgb.astype(np.float32) / 255.0
                     img_chw = np.transpose(img_norm, (2, 0, 1))
                     h_input = np.ascontiguousarray(np.expand_dims(img_chw, axis=0))
@@ -454,17 +470,15 @@ class TensorRTYOLOThread(threading.Thread):
                         filt_confs = confidences[mask].tolist()
                         filt_cids = class_ids[mask].tolist()
 
-                        scale_x = w_orig / 640.0
-                        scale_y = h_orig / 640.0
                         cx = f_boxes[:, 0]
                         cy = f_boxes[:, 1]
                         bw = f_boxes[:, 2]
                         bh = f_boxes[:, 3]
 
-                        x1 = np.clip((cx - bw / 2.0) * scale_x, 0, w_orig - 1).astype(np.int32)
-                        y1 = np.clip((cy - bh / 2.0) * scale_y, 0, h_orig - 1).astype(np.int32)
-                        box_w = np.clip(bw * scale_x, 1, w_orig).astype(np.int32)
-                        box_h = np.clip(bh * scale_y, 1, h_orig).astype(np.int32)
+                        x1 = np.clip((cx - bw / 2.0 - dw) / ratio, 0, w_orig - 1).astype(np.int32)
+                        y1 = np.clip((cy - bh / 2.0 - dh) / ratio, 0, h_orig - 1).astype(np.int32)
+                        box_w = np.clip(bw / ratio, 1, w_orig).astype(np.int32)
+                        box_h = np.clip(bh / ratio, 1, h_orig).astype(np.int32)
                         boxes = np.stack([x1, y1, box_w, box_h], axis=1).tolist()
 
                     dets = []
@@ -483,11 +497,14 @@ class TensorRTYOLOThread(threading.Thread):
                                     continue
 
                                 bx, by, bw, bh = boxes[i]
+                                x2 = min(w_orig, bx + bw)
+                                y2 = min(h_orig, by + bh)
 
                                 # ── SENSOR FUSION: Camera Angle + 2D LiDAR Laser Distance ──
-                                x_center = bx + bw / 2.0
-                                # Góc phương vị chuẩn Robot Frame (CCW): Trái (+), Phải (-) theo FOV 160°
-                                azimuth_deg = round((((w_orig / 2.0) - x_center) / (w_orig / 2.0)) * 80.0, 1)
+                                x_center = (bx + x2) / 2.0
+                                # Góc phương vị chuẩn Robot Frame (CCW): Trái (+), Phải (-) theo FOV camera
+                                half_fov = self.ipm.fov_deg / 2.0
+                                azimuth_deg = round((((w_orig / 2.0) - x_center) / (w_orig / 2.0)) * half_fov, 1)
 
                                 # Cửa sổ góc quét LiDAR tương ứng
                                 min_ang = azimuth_deg - 5.0
@@ -509,22 +526,24 @@ class TensorRTYOLOThread(threading.Thread):
                                     dist = round(min(lidar_hits), 2)
                                 else:
                                     # IPM Metric distance estimation từ điểm chạm đáy mặt sàn
-                                    est_x, est_y = self.ipm.image_pixel_to_robot_metric(x_center, by + bh)
+                                    est_x, est_y = self.ipm.image_pixel_to_robot_metric(x_center, y2)
                                     if est_x < 900.0:
                                         dist = round(math.hypot(est_x, est_y), 2)
                                     else:
-                                        dist = round(220.0 / max(bh, 1), 2)
+                                        dist = round(220.0 / max(y2 - by, 1), 2)
 
                                 margin, prox_env = self.compute_dynamic_proxemics(azimuth_deg, cname)
 
                                 det_obj = {
                                     "class_id": cls_idx,
                                     "class_name": cname,
+                                    "class": cname,
                                     "confidence": round(filt_confs[i], 2),
                                     "azimuth_deg": azimuth_deg,
                                     "estimated_dist": dist,
+                                    "distance": dist,
                                     "safety_margin_m": margin,
-                                    "bbox": [bx, by, bx + bw, by + bh]
+                                    "bbox": [int(bx), int(by), int(x2), int(y2)]
                                 }
                                 if prox_env is not None:
                                     det_obj["proxemics"] = prox_env
@@ -543,6 +562,12 @@ class TensorRTYOLOThread(threading.Thread):
                     cleaned = cv2.morphologyEx(bin_obs, cv2.MORPH_OPEN, kernel)
                     full_mask = np.zeros((h_orig, w_orig), dtype=np.uint8)
                     full_mask[roi_y:h_orig, 0:w_orig] = cleaned
+
+                    # Loại trừ vùng bbox của các vật thể lớn (person, chair, ...) đã được YOLO phát hiện
+                    for d in dets:
+                        bx1, by1, bx2, by2 = d["bbox"]
+                        full_mask[max(0, by1):min(h_orig, by2), max(0, bx1):min(w_orig, bx2)] = 0
+
                     self.latest_low_obstacles = self.ipm.extract_low_obstacles_from_mask(full_mask)[:4]
 
                     # Terminal visual feedback when objects detected
@@ -560,6 +585,15 @@ class TensorRTYOLOThread(threading.Thread):
 
         except Exception as e:
             print(f"[WARN] TensorRT setup error: {e}")
+        finally:
+            if cudart is not None:
+                try:
+                    if d_input.value:
+                        cudart.cudaFree(d_input)
+                    if d_output.value:
+                        cudart.cudaFree(d_output)
+                except Exception:
+                    pass
 
     def stop(self):
         self.running = False
@@ -727,10 +761,18 @@ async def bridge_loop(camera: CSICameraThread, lidar: D500LidarThread, yolo: Ten
 # ─────────────────────────────────────────────────────────────
 def main():
     global WS_URL, SERVER_HOST, SERVER_PORT
-    if len(sys.argv) > 1 and not sys.argv[1].startswith("-"):
-        SERVER_HOST = sys.argv[1]
-    if len(sys.argv) > 2 and sys.argv[2].isdigit():
-        SERVER_PORT = int(sys.argv[2])
+    import argparse
+    parser = argparse.ArgumentParser(description="NVIDIA JetBot Hardware Bridge")
+    parser.add_argument("pos_host", nargs="?", default=None, help="Dashboard host IP (positional)")
+    parser.add_argument("pos_port", nargs="?", type=int, default=None, help="Dashboard port (positional)")
+    parser.add_argument("--host", dest="flag_host", default=None, help="Dashboard host IP (--host)")
+    parser.add_argument("--port", dest="flag_port", type=int, default=None, help="Dashboard port (--port)")
+    args, _ = parser.parse_known_args()
+
+    host = args.flag_host or args.pos_host or os.environ.get("DASHBOARD_HOST") or os.environ.get("DASHBOARD_IP") or "192.168.1.8"
+    port = args.flag_port or args.pos_port or int(os.environ.get("DASHBOARD_PORT", "8000"))
+    SERVER_HOST = host
+    SERVER_PORT = port
     WS_URL = f"ws://{SERVER_HOST}:{SERVER_PORT}/ws/robot"
 
     print("=" * 65)

@@ -111,6 +111,7 @@ async def mjpeg_frame_generator():
 
 @app.api_route("/video_feed", methods=["GET", "HEAD"])
 @app.api_route("/stream", methods=["GET", "HEAD"])
+@app.api_route("/api/stream/mjpeg", methods=["GET", "HEAD"])
 async def video_feed_endpoint():
     """Native MJPEG HTTP stream, viewable directly in <img src='/video_feed'>"""
     return StreamingResponse(
