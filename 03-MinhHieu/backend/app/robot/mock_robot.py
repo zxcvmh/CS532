@@ -889,7 +889,7 @@ class MockRobot(RobotController, SensorProvider, MapProvider, NavigationManager,
                     blocked_dur = 0.0
 
                 replan_cooldown = now_t - getattr(self, "_last_replan_time", 0.0)
-                if is_stopped_or_blocked and (blocked_dur >= 0.6) and (replan_cooldown >= 1.5):
+                if is_stopped_or_blocked and not evasion_active and (blocked_dur >= 2.5) and (replan_cooldown >= 3.0):
                     goal_x = self.nav_status.goal_x
                     goal_y = self.nav_status.goal_y
                     if getattr(self, "latest_clusters", None):
@@ -1091,11 +1091,11 @@ class MockRobot(RobotController, SensorProvider, MapProvider, NavigationManager,
                         else:
                             print(f"[NAV-DEBUG] >>> ⚠️ Cannot back up: rear is obstructed ({rear_min:.2f}m < 0.22m)", flush=True)
 
-                    # Intelligent recovery with patience (wait 2.0s for dynamic obstacles or to compute new path)
+                    # Intelligent recovery with patience (wait 2.5s for dynamic obstacles or to compute new path)
                     if not hasattr(self, "_last_replan_time"):
                         self._last_replan_time = 0.0
-                    replan_delay = 2.0
-                    if (now_t - self._stop_start_time >= replan_delay) and (now_t - self._last_replan_time > 2.0):
+                    replan_delay = 2.5
+                    if (now_t - self._stop_start_time >= replan_delay) and (now_t - self._last_replan_time > 3.0):
                         self._last_replan_time = now_t
                         self._replan_attempts += 1
                         goal_x = self.nav_status.goal_x

@@ -367,7 +367,7 @@ class Lidar2DOdometry:
         prior_x: float,
         prior_y: float,
         prior_theta: float,
-        max_iterations: int = 6
+        max_iterations: int = 10
     ) -> Tuple[float, float, float, bool, Dict[str, Any]]:
         """
         Gauss-Newton Scan-to-Map Matching (Kohlbrecher et al., Hector SLAM 2011).
@@ -444,7 +444,7 @@ class Lidar2DOdometry:
 
             step_x = float(np.clip(delta[0], -0.06, 0.06))
             step_y = float(np.clip(delta[1], -0.06, 0.06))
-            step_th = float(np.clip(delta[2], -0.12, 0.12))
+            step_th = float(np.clip(delta[2], -0.25, 0.25))
 
             curr_x += step_x
             curr_y += step_y
@@ -563,12 +563,13 @@ class Lidar2DOdometry:
                 delta_p = math.hypot(gn_x - self.x, gn_y - self.y)
                 delta_th = abs((gn_th - self.theta + math.pi) % (2.0 * math.pi) - math.pi)
                 
-                # Hard constraint: During pure rotation (v_cmd ~ 0), clamp translation to <= 1cm
+                # Hard constraint: During rotation (v_cmd ~ 0), translation is constrained by LiDAR lever-arm displacement
+                lever_arm = 0.08  # Distance from differential drive axle center to LiDAR center (~8cm)
                 if is_pivot or abs(v_cmd) < 0.02:
-                    max_allowed_p = 0.012  # <= 1.2 cm max allowed drift during rotation
+                    max_allowed_p = max(0.06, lever_arm * max(0.05, delta_th) * 1.5)
                 else:
                     max_allowed_p = max(0.08, self.max_physical_speed * dt * 2.2)
-                max_allowed_th = max(0.25, self.max_physical_yaw_rate * dt * 2.2)
+                max_allowed_th = max(0.35, self.max_physical_yaw_rate * dt * 2.5)
 
                 if gn_reliable and delta_p <= max_allowed_p and delta_th <= max_allowed_th:
                     dx_res = (gn_x - self.x) * c_prior + (gn_y - self.y) * s_prior
@@ -597,10 +598,10 @@ class Lidar2DOdometry:
                     prior_dtheta=prior_dtheta
                 )
                 if is_pivot or abs(v_cmd) < 0.02:
-                    max_allowed_step_dist = 0.012  # Strict 1.2cm bound during in-place pivot
+                    max_allowed_step_dist = max(0.06, lever_arm * max(0.05, abs(dth_matched)) * 1.5)
                 else:
                     max_allowed_step_dist = max(0.04, self.max_physical_speed * dt * 1.8)
-                max_allowed_step_yaw = max(0.15, self.max_physical_yaw_rate * dt * 1.8)
+                max_allowed_step_yaw = max(0.30, self.max_physical_yaw_rate * dt * 2.5)
                 dist_step = math.hypot(dx_matched, dy_matched)
                 if dist_step > max_allowed_step_dist or abs(dth_matched) > max_allowed_step_yaw:
                     icp_reliable = False
@@ -624,12 +625,13 @@ class Lidar2DOdometry:
                     self.last_status = f"FALLBACK_KINEMATIC_{icp_info.get('reason', 'UNKNOWN')}"
                     match_info = icp_info
 
-                # Clamp residual translation during pivot
+                # Clamp residual translation during pivot with lever arm tolerance
                 if is_pivot or abs(v_cmd) < 0.02:
                     step_norm = math.hypot(dx_res, dy_res)
-                    if step_norm > 0.01:
-                        dx_res = (dx_res / step_norm) * 0.01
-                        dy_res = (dy_res / step_norm) * 0.01
+                    max_pivot_trans = max(0.04, lever_arm * abs(dth_res))
+                    if step_norm > max_pivot_trans:
+                        dx_res = (dx_res / step_norm) * max_pivot_trans
+                        dy_res = (dy_res / step_norm) * max_pivot_trans
 
                 world_dx = c_prior * dx_res - s_prior * dy_res
                 world_dy = s_prior * dx_res + c_prior * dy_res

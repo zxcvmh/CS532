@@ -77,6 +77,12 @@ class OccupancyGridMap:
         self.anchor_map_locked: bool = False
         self._anchor_log_odds: Optional[np.ndarray] = None
 
+        # Dual-Layer Static Anchor Field: Freezes room perimeter / structural walls
+        # Prevents transient yaw slip or unconstrained ray clearing from eroding or spinning walls.
+        self.static_anchor_walls: Optional[np.ndarray] = None
+        self.anchor_scan_count: int = 0
+        self.anchor_locked: bool = False
+
         # Layer 3: Rolling dynamic obstacle buffer (cell_idx -> timestamp)
         # Guarantees zero ghost obstacles: temporary hits expire in 250ms (0.25s)
         self._rolling_cells: Dict[int, float] = {}
@@ -447,6 +453,12 @@ class OccupancyGridMap:
         else:
             unique_occ = np.empty(0, dtype=np.int32)
 
+        # Dual-Layer Static Anchor Field: Prevent ray clearing from eroding confirmed structural walls
+        if self.anchor_locked and self.static_anchor_walls is not None and len(unique_free) > 0:
+            is_anchor = self.static_anchor_walls[unique_free]
+            if np.any(is_anchor):
+                unique_free = unique_free[~is_anchor]
+
         # Continuous Bayesian Log-Odds Update (Thrun et al., 2005)
         # Clamped within [L_MIN, L_MAX] to prevent saturation while maintaining responsive clearing
         flat = self.log_odds.ravel()
@@ -455,6 +467,18 @@ class OccupancyGridMap:
         if len(unique_occ) > 0:
             flat[unique_occ] += self.L_OCC
         np.clip(flat, self.L_MIN, self.L_MAX, out=flat)
+
+        # Static Anchor Wall Locking & Reinforcement (Locks initial structural geometry after 5 sweeps)
+        self.anchor_scan_count += 1
+        if not self.anchor_locked:
+            if self.anchor_scan_count >= 5:
+                wall_candidates = flat >= 1.2
+                if np.count_nonzero(wall_candidates) >= 20:
+                    self.static_anchor_walls = wall_candidates.copy()
+                    self.anchor_locked = True
+        else:
+            if self.static_anchor_walls is not None:
+                flat[self.static_anchor_walls] = np.maximum(flat[self.static_anchor_walls], 2.5)
 
         if not defer_costmap:
             self._update_costmap()
@@ -760,5 +784,8 @@ class OccupancyGridMap:
         self.active_clusters = []
         self.anchor_map_locked = False
         self._anchor_log_odds = None
+        self.static_anchor_walls = None
+        self.anchor_scan_count = 0
+        self.anchor_locked = False
         if hasattr(self, "_rolling_cells"):
             self._rolling_cells.clear()

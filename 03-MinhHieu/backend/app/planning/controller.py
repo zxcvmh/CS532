@@ -1002,13 +1002,13 @@ class PurePursuitController:
                     target_heading = math.atan2(dy_target, dx_target)
                     heading_err = (target_heading - robot_theta + math.pi) % (2.0 * math.pi) - math.pi
 
-                    if front_min > 0.30 and abs(heading_err) > math.radians(45.0) and not self.is_evading:
+                    if front_min > 0.45 and abs(heading_err) > math.radians(45.0) and not self.is_evading:
                         w_pivot = math.copysign(min(0.35, getattr(self, "pivot_angular_speed", 0.35)), heading_err)
                         self.last_linear_v = 0.0
                         self.is_path_blocked = True
                         return 0.0, round(w_pivot, 3), {
                             "status": "PIVOT_ALIGNING",
-                            "reason": f"Corridor blocked but FrontMin={front_min:.2f}m > 0.30m! In-place pivot turn (err={math.degrees(heading_err):.1f}° > 45°, w={w_pivot:+.2f} rad/s) to align to escape gap.",
+                            "reason": f"Corridor blocked but FrontMin={front_min:.2f}m > 0.45m! In-place pivot turn (err={math.degrees(heading_err):.1f}° > 45°, w={w_pivot:+.2f} rad/s) to align to escape gap.",
                             "distance_remaining": round(dist_to_final_goal, 3),
                             "target": (round(target_pt[0], 3), round(target_pt[1], 3)),
                             "is_blocked": True,
@@ -1158,11 +1158,11 @@ class PurePursuitController:
         pivot_entry_thresh = math.radians(50.0) # 50.0 deg (0.87 rad) entry threshold (permits continuous forward curve tracking)
 
         if in_pivot:
-            if abs_alpha <= align_thresh:  # Aligned within 20 deg: proceed to forward tracking
+            if abs_alpha <= align_thresh or (front_min is not None and front_min <= 0.45):  # Aligned within 20 deg or obstacle too close: proceed to forward tracking
                 self._in_pivot_turn = False
                 in_pivot = False
         else:
-            if abs_alpha > pivot_entry_thresh:  # Large heading deviation (>50 deg): engage in-place turn
+            if abs_alpha > pivot_entry_thresh and (front_min is None or front_min > 0.45):  # Large heading deviation (>50 deg) and clear front (>0.45m): engage in-place turn
                 self._in_pivot_turn = True
                 in_pivot = True
 
