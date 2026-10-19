@@ -97,6 +97,7 @@ export default function MapViewer({
     // Light mode: technical soft blueprint gray #e2e8f0; Dark mode: Pure obsidian black #0d0c0c
     ctx.fillStyle = isDark ? '#0d0c0c' : '#e2e8f0';
     ctx.fillRect(0, 0, width, height);
+    ctx.imageSmoothingEnabled = false;
 
     const mData = mapData.current;
     
@@ -118,12 +119,13 @@ export default function MapViewer({
         
         const offCtx = offscreen.getContext('2d');
         if (offCtx) {
+          offCtx.imageSmoothingEnabled = false;
           const imgData = offCtx.createImageData(mData.width, mData.height);
           for (let i = 0; i < mData.data.length; i++) {
             const val = mData.data[i];
             const idx = i * 4;
             if (val === -1) {
-              // Unknown space - transparent so canvas background (#0d0c0c) shows through
+              // Unknown space - transparent so canvas background (#e2e8f0 in light, #0d0c0c in dark) shows through cleanly
               imgData.data[idx] = 0; imgData.data[idx+1] = 0; imgData.data[idx+2] = 0; imgData.data[idx+3] = 0;
             } else if (val >= 50) {
               // Occupied Obstacle - High Contrast
@@ -156,6 +158,7 @@ export default function MapViewer({
         const drawHeight = mData.height * mData.resolution * transform.scale;
         
         ctx.save();
+        ctx.imageSmoothingEnabled = false;
         ctx.translate(originScreen.x, originScreen.y);
         ctx.scale(1, -1);
         ctx.drawImage(offscreenCanvasRef.current, 0, 0, drawWidth, drawHeight);
@@ -234,13 +237,31 @@ export default function MapViewer({
       }
     }
 
-    // ── 5. LiDAR 360 Scan Points (Apple Emerald Dots) ──
+    // ── 5. LiDAR 360 Scan Points & Beams (Apple Emerald Glow) ──
     if (showLidarScan) {
       const pts = lidarPoints.current;
-      ctx.fillStyle = isDark ? '#4ade80' : '#10b981';
-      for (let i = 0; i < pts.length; i++) {
-        const p = mapToScreen(pts[i].x, pts[i].y, transform, width, height, mData);
-        ctx.fillRect(p.x - 1.25, p.y - 1.25, 2.5, 2.5);
+      if (pts.length > 0) {
+        ctx.save();
+        const robotScreen = mapToScreen(pose.current.x, pose.current.y, transform, width, height, mData);
+
+        // 1. High-speed laser rays from robot center to obstacle hits
+        ctx.strokeStyle = isDark ? 'rgba(74, 222, 128, 0.30)' : 'rgba(16, 185, 129, 0.28)';
+        ctx.lineWidth = 1.0;
+        ctx.beginPath();
+        for (let i = 0; i < pts.length; i += 2) {
+          const p = mapToScreen(pts[i].x, pts[i].y, transform, width, height, mData);
+          ctx.moveTo(robotScreen.x, robotScreen.y);
+          ctx.lineTo(p.x, p.y);
+        }
+        ctx.stroke();
+
+        // 2. High-contrast crisp emerald hit points outlining walls & obstacles
+        ctx.fillStyle = isDark ? '#4ade80' : '#10b981';
+        for (let i = 0; i < pts.length; i++) {
+          const p = mapToScreen(pts[i].x, pts[i].y, transform, width, height, mData);
+          ctx.fillRect(p.x - 2.0, p.y - 2.0, 4.0, 4.0);
+        }
+        ctx.restore();
       }
     }
 

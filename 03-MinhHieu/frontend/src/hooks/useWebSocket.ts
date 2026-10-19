@@ -3,6 +3,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 export function useWebSocket(url: string) {
   const [connected, setConnected] = useState(false);
   const [lastMessage, setLastMessage] = useState<any>(null);
+  const [lastBinaryMessage, setLastBinaryMessage] = useState<ArrayBuffer | null>(null);
   const [rtt, setRtt] = useState<number | null>(null);
   const ws = useRef<WebSocket | null>(null);
   const reconnectAttempts = useRef(0);
@@ -11,10 +12,17 @@ export function useWebSocket(url: string) {
   const connect = useCallback(() => {
     try {
       ws.current = new WebSocket(url);
+      ws.current.binaryType = 'arraybuffer';
       
       ws.current.onopen = () => {
         setConnected(true);
         reconnectAttempts.current = 0;
+        // Request ultra-fast zero-copy binary telemetry stream from backend
+        try {
+          ws.current?.send(JSON.stringify({ type: 'enable_binary_telemetry', enabled: true }));
+        } catch (e) {
+          // ignore
+        }
       };
 
       ws.current.onclose = () => {
@@ -31,6 +39,10 @@ export function useWebSocket(url: string) {
       };
 
       ws.current.onmessage = (event) => {
+        if (event.data instanceof ArrayBuffer) {
+          setLastBinaryMessage(event.data);
+          return;
+        }
         try {
           const data = JSON.parse(event.data);
           // UIT Tut 3 Heartbeat pong response
@@ -73,5 +85,5 @@ export function useWebSocket(url: string) {
     }
   }, []);
 
-  return { connected, lastMessage, sendMessage, rtt };
+  return { connected, lastMessage, lastBinaryMessage, sendMessage, rtt };
 }

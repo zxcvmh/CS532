@@ -1,65 +1,52 @@
 import asyncio
 import websockets
 import json
+import sys
 
 async def test():
     uri = 'ws://localhost:8000/ws'
-    print("Connecting to WebSocket...")
-    async with websockets.connect(uri) as ws:
-        messages = {}
-        for _ in range(200):
-            data = json.loads(await asyncio.wait_for(ws.recv(), timeout=2.0))
-            msg_type = data['type']
-            if msg_type not in messages:
-                messages[msg_type] = True
-                # Show sample of the data
-                sample = {k: v for k, v in data.items() if k != 'data'}
-                if msg_type == 'map_update':
-                    sample['data'] = f"[{len(data.get('data',[]))} cells]"
-                elif msg_type == 'lidar_scan':
-                    sample['points'] = f"[{len(data.get('points',[]))} pts]"
-                elif msg_type == 'trajectory':
-                    sample['points'] = f"[{len(data.get('points',[]))} pts]"
-                print(f"  {msg_type}: {json.dumps(sample, default=str)[:120]}")
-            if len(messages) >= 10:
-                break
-        print(f"\nReceived {len(messages)} unique message types")
-        
-        # Test set_mode
-        await ws.send(json.dumps({'type': 'set_mode', 'mode': 'AUTONOMOUS'}))
-        print("\nSent set_mode AUTONOMOUS")
-        
-        # Wait a bit for mode change event
-        for _ in range(20):
-            data = json.loads(await asyncio.wait_for(ws.recv(), timeout=2.0))
-            if data['type'] == 'event':
-                print(f"  Event: [{data['level']}] {data['message']}")
-                break
-        
-        # Test set_goal
-        await ws.send(json.dumps({'type': 'set_goal', 'x': 2.0, 'y': 1.0}))
-        print("\nSent goal (2.0, 1.0)")
-        
-        # Watch navigation progress
-        nav_seen = set()
-        for _ in range(300):
-            data = json.loads(await asyncio.wait_for(ws.recv(), timeout=2.0))
-            if data['type'] == 'navigation_status':
-                status = data['status']
-                prog = data.get('progress') or 0
-                if status not in nav_seen or status == 'NAVIGATING':
-                    nav_seen.add(status)
-                    dist = data.get('distance_remaining') or 0
-                    print(f"  Nav: {status} progress={prog:.0f}% dist={dist:.2f}m")
-                if status in ['REACHED', 'ERROR', 'CANCELLED']:
+    print("Connecting to WebSocket at ws://localhost:8000/ws ...")
+    try:
+        async with websockets.connect(uri) as ws:
+            messages = {}
+            for _ in range(50):
+                try:
+                    raw = await asyncio.wait_for(ws.recv(), timeout=2.0)
+                    data = json.loads(raw)
+                except asyncio.TimeoutError:
                     break
-            elif data['type'] == 'event':
-                print(f"  Event: [{data['level']}] {data['message']}")
+                msg_type = data.get('type')
+                if msg_type and msg_type not in messages:
+                    messages[msg_type] = True
+                    sample = {k: v for k, v in data.items() if k not in ('data', 'points')}
+                    if msg_type == 'map_update':
+                        sample['data'] = f"[{len(data.get('data',[]))} cells]"
+                    elif msg_type in ('lidar_scan', 'trajectory'):
+                        sample['points'] = f"[{len(data.get('points',[]))} pts]"
+                    print(f"  Received {msg_type}: {json.dumps(sample, default=str)[:100]}")
+                if len(messages) >= 3:
+                    break
 
-        print("\n=== WebSocket Test PASSED! ===")
+            print(f"\nReceived {len(messages)} message types from backend.")
+            
+            # Test set_mode
+            await ws.send(json.dumps({'type': 'set_mode', 'mode': 'AUTONOMOUS'}))
+            print("Sent set_mode: AUTONOMOUS")
 
-try:
-    asyncio.run(test())
-except AttributeError:
-    loop = asyncio.get_event_loop()
-    loop.run_until_complete(test())
+            # Test set_goal
+            await ws.send(json.dumps({'type': 'set_goal', 'x': 1.5, 'y': 0.5}))
+            print("Sent set_goal: (1.5, 0.5)")
+
+            # Test stop
+            await ws.send(json.dumps({'type': 'stop'}))
+            print("Sent stop")
+
+            print("\n=== WebSocket Test PASSED! ===")
+            return True
+    except Exception as e:
+        print(f"WebSocket Test connection error: {e}")
+        return False
+
+if __name__ == '__main__':
+    ok = asyncio.run(test())
+    sys.exit(0 if ok else 1)

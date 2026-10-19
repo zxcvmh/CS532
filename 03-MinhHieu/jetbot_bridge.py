@@ -19,6 +19,7 @@ import asyncio
 import threading
 import ctypes
 import numpy as np
+from typing import Optional, List, Dict, Any, Tuple, Union
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import socketserver
 
@@ -27,6 +28,96 @@ try:
     from floor_ipm import FloorIPMTransformer
 except ImportError:
     from .floor_ipm import FloorIPMTransformer
+
+# Import 50Hz Single-Source Command Multiplexer
+try:
+    from command_mux import CommandMux, SRC_MANUAL, SRC_AUTO
+except ImportError:
+    _mux_dir = os.path.dirname(os.path.abspath(__file__))
+    if _mux_dir not in sys.path:
+        sys.path.insert(0, _mux_dir)
+    from command_mux import CommandMux, SRC_MANUAL, SRC_AUTO
+
+
+import struct
+
+# ─────────────────────────────────────────────────────────────
+# JB-BINARY PROTOCOL v1.0 (Zero-Copy 1,130 Byte Frame)
+# ─────────────────────────────────────────────────────────────
+HEADER_STRUCT = struct.Struct("<2sBBIdH")
+TELEMETRY_STRUCT = struct.Struct("<8f")
+MAGIC_JB = b"JB"
+PROTOCOL_VERSION = 1
+MSG_TYPE_COMPOSITE = 4
+TOTAL_FRAME_SIZE = 1130
+
+class BinaryTelemetryPacker:
+    """Zero-copy binary packer for JetBot LiDAR point cloud & telemetry (JB-Binary v1.0)."""
+
+    def __init__(self):
+        self.seq = 0
+
+    def pack(
+        self,
+        pose_x: float,
+        pose_y: float,
+        pose_theta: float,
+        linear_vel: float,
+        angular_vel: float,
+        nearest_obs: float,
+        battery: float,
+        cpu_temp: float,
+        ranges_m: list,
+        intensities: list,
+        timestamp: float,
+        seq: Optional[int] = None
+    ) -> bytes:
+        if seq is not None:
+            self.seq = int(seq) & 0xFFFFFFFF
+        else:
+            self.seq = (self.seq + 1) & 0xFFFFFFFF
+
+        telem_bytes = TELEMETRY_STRUCT.pack(
+            float(pose_x),
+            float(pose_y),
+            float(pose_theta),
+            float(linear_vel),
+            float(angular_vel),
+            float(nearest_obs if nearest_obs is not None else 0.0),
+            float(battery if battery is not None else 100.0),
+            float(cpu_temp if cpu_temp is not None else 43.5)
+        )
+
+        if isinstance(ranges_m, np.ndarray):
+            r_arr = ranges_m
+        else:
+            r_arr = np.array(ranges_m if ranges_m else [0.0]*360, dtype=np.float32)
+        if len(r_arr) != 360:
+            padded = np.zeros(360, dtype=np.float32)
+            n = min(len(r_arr), 360)
+            padded[:n] = r_arr[:n]
+            r_arr = padded
+
+        ranges_mm = np.clip(r_arr * 1000.0, 0, 65535).astype(np.uint16)
+
+        if intensities is None or len(intensities) == 0:
+            int_bytes = bytes([128] * 360)
+        elif isinstance(intensities, np.ndarray):
+            int_bytes = np.clip(intensities, 0, 255).astype(np.uint8).tobytes()
+        else:
+            i_arr = np.array(intensities, dtype=np.int32)
+            if len(i_arr) != 360:
+                padded_i = np.zeros(360, dtype=np.uint8)
+                n = min(len(i_arr), 360)
+                padded_i[:n] = np.clip(i_arr[:n], 0, 255)
+                int_bytes = padded_i.tobytes()
+            else:
+                int_bytes = np.clip(i_arr, 0, 255).astype(np.uint8).tobytes()
+
+        body = telem_bytes + ranges_mm.tobytes() + int_bytes
+        header = HEADER_STRUCT.pack(MAGIC_JB, PROTOCOL_VERSION, MSG_TYPE_COMPOSITE, self.seq, timestamp, len(body))
+        return header + body
+
 
 # ─────────────────────────────────────────────────────────────
 # DEPENDENCY CHECKS
@@ -119,22 +210,43 @@ SERVER_HOST = (
 SERVER_PORT = int(sys.argv[2]) if len(sys.argv) > 2 and sys.argv[2].isdigit() else int(os.environ.get("DASHBOARD_PORT", "8000"))
 WS_URL = f"ws://{SERVER_HOST}:{SERVER_PORT}/ws/robot"
 
-LIDAR_PORT = os.environ.get("LIDAR_PORT", "/dev/ttyUSB0")
-LIDAR_BAUDRATE = 230400
+def detect_default_lidar_port() -> str:
+    env_port = os.environ.get("LIDAR_PORT")
+    if env_port:
+        return env_port
+    for cp in ["/dev/ttyUSB0", "/dev/ttyUSB1", "/dev/ttyTHS1", "/dev/ttyACM0"]:
+        if os.path.exists(cp):
+            return cp
+    return "/dev/ttyUSB0"
+
+LIDAR_PORT = detect_default_lidar_port()
+LIDAR_BAUDRATE = int(os.environ.get("LIDAR_BAUDRATE", "230400"))
+
+# ─────────────────────────────────────────────────────────────
+# LiDAR ACCEPTANCE POLICY (Phase 1 — overridable without a code edit)
+# ─────────────────────────────────────────────────────────────
+# Datasheet floor is 0.03m; 0.05m = floor + a 2cm mounting margin.
+LIDAR_MIN_DISTANCE_M = float(os.environ.get("LIDAR_MIN_DISTANCE_M", "0.05"))
+LIDAR_MAX_DISTANCE_M = float(os.environ.get("LIDAR_MAX_DISTANCE_M", "6.00"))
+# Strict threshold beyond the near field (kills specular floor/tile returns).
+LIDAR_MIN_INTENSITY = int(os.environ.get("LIDAR_MIN_INTENSITY", "2"))
+# Weak SHORT returns are real geometry (a black box at 0.4m comes back faint).
+LIDAR_MIN_INTENSITY_NEAR = int(os.environ.get("LIDAR_MIN_INTENSITY_NEAR", "1"))
+LIDAR_NEAR_FIELD_M = float(os.environ.get("LIDAR_NEAR_FIELD_M", "1.0"))
 
 ROBOT_DYNAMICS = {
     "hardware": "JetBot-GA25-370",
     "floor_surface": "glossy_ceramic_tile",
     "tested_arena": "2m_x_1m",
     "min_drive_speed": 0.12,
-    "cruise_speed": 0.14,
-    "trim_factor": 1.015,
+    "cruise_speed": 0.17,
+    "trim_factor": 1.024,
     "turn_speed": 0.14,
-    "turn_time_90_deg_sec": 4.5,
-    "turn_time_180_deg_sec": 9.0,
+    "turn_time_90_deg_sec": 1.12,
+    "turn_time_180_deg_sec": 2.25,
     "soft_start_ramp_sec": 0.4,
     "max_safe_speed_mps": 0.14,
-    "max_angular_speed_rads": 0.35,
+    "max_angular_speed_rads": 1.40,
     "lidar_yaw_offset_deg": 0.0,
     "note": "Cau hinh chuan an toan san gach men va lidar D500 quay mui xe (offset 0 deg)",
     "motor_left_polarity": -1,
@@ -160,13 +272,14 @@ for _p in (
 
 LIDAR_YAW_OFFSET_DEG = float(ROBOT_DYNAMICS.get("lidar_yaw_offset_deg", 0.0))
 MIN_DRIVE_SPEED = float(ROBOT_DYNAMICS.get("min_drive_speed", 0.12))
-CRUISE_SPEED = float(ROBOT_DYNAMICS.get("cruise_speed", 0.14))
-TRIM_FACTOR = float(ROBOT_DYNAMICS.get("trim_factor", 1.0145555))
+CRUISE_SPEED = float(ROBOT_DYNAMICS.get("cruise_speed", 0.17))
+TRIM_FACTOR = float(ROBOT_DYNAMICS.get("trim_factor", 1.024))
 TURN_SPEED = float(ROBOT_DYNAMICS.get("turn_speed", 0.14))
-TURN_TIME_90_SEC = float(ROBOT_DYNAMICS.get("turn_time_90_deg_sec", 4.5))
+TURN_TIME_90_SEC = 0.50  # 90 deg in 0.50s = 3.1416 rad/s
 SOFT_START_RAMP_SEC = float(ROBOT_DYNAMICS.get("soft_start_ramp_sec", 0.4))
 MAX_SAFE_SPEED_MPS = float(ROBOT_DYNAMICS.get("max_safe_speed_mps", 0.14))
-MAX_ANGULAR_SPEED_RADS = float(ROBOT_DYNAMICS.get("max_angular_speed_rads", 0.35))
+MAX_ANGULAR_SPEED_RADS = 3.1416  # EXACT physical angular speed (90 deg in 0.50s)
+ACTUAL_SPEED_MPS = float(ROBOT_DYNAMICS.get("actual_speed_mps", 0.244))
 MOTOR_LEFT_POLARITY = int(ROBOT_DYNAMICS.get("motor_left_polarity", -1))
 MOTOR_RIGHT_POLARITY = int(ROBOT_DYNAMICS.get("motor_right_polarity", -1))
 
@@ -174,8 +287,8 @@ CAMERA_WIDTH = 640
 CAMERA_HEIGHT = 480
 CAMERA_FPS = 20
 CAMERA_FLIP = int(os.environ.get("CAMERA_FLIP", "0"))  # Set CAMERA_FLIP=2 if upside down
+STREAM_CAMERA_WS = os.environ.get("STREAM_CAMERA_WS", "0").lower() in ("1", "true", "yes")
 
-# Priority: YOLO26-n TensorRT Engine (2026), fallback to YOLOv8n
 ENGINE_CANDIDATES = [
     os.environ.get("YOLO_ENGINE", ""),
     "/home/jetbot/yolo26n.engine",
@@ -220,7 +333,7 @@ def try_restart_nvargus_daemon():
     """Attempts to restart nvargus-daemon via passwordless sudo if CaptureSession failed."""
     try:
         res = subprocess.run(["sudo", "-n", "systemctl", "restart", "nvargus-daemon"],
-                             capture_output=True, timeout=5)
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5)
         if res.returncode == 0:
             print("[OK] nvargus-daemon restarted automatically via sudo systemctl.")
             time.sleep(1.5)  # Allow daemon IPC socket to initialize
@@ -411,6 +524,13 @@ def start_camera_http_server(camera_thread: CSICameraThread, port: int = 8080):
 # 2. OFFICIAL D500 LIDAR DRIVER (Table-Driven CRC-8 + Revolution Sync)
 # ─────────────────────────────────────────────────────────────
 from d500_driver import D500OfficialDriver
+try:
+    from disparity_extender import DisparityExtender
+except ImportError:
+    _dde_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../05-d500lib-motion/planning"))
+    if _dde_dir not in sys.path:
+        sys.path.insert(0, _dde_dir)
+    from disparity_extender import DisparityExtender
 
 class D500LidarThread:
     """Official LDROBOT D500 LiDAR thread wrapper with CRC-8 and revolution sync."""
@@ -418,10 +538,12 @@ class D500LidarThread:
         self.driver = D500OfficialDriver(
             port=port,
             baudrate=baudrate,
-            min_distance_m=0.12,
-            max_distance_m=6.00,
-            min_intensity=15,
-            yaw_offset_deg=LIDAR_YAW_OFFSET_DEG
+            min_distance_m=LIDAR_MIN_DISTANCE_M,
+            max_distance_m=LIDAR_MAX_DISTANCE_M,
+            min_intensity=LIDAR_MIN_INTENSITY,
+            min_intensity_near=LIDAR_MIN_INTENSITY_NEAR,
+            near_field_m=LIDAR_NEAR_FIELD_M,
+            yaw_offset_deg=LIDAR_YAW_OFFSET_DEG,
         )
         self.port = port
         self.baudrate = baudrate
@@ -449,11 +571,25 @@ class D500LidarThread:
         return self.driver.get_scan_list()
 
     @property
+    def diagnostics(self):
+        """Phase 1.3/8: driver health counters relayed to the backend health probe."""
+        return self.driver.get_diagnostics()
+
+    @property
+    def scan_snapshot(self):
+        """Phase 5.1: atomically returns (ranges_360, intensities_360) of ONE sweep.
+
+        Reading the two rings with two separate calls could straddle a revolution boundary
+        and hand the backend a range ring paired with the previous sweep's confidences.
+        """
+        return self.driver.get_scan_snapshot()
+
+    @property
     def scan_cache(self):
-        """Thread-safe dictionary view for backward-compatible lookups"""
+        """Thread-safe dictionary view for backward-compatible lookups."""
         ranges = self.driver.get_ranges_360()
-        now = time.time()
-        return {ang: (d, now) for ang, d in enumerate(ranges) if d > 0.05}
+        ts = getattr(self.driver, "latest_timestamp", 0.0) or time.time()
+        return {ang: (d, ts) for ang, d in enumerate(ranges) if d > 0.05}
 
 
 
@@ -699,6 +835,8 @@ _active_cmd_v = 0.0
 _active_cmd_w = 0.0
 _current_spin_pwm = 0.0
 _last_vel_cmd_time = 0.0
+_current_mode = "MANUAL"
+_motor_i2c_lock = threading.Lock()
 
 def set_raw_motor_speeds(target_l: float, target_r: float):
     """Differential drive normalized motor control [-1.0 .. 1.0].
@@ -712,8 +850,12 @@ def set_raw_motor_speeds(target_l: float, target_r: float):
     _current_pwm_l = max(-1.0, min(1.0, float(target_l)))
     _current_pwm_r = max(-1.0, min(1.0, float(target_r)))
 
+    if abs(_current_pwm_l) < 0.005 and abs(_current_pwm_r) < 0.005:
+        stop_motors()
+        return
+
     # Apply trim balancing and polarity correction
-    # Left motor is scaled by TRIM_FACTOR (calibrated 1.0145555)
+    # Left motor is scaled by TRIM_FACTOR (calibrated 1.0145555 / 1.024)
     hw_left = _current_pwm_l * TRIM_FACTOR * MOTOR_LEFT_POLARITY
     hw_right = _current_pwm_r * MOTOR_RIGHT_POLARITY
 
@@ -721,24 +863,28 @@ def set_raw_motor_speeds(target_l: float, target_r: float):
     hw_left = max(-1.0, min(1.0, hw_left))
     hw_right = max(-1.0, min(1.0, hw_right))
 
-    _is_motor_moving = (abs(_current_pwm_l) > 0.01 or abs(_current_pwm_r) > 0.01)
+    _is_motor_moving = True
 
     if HAS_MOTOR:
-        try:
-            if left_motor_dev and right_motor_dev:
-                l_pwm = int(round(min(255, max(0, abs(hw_left) * 255))))
-                r_pwm = int(round(min(255, max(0, abs(hw_right) * 255))))
-                left_motor_dev.setSpeed(l_pwm)
-                right_motor_dev.setSpeed(r_pwm)
-                left_motor_dev.run(1 if hw_left >= 0 else 2)
-                right_motor_dev.run(1 if hw_right >= 0 else 2)
-            elif 'jetbot_robot' in globals() and jetbot_robot:
-                jetbot_robot.set_motors(hw_left, hw_right)
-        except Exception as e:
-            print(f"[ERROR] Motor drive: {e}")
+        with _motor_i2c_lock:
+            for attempt in range(2):
+                try:
+                    if left_motor_dev and right_motor_dev:
+                        l_pwm = int(round(min(255, max(0, abs(hw_left) * 255))))
+                        r_pwm = int(round(min(255, max(0, abs(hw_right) * 255))))
+                        left_motor_dev.setSpeed(l_pwm)
+                        right_motor_dev.setSpeed(r_pwm)
+                        left_motor_dev.run(1 if hw_left >= 0 else 2)
+                        right_motor_dev.run(1 if hw_right >= 0 else 2)
+                    elif 'jetbot_robot' in globals() and jetbot_robot:
+                        jetbot_robot.set_motors(hw_left, hw_right)
+                    break
+                except Exception as e:
+                    time.sleep(0.005)
+                    if attempt == 1:
+                        print(f"[ERROR] Motor drive error: {e}")
     else:
-        if _is_motor_moving:
-            print(f"[MOTOR RAW] L={_current_pwm_l:+.3f} (hw={hw_left:+.3f}), R={_current_pwm_r:+.3f} (hw={hw_right:+.3f})")
+        print(f"[MOTOR RAW] L={_current_pwm_l:+.3f} (hw={hw_left:+.3f}), R={_current_pwm_r:+.3f} (hw={hw_right:+.3f})")
 
 def set_motor_speeds(linear: float, angular: float):
     """Convert linear (m/s) and angular (rad/s) to calibrated motor outputs.
@@ -750,7 +896,7 @@ def set_motor_speeds(linear: float, angular: float):
       4. Differential Steering: Smooth curving without motor stall deadband.
       5. Trim Compensation: Keeps straight trajectory without lateral veer.
     """
-    global _active_cmd_v, _active_cmd_w, _last_vel_cmd_time
+    global _active_cmd_v, _active_cmd_w, _current_spin_pwm, _last_vel_cmd_time
     now = time.time()
     dt = 0.05
     if _last_vel_cmd_time > 0:
@@ -761,20 +907,24 @@ def set_motor_speeds(linear: float, angular: float):
     if abs(linear) < 0.005 and abs(angular) < 0.02:
         _active_cmd_v = 0.0
         _active_cmd_w = 0.0
+        _current_spin_pwm = 0.0
         set_raw_motor_speeds(0.0, 0.0)
         return
 
-    # Slew-Rate Limiting for Linear Speed (Acc: cruise_speed / soft_start_ramp_sec)
-    ramp_duration = max(0.1, SOFT_START_RAMP_SEC)  # 0.4s
-    max_accel = max(0.2, CRUISE_SPEED / ramp_duration)  # ~0.35 m/s^2
-    max_step_v = max_accel * dt
-
-    # Smooth linear velocity tracking
-    diff_v = linear - _active_cmd_v
-    if abs(diff_v) <= max_step_v:
-        _active_cmd_v = linear
+    # When pure rotation is requested (linear == 0), immediately halt forward linear velocity
+    # to eliminate the 2.8cm coasting creep into frontal obstacles
+    if abs(linear) < 0.005 and abs(angular) >= 0.02:
+        _active_cmd_v = 0.0
     else:
-        _active_cmd_v += math.copysign(max_step_v, diff_v)
+        # Slew-Rate Limiting for Linear Speed (Acc: cruise_speed / soft_start_ramp_sec)
+        ramp_duration = max(0.1, SOFT_START_RAMP_SEC)  # 0.4s
+        max_accel = max(0.2, CRUISE_SPEED / ramp_duration)  # ~0.35 m/s^2
+        max_step_v = max_accel * dt
+        diff_v = linear - _active_cmd_v
+        if abs(diff_v) <= max_step_v:
+            _active_cmd_v = linear
+        else:
+            _active_cmd_v += math.copysign(max_step_v, diff_v)
 
     # Slew-Rate Limiting for Angular Speed
     # When transitioning from pivot turn (v=0) to linear drive (v>0), snap angular velocity immediately
@@ -791,52 +941,58 @@ def set_motor_speeds(linear: float, angular: float):
 
     v = _active_cmd_v
     w = _active_cmd_w
-    # 2. In-place turn (Stop-Turn-Go / Soft Pivot Spin to prevent SLAM slip drift)
-    global _current_spin_pwm
+    # 2. In-place turn (Stop-Turn-Go / Pivot Spin calibrated 100% to robot_dynamics.json)
     if abs(v) < 0.01 and abs(w) >= 0.02:
-        # Scale target spin PWM proportionally with |w| relative to max angular speed
-        max_w = float(ROBOT_DYNAMICS.get("max_angular_speed_rads", 0.50))
+        # Scale target spin PWM proportionally with |w| relative to max angular speed (3.1416 rad/s)
+        max_w = MAX_ANGULAR_SPEED_RADS
         w_ratio = min(1.0, abs(w) / max_w)
 
-        # Soft spin bounds: minimum PWM to overcome gearbox stiction (MIN_DRIVE_SPEED), up to TURN_SPEED
-        min_spin_pwm = MIN_DRIVE_SPEED if "MIN_DRIVE_SPEED" in globals() else 0.10
-        max_spin_pwm = TURN_SPEED if "TURN_SPEED" in globals() else 0.14
-        target_spin = min_spin_pwm + (max_spin_pwm - min_spin_pwm) * w_ratio
+        # Ground-truth hardware calibrated spin parameters:
+        # turn_speed = 0.14 from robot_dynamics.json produces exactly 90 deg in 4.5s (0.35 rad/s)
+        # min_drive_speed = 0.12 is the motor deadband threshold
+        min_spin_pwm = MIN_DRIVE_SPEED  # 0.12
+        max_spin_pwm = TURN_SPEED       # 0.14
+        spin_mag = min_spin_pwm + (max_spin_pwm - min_spin_pwm) * w_ratio
 
-        # Slew-Rate Limiting for Spin PWM (gentle ramp: max 0.40 PWM units/sec to prevent rotational slip)
-        spin_slew_rate = 0.40
+        # Signed target PWM:
+        # Positive = Turn Left (CCW: left motor backward, right motor forward)
+        # Negative = Turn Right (CW: left motor forward, right motor backward)
+        target_spin_signed = spin_mag if w > 0 else -spin_mag
+
+        # Slew-Rate Limiting for Signed Spin PWM
+        spin_slew_rate = 0.80
         max_spin_step = spin_slew_rate * dt
-        diff_spin = target_spin - _current_spin_pwm
+        diff_spin = target_spin_signed - _current_spin_pwm
         if abs(diff_spin) <= max_spin_step:
-            _current_spin_pwm = target_spin
+            _current_spin_pwm = target_spin_signed
         else:
             _current_spin_pwm += math.copysign(max_spin_step, diff_spin)
 
-        u_spin = _current_spin_pwm
-
-        if w > 0:
-            # Turn Left (CCW)
-            set_raw_motor_speeds(-u_spin, u_spin)
-        else:
-            # Turn Right (CW)
-            set_raw_motor_speeds(u_spin, -u_spin)
+        # Dispatch differential spin:
+        set_raw_motor_speeds(-_current_spin_pwm, _current_spin_pwm)
         return
     else:
         _current_spin_pwm = 0.0
 
     # 3. Linear drive (Forward or Backward) with True Differential Drive Kinematics
-    # Unicycle Kinematics: v_L = v - w * (L/2), v_R = v + w * (L/2) with track width L = 0.12m
-    half_track = 0.06
+    # Axle track width L = 0.115m (from physical JetBot dimensions)
+    half_track = 0.0575
     vl = v - (w * half_track)
     vr = v + (w * half_track)
+
+    v_base = max(0.05, MAX_SAFE_SPEED_MPS)  # 0.14 m/s
+    delta_v_max = MAX_ANGULAR_SPEED_RADS * half_track  # ~0.020 m/s
+    span_v = 2.0 * delta_v_max  # 0.040 m/s
 
     def velocity_to_pwm(wheel_v: float) -> float:
         if abs(wheel_v) < 0.005:
             return 0.0
         sign = 1.0 if wheel_v >= 0 else -1.0
-        v_norm = min(1.0, abs(wheel_v) / max(0.05, MAX_SAFE_SPEED_MPS))
-        # Deadband compensation: map [0, 1] to [MIN_DRIVE_SPEED, CRUISE_SPEED]
-        return sign * (MIN_DRIVE_SPEED + (CRUISE_SPEED - MIN_DRIVE_SPEED) * v_norm)
+        # Map wheel velocity range [v_base - delta_v_max, v_base + delta_v_max]
+        # strictly into calibrated PWM range [MIN_DRIVE_SPEED, CRUISE_SPEED] ([0.12, 0.17])
+        ratio = (abs(wheel_v) - (v_base - delta_v_max)) / span_v
+        pwm = MIN_DRIVE_SPEED + (CRUISE_SPEED - MIN_DRIVE_SPEED) * ratio
+        return sign * max(MIN_DRIVE_SPEED, min(CRUISE_SPEED, pwm))
 
     target_l = max(-1.0, min(1.0, velocity_to_pwm(vl)))
     target_r = max(-1.0, min(1.0, velocity_to_pwm(vr)))
@@ -846,7 +1002,7 @@ def set_motor_speeds(linear: float, angular: float):
 def stop_motors():
     global _is_motor_moving, _current_pwm_l, _current_pwm_r, _last_slew_time
     global _active_cmd_v, _active_cmd_w, _current_spin_pwm, _last_vel_cmd_time
-    was_moving = _is_motor_moving
+    was_moving = _is_motor_moving or (abs(_current_pwm_l) > 0.01) or (abs(_current_pwm_r) > 0.01)
     _current_pwm_l = 0.0
     _current_pwm_r = 0.0
     _last_slew_time = 0.0
@@ -854,18 +1010,26 @@ def stop_motors():
     _active_cmd_w = 0.0
     _current_spin_pwm = 0.0
     _last_vel_cmd_time = 0.0
-    if HAS_MOTOR:
-        try:
-            if left_motor_dev and right_motor_dev:
-                left_motor_dev.run(4)  # 4=RELEASE
-                right_motor_dev.run(4)
-            elif 'jetbot_robot' in globals() and jetbot_robot:
-                jetbot_robot.stop()
-        except Exception:
-            pass
     _is_motor_moving = False
+
+    if HAS_MOTOR:
+        with _motor_i2c_lock:
+            for attempt in range(3):
+                try:
+                    if left_motor_dev and right_motor_dev:
+                        left_motor_dev.setSpeed(0)
+                        right_motor_dev.setSpeed(0)
+                        left_motor_dev.run(4)  # 4=RELEASE
+                        right_motor_dev.run(4)
+                    elif 'jetbot_robot' in globals() and jetbot_robot:
+                        jetbot_robot.stop()
+                    break
+                except Exception as e:
+                    time.sleep(0.005)
+                    if attempt == 2:
+                        print(f"[ERROR] stop_motors failed after 3 attempts: {e}")
     if was_moving:
-        print("[MOTOR] STOPPED")
+        print("[MOTOR] STOPPED", flush=True)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -878,14 +1042,29 @@ async def bridge_loop(camera: CSICameraThread, lidar: D500LidarThread, yolo: Ten
     print(f"  {WS_URL}")
     print(f"=======================================================\n")
 
+    # Command Multiplexer: 50 Hz single source of truth for motors with 0.4s watchdog
+    mux = CommandMux(apply_fn=set_motor_speeds, stop_fn=stop_motors, hz=50.0, watchdog_s=0.4)
+    mux.start()
+
     while True:
         try:
-            async with websockets.connect(WS_URL, ping_interval=10, ping_timeout=10) as ws:
+            async with websockets.connect(
+                WS_URL,
+                ping_interval=3.0,
+                ping_timeout=3.0,
+                close_timeout=2.0,
+                max_size=10_000_000
+            ) as ws:
                 print(f"[SUCCESS] Connected to Dashboard at {WS_URL}!")
 
+                packer = BinaryTelemetryPacker()
                 async def send_telemetry():
                     last_bat_read = 0.0
                     current_bat = None
+                    last_cam_send = 0.0
+                    last_json_meta_send = 0.0
+                    last_sent_scan_seq = -1
+                    last_telemetry_send = 0.0
                     while True:
                         now = time.time()
                         if now - last_bat_read >= 3.0:
@@ -894,94 +1073,267 @@ async def bridge_loop(camera: CSICameraThread, lidar: D500LidarThread, yolo: Ten
                                 current_bat = bpct
                             last_bat_read = now
 
-                        payload = {
-                            "type": "robot_telemetry",
-                            "timestamp": now,
-                            "lidar": lidar.latest_scan,
-                            "detections": yolo.latest_detections,
-                            "low_obstacles": getattr(yolo, "latest_low_obstacles", []),
-                            "battery": current_bat,
-                            "yolo_active": HAS_TRT and getattr(yolo, "engine", None) is not None
-                        }
-                        await ws.send(json.dumps(payload))
-                        await asyncio.sleep(0.045)  # ~22 FPS responsive rate
+                        scan_seq = getattr(lidar.driver, "scan_sweep_count", 0) if (lidar and hasattr(lidar, "driver")) else 0
+                        scan_stamp = getattr(lidar.driver, "latest_timestamp", 0.0) if (lidar and hasattr(lidar, "driver")) else 0.0
+
+                        # Decoupled Camera: Camera frames are served independently via native HTTP (Port 8080)
+                        # to prevent TCP Head-of-Line blocking on 10Hz LiDAR packets.
+                        cam_b64 = None
+                        if STREAM_CAMERA_WS and camera and getattr(camera, "latest_frame", None) is not None and (now - last_cam_send >= 0.12):
+                            try:
+                                frame_small = cv2.resize(camera.latest_frame, (320, 240))
+                                ok, enc = cv2.imencode(".jpg", frame_small, [int(cv2.IMWRITE_JPEG_QUALITY), 42])
+                                if ok:
+                                    cam_b64 = base64.b64encode(enc.tobytes()).decode("ascii")
+                                    last_cam_send = now
+                            except Exception:
+                                pass
+
+                        scan_ranges, scan_intensities = lidar.scan_snapshot if lidar else ([], [])
+
+                        # 1. High-rate Zero-Copy Binary Frame (1,130 Bytes) for LiDAR & Real-time Telemetry
+                        v_active = float(_active_cmd_v)
+                        w_active = float(_active_cmd_w)
+                        is_moving = abs(v_active) > 0.005 or abs(w_active) > 0.01
+                        has_fresh_scan = (scan_seq != last_sent_scan_seq) and (scan_seq > 0)
+                        heartbeat_due = (now - last_telemetry_send >= 0.10)  # at least 10 Hz heartbeat
+
+                        if has_fresh_scan or is_moving or heartbeat_due:
+                            near_d = 0.0
+                            if scan_ranges:
+                                valid_r = [r for r in scan_ranges if 0.05 < r < 12.0]
+                                if valid_r:
+                                    near_d = min(valid_r)
+
+                            bin_frame = packer.pack(
+                                pose_x=0.0, pose_y=0.0, pose_theta=0.0,
+                                linear_vel=v_active, angular_vel=w_active,
+                                nearest_obs=near_d,
+                                battery=float(current_bat if current_bat is not None else 100.0),
+                                cpu_temp=43.5,
+                                ranges_m=scan_ranges,
+                                intensities=scan_intensities,
+                                timestamp=scan_stamp if (has_fresh_scan and scan_stamp > 0) else now,
+                                seq=scan_seq
+                            )
+                            try:
+                                await ws.send(bin_frame)
+                                if has_fresh_scan:
+                                    last_sent_scan_seq = scan_seq
+                                last_telemetry_send = now
+                            except Exception as es:
+                                print(f"[WARN] ws.send binary frame failed: {es}", flush=True)
+
+                        # 2. AI detections & Metadata Frame (JSON, lightweight ~150B, decoupled from heavy video)
+                        has_yolo_updates = bool(yolo and getattr(yolo, "latest_detections", None))
+                        if cam_b64 is not None or (now - last_json_meta_send >= 0.5) or has_yolo_updates:
+                            meta_payload = {
+                                "type": "camera_frame" if cam_b64 is not None else "robot_meta",
+                                "timestamp": now,
+                                "scan_seq": scan_seq,
+                                "scan_stamp": scan_stamp,
+                                "battery": current_bat,
+                                "lidar_diag": getattr(lidar, "diagnostics", {}) if lidar else {},
+                                "yolo_active": HAS_TRT and getattr(yolo, "engine", None) is not None
+                            }
+                            if cam_b64 is not None:
+                                meta_payload["camera"] = cam_b64
+                            if yolo:
+                                meta_payload["detections"] = yolo.latest_detections
+                                meta_payload["low_obstacles"] = getattr(yolo, "latest_low_obstacles", [])
+                            await ws.send(json.dumps(meta_payload))
+                            last_json_meta_send = now
+
+                        await asyncio.sleep(0.035)  # ~28 FPS responsive rate
 
                 async def receive_commands():
-                    global _last_cmd_time, _is_motor_moving
+                    global _last_cmd_time, _is_motor_moving, _active_cmd_v, _active_cmd_w, _current_mode
                     while True:
                         raw = await ws.recv()
                         msg = json.loads(raw)
                         mtype = str(msg.get("type", "")).strip().lower()
                         cmd = str(msg.get("cmd") or msg.get("command") or "").strip().lower()
 
+                        # Mode configuration command: {"type": "set_mode", "mode": "AUTONOMOUS"}
+                        if mtype in ("set_mode", "mode") or cmd in ("set_mode", "mode"):
+                            if msg.get("mode"):
+                                _current_mode = str(msg.get("mode")).strip().upper()
+                                print(f"[MODE] JetBot operating mode set to: {_current_mode}", flush=True)
+                                if _current_mode == "MANUAL":
+                                    mux.clear_reflex_stop()
+
                         # UIT Tut 3 command: {"cmd": "drive", "left": f, "right": f}
-                        if cmd == "drive":
+                        elif cmd == "drive":
+                            _current_mode = "MANUAL"
+                            mux.clear_reflex_stop()
                             l = float(msg.get("left", 0.0))
                             r = float(msg.get("right", 0.0))
-                            set_raw_motor_speeds(l, r)
+                            if abs(l) < 0.005 and abs(r) < 0.005:
+                                mux.submit_user(SRC_MANUAL, 0.0, 0.0)
+                            elif abs(l + r) < 0.01:
+                                # Pure in-place turn: 90 deg in 0.50s = 3.1416 rad/s
+                                ang = math.copysign(MAX_ANGULAR_SPEED_RADS, r - l)
+                                mux.submit_user(SRC_MANUAL, 0.0, ang)
+                            else:
+                                lin = (l + r) * 0.5 * ACTUAL_SPEED_MPS
+                                ang = (r - l) * 0.5 * MAX_ANGULAR_SPEED_RADS
+                                mux.submit_user(SRC_MANUAL, lin, ang)
                             _last_cmd_time = time.time()
-                            _is_motor_moving = (abs(l) > 0.01 or abs(r) > 0.01)
 
-                        # CS532 command: {"type": "cmd_vel", "linear": v, "angular": w}
+                        # CS532 command: {"type": "cmd_vel", "linear": v, "angular": w, "mode": ...}
                         elif mtype == "cmd_vel":
+                            if msg.get("mode"):
+                                _current_mode = str(msg.get("mode")).strip().upper()
+                            if _current_mode == "MANUAL":
+                                mux.clear_reflex_stop()
                             v = float(msg.get("linear", 0.0))
                             w = float(msg.get("angular", 0.0))
-                            set_motor_speeds(v, w)
+                            src = SRC_AUTO if _current_mode == "AUTONOMOUS" else SRC_MANUAL
+                            if abs(v) < 0.005 and abs(w) < 0.02:
+                                mux.submit_user(src, 0.0, 0.0)
+                            else:
+                                mux.submit_user(src, v, w)
                             _last_cmd_time = time.time()
-                            _is_motor_moving = (abs(v) > 0.01 or abs(w) > 0.01)
 
                         # Stop / Emergency stop (both protocols)
                         elif cmd in ("stop", "emergency_stop") or mtype in ("stop", "emergency_stop"):
-                            stop_motors()
+                            if "emergency" in cmd or "emergency" in mtype:
+                                mux.estop()
+                            else:
+                                mux.submit_user(SRC_MANUAL, 0.0, 0.0)
+                            _last_cmd_time = time.time()
 
-                # Deadman Watchdog Task: 1.5 second timeout (UIT Tut 3 Safety Standard)
-                # Auto-stops motors if connection drops or no command is received within 1.5s
+                # Deadman Watchdog Task: 1.5 second backup timeout
                 async def watchdog_task():
-                    global _last_cmd_time, _is_motor_moving
+                    global _last_cmd_time, _is_motor_moving, _current_pwm_l, _current_pwm_r
                     while True:
                         await asyncio.sleep(0.1)  # 10 Hz check
-                        if _is_motor_moving and (time.time() - _last_cmd_time > 1.5):
-                            print("[WATCHDOG] 1.5s timeout with no drive command! Safety Auto-Stop triggered.")
-                            stop_motors()
+                        is_active = _is_motor_moving or (abs(_current_pwm_l) > 0.01) or (abs(_current_pwm_r) > 0.01)
+                        if is_active and (time.time() - _last_cmd_time > 1.5):
+                            print("[WATCHDOG] 1.5s timeout with no drive command! Safety Auto-Stop triggered.", flush=True)
+                            mux.submit_user(SRC_MANUAL, 0.0, 0.0)
 
-                # Internal Hardware Safety Reflex Task: 20 Hz (Dual-Tier Safety Architecture)
-                # Dynamic Stopping Distance Profile: D_crit(v) = max(0.22, 0.18 + 0.35 * v)
-                # Prevents mechanical collisions caused by sensor-actuator latency & slip on tile
+                # ─────────────────────────────────────────────────────────────
+                # Tầng 1 — Né phản xạ tức thời tại biên (Edge Reflex Layer trên Jetson Nano)
+                # DDE Active Disparity Extender (< 5ms latency, local intervention)
+                # ─────────────────────────────────────────────────────────────
+                dde_reflex = DisparityExtender(
+                    # Phase 3.7: the real 15x10cm chassis circumscribes at 0.09m.
+                    robot_radius=0.09,
+                    safety_margin=0.08,
+                    disparity_threshold=0.25,
+                    max_lidar_range=3.0,
+                    # Phase 1.2: same near-field floor as the driver.
+                    min_lidar_range=LIDAR_MIN_DISTANCE_M,
+                    safe_clearance_m=0.35,
+                    warning_horizon_m=0.45,
+                    # Phase 4.3: 300mm is the datasheet's accuracy floor.
+                    critical_stop_m=0.30,
+                )
+
                 async def hardware_reflex_task():
-                    global _is_motor_moving, _active_cmd_v
+                    global _is_motor_moving, _active_cmd_v, _active_cmd_w, _current_mode
+                    last_stale_warn = 0.0
+                    last_evade_report = 0.0
                     while True:
-                        await asyncio.sleep(0.05)  # 20 Hz check
-                        if _is_motor_moving and _active_cmd_v > 0.02:
-                            curr_v = _active_cmd_v
-                            # Dynamic critical distance based on real forward speed (forward drive protection)
-                            d_crit = max(0.20, 0.16 + 0.35 * curr_v)
-                            if lidar and hasattr(lidar, "scan_cache"):
-                                with lidar.cache_lock:
-                                    cache_items = list(lidar.scan_cache.items())
-                                now_l = time.time()
-                                frontal_dists = [
-                                    dist_m for raw_ang, (dist_m, ts) in cache_items
-                                    if (now_l - ts < 0.35) and (0.12 <= dist_m < d_crit) and
-                                    (raw_ang <= 28.0 or raw_ang >= 332.0)
-                                ]
-                                if frontal_dists:
-                                    min_d = min(frontal_dists)
-                                    print(f"[FAIL-SAFE REFLEX] Frontal obstacle at {min_d:.2f}m < D_crit({d_crit:.2f}m)! Triggering Emergency Dynamic Brake.")
-                                    stop_motors()
-                                    try:
-                                        await ws.send(json.dumps({
-                                            "type": "hardware_emergency_brake",
-                                            "reason": f"Obstacle at {min_d:.2f}m closer than D_crit({d_crit:.2f}m)",
-                                            "timestamp": time.time()
-                                        }))
-                                    except Exception:
-                                        pass
+                        await asyncio.sleep(0.04)  # 25 Hz edge reflex loop (< 5ms execution)
+                        is_reflex_active = getattr(mux, "_reflex_stop", False)
+                        if _is_motor_moving or is_reflex_active or abs(_active_cmd_v) > 0.01:
+                            now_l = time.time()
+                            # Hardware Watchdog: Warn if LiDAR has not updated in > 1.5s
+                            lidar_ts = getattr(lidar.driver, "latest_timestamp", 0.0) if (lidar and hasattr(lidar, "driver")) else 0.0
+                            if (lidar_ts > 0.0) and (now_l - lidar_ts > 1.5):
+                                if now_l - last_stale_warn > 3.0:
+                                    print(f"[WARN] LiDAR data stale ({now_l - lidar_ts:.2f}s > 1.5s)", flush=True)
+                                    last_stale_warn = now_l
 
-                await asyncio.gather(send_telemetry(), receive_commands(), watchdog_task(), hardware_reflex_task())
+                            try:
+                                ranges = None
+                                if lidar and hasattr(lidar, "driver"):
+                                    with lidar.cache_lock:
+                                        ranges = list(getattr(lidar.driver, "latest_ranges", []))
+
+                                if ranges and len(ranges) >= 180 and any(r > 0.05 for r in ranges):
+                                    dde_res = dde_reflex.evaluate(
+                                        ranges, goal_heading_rad=0.0, cmd_v=_active_cmd_v
+                                    )
+                                    status = dde_res.get("status", "CLEAR")
+                                    clearance = dde_res.get("clearance_m", 1.0)
+
+                                    # 0. FRONT_UNVERIFIED (Phase 4.3): zero valid returns in
+                                    # the frontal +/-25 deg cone while commanding forward
+                                    # motion. This is NOT "the way is clear" -- the sensor is
+                                    # blind here (a black, glassy or low object returns
+                                    # nothing). Cap to a crawl and keep steering straight.
+                                    if status == "FRONT_UNVERIFIED" and _active_cmd_v > 0.01:
+                                        crawl = float(
+                                            dde_res.get("recommended_v_cap", 0.06)
+                                        )
+                                        crawl = min(crawl, max(0.02, _active_cmd_v))
+                                        mux.reflex_override(crawl, 0.0, ttl=0.3)
+                                        if now_l - last_evade_report > 1.0:
+                                            last_evade_report = now_l
+                                            print(
+                                                "[EDGE REFLEX DDE] FRONT UNVERIFIED: no "
+                                                f"valid return in the frontal cone -> "
+                                                f"crawling at {crawl:.2f} m/s",
+                                                flush=True,
+                                            )
+                                            try:
+                                                await ws.send(json.dumps({
+                                                    "type": "front_unverified",
+                                                    "status": status,
+                                                    "recommended_v_cap": round(crawl, 3),
+                                                    "timestamp": time.time()
+                                                }))
+                                            except Exception:
+                                                pass
+
+                                    # 1. Hãm phanh khẩn cấp CHỈ KHI bị chặn cứng phía trước VÀ robot đang tiến về phía vật cản (_active_cmd_v > 0.01)
+                                    # KHÔNG áp dụng khi robot đang lùi (_active_cmd_v < -0.01) hoặc quay tại chỗ để cho phép lùi/quay thoát kẹt!
+                                    if status == "EMERGENCY_STOP" and _active_cmd_v > 0.01:
+                                        front_d = dde_res.get("front_obstacle_dist", clearance)
+                                        if now_l - last_evade_report > 1.0:
+                                            print(f"[FAIL-SAFE REFLEX] DDE Boxed in at {front_d:.2f}m with no escape gap! Emergency Dynamic Brake.", flush=True)
+                                            last_evade_report = now_l
+                                        mux.reflex_stop()
+                                        try:
+                                            await ws.send(json.dumps({
+                                                "type": "hardware_emergency_brake",
+                                                "reason": f"DDE Boxed in: Front obstacle at {front_d:.2f}m",
+                                                "timestamp": time.time()
+                                            }))
+                                        except Exception:
+                                            pass
+                                    else:
+                                        # When not actively driving forward into an obstacle (e.g. moving backward, turning in place, or obstacle cleared):
+                                        mux.clear_reflex_stop()
+                            except Exception as e:
+                                print(f"[ERROR in hardware_reflex_task] {e}", flush=True)
+
+                tasks = [
+                    asyncio.ensure_future(send_telemetry()),
+                    asyncio.ensure_future(receive_commands()),
+                    asyncio.ensure_future(watchdog_task()),
+                    asyncio.ensure_future(hardware_reflex_task()),
+                ]
+                try:
+                    done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+                    for t in pending:
+                        t.cancel()
+                    await asyncio.gather(*pending, return_exceptions=True)
+                    for t in done:
+                        if not t.cancelled() and t.exception():
+                            raise t.exception()
+                finally:
+                    for t in tasks:
+                        if not t.done():
+                            t.cancel()
+                    await asyncio.gather(*tasks, return_exceptions=True)
 
         except Exception as e:
             print(f"[DISCONNECTED] Lost connection ({e}). Reconnecting in 2 seconds...")
-            stop_motors()
+            mux.on_disconnect()
             await asyncio.sleep(2.0)
 
 
@@ -989,25 +1341,35 @@ async def bridge_loop(camera: CSICameraThread, lidar: D500LidarThread, yolo: Ten
 # ENTRY POINT
 # ─────────────────────────────────────────────────────────────
 def main():
-    global WS_URL, SERVER_HOST, SERVER_PORT
+    global WS_URL, SERVER_HOST, SERVER_PORT, LIDAR_PORT, LIDAR_BAUDRATE, STREAM_CAMERA_WS
     import argparse
     parser = argparse.ArgumentParser(description="NVIDIA JetBot Hardware Bridge")
     parser.add_argument("pos_host", nargs="?", default=None, help="Dashboard host IP (positional)")
     parser.add_argument("pos_port", nargs="?", type=int, default=None, help="Dashboard port (positional)")
     parser.add_argument("--host", dest="flag_host", default=None, help="Dashboard host IP (--host)")
     parser.add_argument("--port", dest="flag_port", type=int, default=None, help="Dashboard port (--port)")
+    parser.add_argument("--lidar-port", dest="lidar_port", default=None, help="LiDAR serial port (e.g. /dev/ttyUSB0, /dev/ttyTHS1)")
+    parser.add_argument("--lidar-baud", dest="lidar_baud", type=int, default=None, help="LiDAR baudrate (default 230400)")
+    parser.add_argument("--stream-camera-ws", dest="stream_camera_ws", action="store_true", default=False, help="Stream base64 camera over WebSocket (default: False, camera is decoupled to dedicated HTTP port 8080 to avoid TCP HoL blocking)")
     args, _ = parser.parse_known_args()
 
     host = args.flag_host or args.pos_host or os.environ.get("DASHBOARD_HOST") or os.environ.get("DASHBOARD_IP") or "192.168.1.8"
     port = args.flag_port or args.pos_port or int(os.environ.get("DASHBOARD_PORT", "8000"))
+    if args.lidar_port:
+        LIDAR_PORT = args.lidar_port
+    if args.lidar_baud:
+        LIDAR_BAUDRATE = args.lidar_baud
+    if args.stream_camera_ws:
+        STREAM_CAMERA_WS = True
     SERVER_HOST = host
     SERVER_PORT = port
     WS_URL = f"ws://{SERVER_HOST}:{SERVER_PORT}/ws/robot"
 
     print("=" * 65)
     print("  NVIDIA JETBOT HARDWARE BRIDGE")
-    print(f"  Camera:  CSI (cáp dẹt) GStreamer (flip={CAMERA_FLIP})")
-    print(f"  LiDAR:   D500 @ {LIDAR_PORT} (baud {LIDAR_BAUDRATE}, 360° Cache)")
+    print(f"  Camera:  CSI (cáp dẹt) GStreamer (flip={CAMERA_FLIP}, WS_bundle={STREAM_CAMERA_WS})")
+    print(f"  LiDAR:   D500 @ {LIDAR_PORT} (baud {LIDAR_BAUDRATE}, Single-Revolution)")
+    print(f"  Network: Decoupled (LiDAR -> WS {WS_URL}, Camera -> HTTP :8080)")
     model_tag = os.path.basename(ENGINE_PATH).replace(".engine", "").upper()
     print(f"  AI:      TensorRT Engine [{model_tag}] ({ENGINE_PATH})")
     print(f"  Target:  {WS_URL}")

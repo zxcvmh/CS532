@@ -50,7 +50,7 @@ Mục tiêu cốt lõi: Phát triển và duy trì trạm điều khiển trung 
 
 ## 3. Các Tập Tin Quản Lý Cốt Lõi
 
-1. `03-MinhHieu/backend/main.py`: Entrypoint FastAPI server và WebSocket broadcaster.
+1. `03-MinhHieu/backend/app/main.py`: Entrypoint FastAPI server và WebSocket broadcaster.
 2. `03-MinhHieu/backend/run.py`: Script khởi động backend hỗ trợ `--host` và `--port`.
 3. `03-MinhHieu/jetbot_bridge.py`: Cầu nối phần cứng đọc LiDAR và điều khiển động cơ.
 4. `03-MinhHieu/frontend/src/App.tsx`: Trọng tâm giao diện Mission Control Dashboard.

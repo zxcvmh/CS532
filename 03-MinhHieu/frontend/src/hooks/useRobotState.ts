@@ -25,7 +25,7 @@ export function useRobotState() {
     ? (window.location.hostname === 'localhost' ? '127.0.0.1:8000' : `${window.location.hostname}:8000`)
     : (window.location.host || '127.0.0.1:8000');
   const wsUrl = `${protocol}//${wsHost}/ws`;
-  const { connected, lastMessage, sendMessage, rtt } = useWebSocket(wsUrl);
+  const { connected, lastMessage, lastBinaryMessage, sendMessage, rtt } = useWebSocket(wsUrl);
 
   // React state for things that trigger UI updates
   const [battery, setBattery] = useState<number>(100);
@@ -46,6 +46,7 @@ export function useRobotState() {
   // Refs for high-frequency data (avoids re-rendering the whole app)
   const pose = useRef<RobotPose>({ x: 0, y: 0, theta: 0 });
   const lidarPoints = useRef<LidarPoint[]>([]);
+  const rangesMm = useRef<Uint16Array | null>(null);
   const mapData = useRef<MapData | null>(null);
   const detections = useRef<Detection[]>([]);
   const trajectory = useRef<LidarPoint[]>([]);
@@ -54,6 +55,66 @@ export function useRobotState() {
 
   // Trigger for components that need to know detections changed (for CameraView)
   const [detectionsVersion, setDetectionsVersion] = useState(0);
+
+  // ─── ZERO-COPY ULTRA-FAST BINARY TELEMETRY UNPACKER (0.002ms) ───
+  useEffect(() => {
+    if (!lastBinaryMessage || lastBinaryMessage.byteLength < 1130) return;
+    const view = new DataView(lastBinaryMessage);
+    // Check Magic Header 'JB' (0x4A, 0x42)
+    if (view.getUint8(0) !== 0x4A || view.getUint8(1) !== 0x42) return;
+
+    const x = view.getFloat32(18, true);
+    const y = view.getFloat32(22, true);
+    const theta = view.getFloat32(26, true);
+    const v = view.getFloat32(30, true);
+    const w = view.getFloat32(34, true);
+    const nearObs = view.getFloat32(38, true);
+    const bat = view.getFloat32(42, true);
+    const cpu = view.getFloat32(46, true);
+
+    // Update high-rate pose ref immediately
+    pose.current = {
+      x,
+      y,
+      theta,
+      linearSpeed: v,
+      angularSpeed: w,
+      nearestObstacle: nearObs > 0.001 ? nearObs : null,
+      cpuTemp: cpu
+    };
+
+    // Zero-copy Uint16Array view directly into received ArrayBuffer
+    const rMm = new Uint16Array(lastBinaryMessage, 50, 360);
+    rangesMm.current = rMm;
+
+    // Fast coordinate projection for MapViewer canvas
+    const pts: LidarPoint[] = [];
+    const cosTh = Math.cos(theta);
+    const sinTh = Math.sin(theta);
+    const lx = x + 0.08 * cosTh;
+    const ly = y + 0.08 * sinTh;
+    const deg2rad = Math.PI / 180.0;
+    for (let i = 0; i < 360; i++) {
+      const dMm = rMm[i];
+      if (dMm >= 50 && dMm <= 12000) {
+        const dM = dMm / 1000.0;
+        const rad = i * deg2rad + theta;
+        pts.push({ x: lx + dM * Math.cos(rad), y: ly + dM * Math.sin(rad) });
+      }
+    }
+    lidarPoints.current = pts;
+
+    // Delta-checked state updates
+    setLinearSpeed(prev => Math.abs(prev - v) > 0.005 ? v : prev);
+    setAngularSpeed(prev => Math.abs(prev - w) > 0.01 ? w : prev);
+    if (nearObs > 0.001) {
+      setNearestObstacle(prev => prev === null || Math.abs(prev - nearObs) > 0.02 ? nearObs : prev);
+    }
+    if (bat > 0) {
+      setBattery(prev => Math.abs(prev - bat) > 0.5 ? bat : prev);
+    }
+    setCpuTemp(prev => Math.abs(prev - cpu) > 0.5 ? cpu : prev);
+  }, [lastBinaryMessage]);
   
   useEffect(() => {
     if (!lastMessage) return;
@@ -70,16 +131,31 @@ export function useRobotState() {
           nearestObstacle: lastMessage.nearest_obstacle,
           cpuTemp: lastMessage.cpu_temp
         };
-        if (lastMessage.linear_speed !== undefined) setLinearSpeed(lastMessage.linear_speed);
-        if (lastMessage.angular_speed !== undefined) setAngularSpeed(lastMessage.angular_speed);
-        if (lastMessage.nearest_obstacle !== undefined) setNearestObstacle(lastMessage.nearest_obstacle);
-        if (lastMessage.cpu_temp !== undefined) setCpuTemp(lastMessage.cpu_temp);
+        if (lastMessage.linear_speed !== undefined) {
+          setLinearSpeed(prev => Math.abs(prev - lastMessage.linear_speed) > 0.005 ? lastMessage.linear_speed : prev);
+        }
+        if (lastMessage.angular_speed !== undefined) {
+          setAngularSpeed(prev => Math.abs(prev - lastMessage.angular_speed) > 0.01 ? lastMessage.angular_speed : prev);
+        }
+        if (lastMessage.nearest_obstacle !== undefined) {
+          setNearestObstacle(prev => {
+            const next = lastMessage.nearest_obstacle;
+            if (prev === null && next === null) return prev;
+            if (prev === null || next === null) return next;
+            return Math.abs(prev - next) > 0.02 ? next : prev;
+          });
+        }
+        if (lastMessage.cpu_temp !== undefined) {
+          setCpuTemp(prev => Math.abs(prev - lastMessage.cpu_temp) > 0.5 ? lastMessage.cpu_temp : prev);
+        }
         break;
       case 'battery':
         setBattery(lastMessage.percentage);
         break;
       case 'lidar_scan':
-        lidarPoints.current = lastMessage.points;
+        if (Array.isArray(lastMessage.points) && lastMessage.points.length > 0) {
+          lidarPoints.current = lastMessage.points;
+        }
         break;
       case 'map_update': {
         let gridData = lastMessage.data;

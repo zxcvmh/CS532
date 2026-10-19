@@ -39,21 +39,9 @@ class ObstacleCluster:
     is_dynamic: bool = False                    # True if obstacle is moving (|v| > 0.08 m/s)
     centroid_world: Optional[Tuple[float, float]] = None  # (wx, wy) center in World Frame {W}
 
-    def predict_position(self, t: float) -> Tuple[float, float]:
-        """Predicts obstacle centroid position at future time t (seconds)."""
-        return (
-            self.centroid[0] + self.velocity[0] * t,
-            self.centroid[1] + self.velocity[1] * t
-        )
-
-    def predict_world_position(self, t: float) -> Tuple[float, float]:
-        """Predicts obstacle position in World Frame at future time t (seconds)."""
-        if self.centroid_world is not None:
-            return (
-                self.centroid_world[0] + self.velocity[0] * t,
-                self.centroid_world[1] + self.velocity[1] * t
-            )
-        return (self.centroid[0] + self.velocity[0] * t, self.centroid[1] + self.velocity[1] * t)
+    # NOTE: predict_position() / predict_world_position() were removed in Phase 3.9.
+    # They had no callers anywhere in the tree (grep-verified): the MPPI controller does its
+    # own constant-velocity rollouts, so these were an unused second implementation.
 
     def to_dict(self) -> Dict[str, Any]:
         """Converts cluster to JSON-serializable dictionary for Dashboard."""
@@ -141,8 +129,15 @@ class DynamicObstacleTracker:
                 vx = self.alpha * raw_vx + (1.0 - self.alpha) * prev_vx
                 vy = self.alpha * raw_vy + (1.0 - self.alpha) * prev_vy
                 speed = math.hypot(vx, vy)
-                # True physical motion in the room (> 8 cm/s)
-                is_dyn = speed > 0.08
+                hits = tr.get("hits", 1) + 1
+
+                # Geometric wall / large perimeter boundary rejection:
+                # People and legs have diameter ~0.15-0.55m; objects > 0.8m are physical walls/tables
+                is_wall_geometry = getattr(cl, "length_m", 0.0) > 0.80 or getattr(cl, "width_m", 0.0) > 0.80 or getattr(cl, "is_wall", False)
+
+                # True physical dynamic motion in room: requires multi-frame confirmation (hits >= 3),
+                # robust speed threshold (>= 12 cm/s above LiDAR jitter), and non-wall geometry
+                is_dyn = (speed >= 0.12) and (hits >= 3) and (not is_wall_geometry)
 
                 if is_dyn:
                     # Radial approach speed towards robot in World Frame
@@ -181,7 +176,8 @@ class DynamicObstacleTracker:
                 new_tracks[best_match] = {
                     "world_pos": (wx, wy),
                     "centroid": (cx, cy),
-                    "velocity": (vx if is_dyn else 0.0, vy if is_dyn else 0.0)
+                    "velocity": (vx if is_dyn else 0.0, vy if is_dyn else 0.0),
+                    "hits": hits
                 }
             else:
                 tid = self.next_id
@@ -195,7 +191,8 @@ class DynamicObstacleTracker:
                 new_tracks[tid] = {
                     "world_pos": (wx, wy),
                     "centroid": (cx, cy),
-                    "velocity": (0.0, 0.0)
+                    "velocity": (0.0, 0.0),
+                    "hits": 1
                 }
 
         self.tracks = new_tracks
@@ -379,9 +376,13 @@ class LiDARClusterDetector:
                     (min_x, max_y)
                 ]
 
-            # Obstacle shape classification
-            # Extended structures (> 0.45m) or high linearity are classified as wall surfaces
-            if (length_m > 0.45 or width_m > 0.45) or linearity > 0.85:
+            # Obstacle shape classification (Phase 3.5).
+            # A wall is long AND thin AND linear. "Length > 0.45m" alone mislabelled a 0.5m
+            # cardboard box as WALL_SURFACE, which marked it SAFE and then extruded it into a
+            # 0.8m phantom lethal disc (BUG-03). Require the actual wall signature instead.
+            is_thin = min(length_m, width_m) <= 0.18
+            is_long = max(length_m, width_m) >= 0.60
+            if is_long and is_thin and linearity > 0.85:
                 obs_type = "WALL_SURFACE"
             elif length_m <= 0.20 and width_m <= 0.20:
                 obs_type = "CYLINDER_LEG"
@@ -432,9 +433,6 @@ class LiDARClusterDetector:
 
         results.sort(key=threat_sort_key)
         return results
-
-    def to_dict_list(self, clusters: List[ObstacleCluster]) -> List[Dict[str, Any]]:
-        return [c.to_dict() for c in clusters]
 
 
 _default_detector = LiDARClusterDetector()

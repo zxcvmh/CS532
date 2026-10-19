@@ -86,11 +86,17 @@ export default function RobotControl({
       }
     };
 
+    const handleBlur = () => {
+      stopDriving();
+    };
+
     window.addEventListener('keydown', handleKeyDown);
     window.addEventListener('keyup', handleKeyUp);
+    window.addEventListener('blur', handleBlur);
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('keyup', handleKeyUp);
+      window.removeEventListener('blur', handleBlur);
       stopDriving();
     };
   }, [mode, startDriving, stopDriving, emergencyStop]);

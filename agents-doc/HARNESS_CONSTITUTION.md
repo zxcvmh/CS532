@@ -31,7 +31,7 @@ flowchart TD
         E1["01-HieuMe/ (Thị giác YOLO26-n & Floor IPM)"]
         E2["02-DuyHieu/ (Thuật toán A* & Obstacle Clustering)"]
         E3["03-MinhHieu/ (Web Dashboard & FastAPI Telemetry)"]
-        E4["04-hieu-MotionControl/ (DDE + CBF & Odometry)"]
+        E4["05-d500lib-motion/ (D500 Driver, SLAM, Kinodynamic RVO)"]
     end
 
     subgraph AppendOnly ["📝 APPEND-ONLY SURFACE (Chỉ ghi thêm, cấm xóa/ghi đè)"]
@@ -78,19 +78,22 @@ flowchart TD
 
 ## 4. Quy Trình Kiểm Thử & Nghiệm Thu Thép (Verification Protocol)
 
-Mọi thay đổi trước khi được bàn giao phải trải qua 3 cửa ải kiểm định độc lập:
+Mọi thay đổi trước khi được bàn giao phải trải qua 3 cửa ải kiểm định độc lập (Nghiêm cấm "Kiểm thử kịch trường" bằng các script Python mock LiDAR):
 
 1. **Cửa ải 1: Static AST & Path Sanity Check**
-   - Chạy `python3 scripts/verify_agent_integrity.py --lint` để đảm bảo:
-     - 100% file Python không có lỗi cú pháp.
-     - 100% đường dẫn file nhắc đến trong tài liệu đều tồn tại trên ổ đĩa.
-2. **Cửa ải 2: Deterministic Test Suite Runner**
-   - Chạy toàn bộ các bài test của 4 module:
-     - CV: `python3 01-HieuMe/test_cv_local.py` (Pass 5/5)
-     - Planning: `python3 02-DuyHieu/verify_step1_astar.py` (Pass 100%)
-     - Motion Control: `python3 04-hieu-MotionControl/test_closed_loop_continuous_navigation.py` (Pass 3/3)
-3. **Cửa ải 3: Independent Peer-Review (Adversarial Verifier)**
-   - Agent độc lập (`adversarial-qa-verifier-agent`) soi chiếu diff để tìm kẽ hở hoặc over-engineering trước khi merge.
+   - Chạy `python3 scripts/verify_agent_integrity.py` để đảm bảo:
+     - 100% file Python hợp lệ cú pháp (AST validation).
+     - 100% đường dẫn file nhắc đến trong tài liệu đều tồn tại thực tế trên ổ đĩa.
+2. **Cửa ải 2: 6-Gate Adversarial Code Review (Adversarial Verifier)**
+   - Agent độc lập (`adversarial-qa-verifier-agent`) soi chiếu code qua 6 cửa ải thực địa:
+     - Cổng 1: Bẫy vùng chết động cơ (Motor Deadband).
+     - Cổng 2: Bẫy tê liệt cơ cấu chấp hành ($v=0 \implies \omega=0$).
+     - Cổng 3: Bẫy trượt xoay phá hủy SLAM trên sàn gạch men.
+     - Cổng 4: Bẫy đâm vách sa bàn hẹp do lạm phát chi phí ảo.
+     - Cổng 5: Bẫy độ trễ vòng lặp điều khiển vi sai ($> 100\text{ms}$).
+     - Cổng 6: Bẫy đắp rác lý thuyết & kiểm thử kịch trường (Over-engineering & Theatrical Test Mocking).
+3. **Cửa ải 3: Hardware-First & Telemetry Validation**
+   - Thử nghiệm trên xe JetBot thật với Web Dashboard `03-MinhHieu` + cơ chế E-Stop, hoặc mô phỏng vật lý cao cấp Digital Twin (Gazebo / Isaac Sim). Tuyệt đối không nghiệm thu dựa trên các script test vòng lặp đồ chơi.
 
 ---
 

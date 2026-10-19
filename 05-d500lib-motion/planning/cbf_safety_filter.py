@@ -167,22 +167,21 @@ class CBFSafetyFilter:
         if lhs_check > b_val and a_v > 0.01:
             v_safe = max(0.0, min(v_safe, (b_val - a_w * w_safe) / a_v))
 
-        # If closest obstacle is critically close (d < 0.16m), halt forward motion completely (v=0)
-        # If between 0.16m and 0.25m, maintain gentle forward creep (v=0.03 m/s) while steering away
-        # to carve a smooth arc around the obstacle instead of turning in place into the adjacent wall.
+        # Pivot Clearance Gating: if closest obstacle is critically close (d < 0.16m), halt forward motion completely (v=0),
+        # but preserve or inject angular speed w != 0 so the robot can pivot in place to escape deadlock!
         if min_h < 0.01:
             closest_d = critical_obs[0][0] if critical_obs else 0.20
             v_safe = 0.0 if closest_d < 0.16 else 0.03
             if critical_obs and len(critical_obs) > 0:
                 obs_y = critical_obs[0][2]
                 escape_dir = -1.0 if obs_y >= 0.0 else 1.0
-                # If nominal command is already steering in the escape direction, preserve it up to safe limit
-                if (w_cand * escape_dir) > 0.03:
-                    w_safe = math.copysign(min(0.20, abs(w_cand)), escape_dir)
+                # If nominal command is already commanding a turn, preserve it up to safe limit
+                if abs(w_cand) > 0.03:
+                    w_safe = math.copysign(min(self.w_max, max(0.16, abs(w_cand))), w_cand)
                 else:
-                    w_safe = escape_dir * 0.16
+                    w_safe = escape_dir * min(self.w_max, 0.20)
             else:
-                w_safe = 0.0
+                w_safe = w_cand if abs(w_cand) > 0.03 else 0.0
 
         return round(v_safe, 3), round(w_safe, 3), {
             "cbf_active": True,

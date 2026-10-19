@@ -301,8 +301,10 @@ class JetBotHealthChecker:
             self.results["lidar"] = lidar_res
             return
 
-        # Find serial port candidates
-        ports = glob.glob("/dev/ttyUSB*") + glob.glob("/dev/ttyTHS*") + glob.glob("/dev/ttyACM*")
+        # Find serial port candidates (prioritize USB and GPIO Pin 8/10 THS1, exclude system console THS0)
+        usb_ports = sorted(glob.glob("/dev/ttyUSB*") + glob.glob("/dev/ttyACM*"))
+        gpio_ports = [p for p in sorted(glob.glob("/dev/ttyTHS*")) if p != "/dev/ttyTHS0"]
+        ports = usb_ports + gpio_ports
         target_port = os.environ.get("LIDAR_PORT", "/dev/ttyUSB0")
 
         if target_port in ports:

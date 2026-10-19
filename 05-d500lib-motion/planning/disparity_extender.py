@@ -195,14 +195,46 @@ class DisparityExtender:
         fov_ranges, fov_angles = self.preprocess_ranges(raw_ranges)
         inflated_ranges = self.extend_disparities(fov_ranges, fov_angles)
 
-        # Check immediate frontal collision cone [-25 deg .. +25 deg]
+        # Check immediate frontal collision cone [-15 deg .. +15 deg] (direct forward path)
         center_idx = self.half_fov
-        cone_span = 25
-        front_min_dist = min(fov_ranges[center_idx - cone_span : center_idx + cone_span + 1], default=self.max_lidar_range)
+        cone_span = 15
+        front_cone = fov_ranges[center_idx - cone_span : center_idx + cone_span + 1]
+        front_min_dist = min(front_cone, default=self.max_lidar_range)
         is_front_blocked = front_min_dist < self.warning_horizon_m
 
-        # Emergency stop check
-        if front_min_dist <= self.critical_stop_m:
+        # Count consecutive close hits in front cone to filter single-ray noise glitches
+        consec_close = 0
+        max_consec_close = 0
+        for r in front_cone:
+            if r <= self.critical_stop_m:
+                consec_close += 1
+                if consec_close > max_consec_close:
+                    max_consec_close = consec_close
+            else:
+                consec_close = 0
+
+        # Gap threshold: if front is blocked, search for gap deeper than the obstacle to steer away
+        gap_thresh = self.safe_clearance_m
+        if is_front_blocked:
+            gap_thresh = max(self.safe_clearance_m, min(1.2, front_min_dist + 0.08))
+
+        # Try to find escape gaps across the wider FOV ([-70 deg .. +70 deg])
+        gaps = self.find_max_gaps(inflated_ranges, fov_angles, threshold=gap_thresh)
+
+        # Fallback 1: If no gap found with elevated threshold, try standard safe_clearance
+        if not gaps:
+            gaps = self.find_max_gaps(inflated_ranges, fov_angles, threshold=self.safe_clearance_m)
+
+        # Fallback 2: Relaxed threshold (0.22m) for tight corridors
+        if not gaps:
+            gaps = self.find_max_gaps(inflated_ranges, fov_angles, threshold=max(0.22, self.safe_clearance_m - 0.10))
+
+        # Emergency stop condition:
+        # ONLY stop if:
+        # (a) Physical bumper contact imminent (d <= 0.13m with >= 3 confirmed rays), OR
+        # (b) Front is blocked within critical distance (d <= critical_stop_m) AND NO EVASION GAP EXISTS!
+        # If a valid escape gap exists, the robot STEERS to evade rather than slamming on brakes!
+        if (front_min_dist <= 0.13 and max_consec_close >= 3) or (front_min_dist <= self.critical_stop_m and max_consec_close >= 2 and not gaps):
             return {
                 "status": "EMERGENCY_STOP",
                 "target_heading_rad": 0.0,
@@ -212,24 +244,8 @@ class DisparityExtender:
                 "is_blocked": True,
                 "gaps": [],
                 "chosen_gap": None,
-                "reason": f"Obstacle < {self.critical_stop_m*100:.0f}cm directly in front cone!"
+                "reason": f"Boxed in: Frontal obstacle < {front_min_dist*100:.0f}cm with no evasive gap!"
             }
-
-        # Gap threshold: if front is blocked, threshold must be deeper than the obstacle to avoid driving into it
-        gap_thresh = self.safe_clearance_m
-        if is_front_blocked:
-            gap_thresh = max(self.safe_clearance_m, min(1.2, front_min_dist + 0.08))
-
-        # Try to find gaps with gap threshold
-        gaps = self.find_max_gaps(inflated_ranges, fov_angles, threshold=gap_thresh)
-
-        # Fallback 1: If no gap found and front is not blocked, try standard safe_clearance
-        if not gaps and not is_front_blocked:
-            gaps = self.find_max_gaps(inflated_ranges, fov_angles, threshold=self.safe_clearance_m)
-
-        # Fallback 2: If still no gap and front is not blocked, try relaxed threshold (0.28m)
-        if not gaps and not is_front_blocked:
-            gaps = self.find_max_gaps(inflated_ranges, fov_angles, threshold=max(0.25, self.safe_clearance_m - 0.08))
 
         # SOTA 2026: Corridor-Constrained Evasion & Path-Adherence Penalty
         max_corridor_heading_deg = 26.0

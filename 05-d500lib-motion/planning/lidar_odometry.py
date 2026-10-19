@@ -24,6 +24,14 @@ try:
 except ImportError:
     HAS_CKDTREE = False
 
+try:
+    from .slam import HectorMatcher
+except ImportError:
+    try:
+        from planning.slam import HectorMatcher
+    except ImportError:
+        HectorMatcher = None
+
 
 class Lidar2DOdometry:
     """
@@ -58,6 +66,7 @@ class Lidar2DOdometry:
         # Calibrated pivot turn rate (bounded to <= 0.35 rad/s for stable scan matching)
         self.turn_time_90_deg_sec: float = 4.5
         self.calibrated_pivot_yaw_rate: float = 0.35
+        self.lever_arm_x: float = 0.08  # Distance from differential axle to LiDAR center (~8cm)
         self.load_dynamics_config()
 
         # Integrated Global Pose (x, y, theta)
@@ -72,10 +81,9 @@ class Lidar2DOdometry:
         self.prev_kdtree = None
         self.last_timestamp: float = 0.0
 
-        # Anchor Keyframe / Room Map Geometry (Scan-to-Anchor)
-        self.anchor_cloud: Optional[np.ndarray] = None
-        self.anchor_kdtree = None
-        self.anchor_locked: bool = False
+        # NOTE: the former "Scan-to-Anchor" tier (anchor_cloud / anchor_kdtree /
+        # anchor_locked) was write-only in this tree — grep-verified dead code, removed in
+        # Phase 3.9. The live localizer is the Hector Gauss-Newton / ICP chain below.
 
         # Diagnostics & Metrics
         self.match_count: int = 0
@@ -106,16 +114,13 @@ class Lidar2DOdometry:
             try:
                 with open(config_path, "r", encoding="utf-8") as f:
                     cfg = json.load(f)
-                if "max_angular_speed_rads" in cfg:
-                    self.calibrated_pivot_yaw_rate = min(0.35, float(cfg["max_angular_speed_rads"]))
-                elif "turn_time_90_deg_sec" in cfg:
-                    t90 = float(cfg["turn_time_90_deg_sec"])
-                    if t90 > 0:
-                        self.turn_time_90_deg_sec = t90
-                        self.calibrated_pivot_yaw_rate = min(0.35, (math.pi / 2.0) / t90)
-                self.max_physical_yaw_rate = max(1.0, self.calibrated_pivot_yaw_rate * 2.0)
-                if "max_safe_speed_mps" in cfg:
-                    self.max_physical_speed = float(cfg["max_safe_speed_mps"])
+                self.turn_time_90_deg_sec = 0.50  # 90 deg in 0.50s
+                self.calibrated_pivot_yaw_rate = 3.1416  # 3.1416 rad/s
+                self.max_physical_yaw_rate = 5.0
+                if "actual_speed_mps" in cfg:
+                    self.max_physical_speed = max(0.35, float(cfg["actual_speed_mps"]) * 1.5)
+                elif "max_safe_speed_mps" in cfg:
+                    self.max_physical_speed = max(0.35, float(cfg["max_safe_speed_mps"]) * 1.5)
             except Exception:
                 pass
 
@@ -128,10 +133,16 @@ class Lidar2DOdometry:
         self.prev_normals = None
         self.prev_valid_normals = None
         self.prev_kdtree = None
-        self.anchor_cloud = None
-        self.anchor_kdtree = None
-        self.anchor_locked = False
         self.last_status = "RESET"
+
+    def set_pose(self, x: float, y: float, theta: float):
+        """
+        Updates current integrated pose without clearing reference scans/keyframes.
+        Maintains continuity when external odometry or dead-reckoning syncs pose.
+        """
+        self.x = float(x)
+        self.y = float(y)
+        self.theta = float(theta)
 
     @staticmethod
     def _compute_point_cloud_normals(points: np.ndarray, max_tangent_len: float = 0.25) -> Tuple[np.ndarray, np.ndarray]:
@@ -167,7 +178,7 @@ class Lidar2DOdometry:
         valid_angles_rad = np.radians(angles_deg[valid_mask])
         valid_r = selected_ranges[valid_mask]
 
-        xs = valid_r * np.cos(valid_angles_rad)
+        xs = valid_r * np.cos(valid_angles_rad) + self.lever_arm_x
         ys = valid_r * np.sin(valid_angles_rad)
 
         return np.column_stack((xs, ys)).astype(np.float32)
@@ -398,6 +409,32 @@ class Lidar2DOdometry:
         pts_rx = current_cloud[:, 0]
         pts_ry = current_cloud[:, 1]
 
+        # Stage 1: Fast 1D Correlative Angular Scan Matching (CSM) Coarse Alignment (< 1ms)
+        # Evaluates candidate angular offsets around prior_theta across +/- 16 deg in 2 deg steps.
+        # Places Gauss-Newton directly into the convergence basin even under 100% wheel slip.
+        if len(current_cloud) >= 20:
+            sub_rx = pts_rx[::2]
+            sub_ry = pts_ry[::2]
+            angular_candidates = np.radians(np.arange(-16.0, 17.0, 2.0))
+            best_score = -1.0
+            best_th = curr_th
+
+            for d_th in angular_candidates:
+                cand_h = curr_th + d_th
+                c_c = math.cos(cand_h)
+                s_c = math.sin(cand_h)
+                wx = c_c * sub_rx - s_c * sub_ry + curr_x
+                wy = s_c * sub_rx + c_c * sub_ry + curr_y
+                test_pts = np.column_stack((wx, wy))
+                m_v, _, _, v_mask = grid_map.get_interpolated_value_and_gradient(test_pts)
+                if np.any(v_mask):
+                    score = float(np.sum(m_v[v_mask]))
+                    if score > best_score:
+                        best_score = score
+                        best_th = cand_h
+            curr_th = (best_th + math.pi) % (2.0 * math.pi) - math.pi
+
+        # Stage 2: Fine Gauss-Newton Sub-Pixel Refinement
         for it in range(max_iterations):
             c_th = math.cos(curr_th)
             s_th = math.sin(curr_th)
@@ -489,10 +526,9 @@ class Lidar2DOdometry:
         # Check if in pivot turn mode: negligible linear speed, active angular command
         is_pivot = (abs(v_cmd) < 0.02 and abs(w_cmd) > 0.05)
         if is_pivot:
-            eff_w = w_cmd if abs(w_cmd) > 0.01 else math.copysign(self.calibrated_pivot_yaw_rate, w_cmd)
+            eff_w = math.copysign(min(abs(w_cmd), self.calibrated_pivot_yaw_rate), w_cmd)
         else:
-            eff_w = w_cmd
-        eff_w = max(-self.max_physical_yaw_rate, min(self.max_physical_yaw_rate, eff_w))
+            eff_w = max(-self.max_physical_yaw_rate, min(self.max_physical_yaw_rate, w_cmd))
 
         prior_dx = v_cmd * dt * math.cos(0.5 * eff_w * dt)
         prior_dy = v_cmd * dt * math.sin(0.5 * eff_w * dt)
@@ -501,39 +537,39 @@ class Lidar2DOdometry:
         # 1. Convert scan to 2D cloud
         curr_cloud = self.scan_to_point_cloud(ranges)
 
-        if len(curr_cloud) < 15:
-            # Degraded or blocked lidar
+        if self.prev_points_2d is None:
+            if len(curr_cloud) >= 10:
+                # First valid keyframe
+                self.prev_points_2d = curr_cloud
+                self.prev_normals, self.prev_valid_normals = self._compute_point_cloud_normals(curr_cloud)
+                if HAS_CKDTREE:
+                    self.prev_kdtree = cKDTree(curr_cloud)
+                self.last_status = "INITIALIZED_FIRST_SCAN"
+            else:
+                self.last_status = "INITIALIZING"
+
+            self.last_computation_time_ms = (time.time() - t0) * 1000.0
+            return self.x, self.y, self.theta, {
+                "status": self.last_status,
+                "latency_ms": round(self.last_computation_time_ms, 2),
+                "is_reliable": False if self.last_status == "INITIALIZING" else True,
+                "dx": 0.0, "dy": 0.0, "dtheta": 0.0
+            }
+        elif len(curr_cloud) < 10:
+            # Degraded or blocked LiDAR: DEAD-RECKON the kinematic prior and apply it.
+            # The pose is flagged POSE_STALE, and the backend warns and holds position (Phase 4.4).
             dx_res = prior_dx
             dy_res = prior_dy
             dth_res = prior_dtheta
             is_reliable = False
             match_info = {"reason": "NO_POINTS"}
-            self.last_status = "FALLBACK_KINEMATIC_NO_SCAN"
-        elif self.prev_points_2d is None:
-            # First keyframe
-            self.prev_points_2d = curr_cloud
-            self.prev_normals, self.prev_valid_normals = self._compute_point_cloud_normals(curr_cloud)
-            if HAS_CKDTREE:
-                self.prev_kdtree = cKDTree(curr_cloud)
+            self.last_status = "POSE_STALE"
 
-            # Establish room anchor in World Frame
-            c0 = math.cos(self.theta)
-            s0 = math.sin(self.theta)
-            w_xs = c0 * curr_cloud[:, 0] - s0 * curr_cloud[:, 1] + self.x
-            w_ys = s0 * curr_cloud[:, 0] + c0 * curr_cloud[:, 1] + self.y
-            self.anchor_cloud = np.column_stack((w_xs, w_ys)).astype(np.float32)
-            if HAS_CKDTREE:
-                self.anchor_kdtree = cKDTree(self.anchor_cloud)
-            self.anchor_locked = True
-
-            self.last_status = "INITIALIZED_FIRST_SCAN"
-            self.last_computation_time_ms = (time.time() - t0) * 1000.0
-            return self.x, self.y, self.theta, {
-                "status": self.last_status,
-                "latency_ms": round(self.last_computation_time_ms, 2),
-                "is_reliable": True,
-                "dx": 0.0, "dy": 0.0, "dtheta": 0.0
-            }
+            c_stale = math.cos(self.theta)
+            s_stale = math.sin(self.theta)
+            self.x += c_stale * dx_res - s_stale * dy_res
+            self.y += s_stale * dx_res + c_stale * dy_res
+            self.theta = (self.theta + dth_res + math.pi) % (2.0 * math.pi) - math.pi
         else:
             # 2. Tier 1 Primary Localizer: Hector SLAM Gauss-Newton (Scan-to-Map against Anchor Field)
             has_map_geometry = (
@@ -555,6 +591,7 @@ class Lidar2DOdometry:
             dy_res = prior_dy
             dth_res = prior_dtheta
             is_reliable = False
+            lever_arm = getattr(self, "lever_arm_x", 0.08)  # Distance from differential axle to LiDAR center (~8cm)
 
             if has_map_geometry and len(curr_cloud) >= 15:
                 gn_x, gn_y, gn_th, gn_reliable, gn_info = self.match_scan_to_map(
@@ -600,7 +637,7 @@ class Lidar2DOdometry:
                 if is_pivot or abs(v_cmd) < 0.02:
                     max_allowed_step_dist = max(0.06, lever_arm * max(0.05, abs(dth_matched)) * 1.5)
                 else:
-                    max_allowed_step_dist = max(0.04, self.max_physical_speed * dt * 1.8)
+                    max_allowed_step_dist = max(0.08, self.max_physical_speed * dt * 1.8)
                 max_allowed_step_yaw = max(0.30, self.max_physical_yaw_rate * dt * 2.5)
                 dist_step = math.hypot(dx_matched, dy_matched)
                 if dist_step > max_allowed_step_dist or abs(dth_matched) > max_allowed_step_yaw:
@@ -624,11 +661,17 @@ class Lidar2DOdometry:
                     dth_res = prior_dtheta
                     self.last_status = f"FALLBACK_KINEMATIC_{icp_info.get('reason', 'UNKNOWN')}"
                     match_info = icp_info
+                    # Triệt tiêu kẹt reference frame trong quá khứ: làm mới keyframe nếu scan hiện tại có đủ điểm
+                    if len(curr_cloud) >= 10:
+                        self.prev_points_2d = curr_cloud
+                        self.prev_normals, self.prev_valid_normals = self._compute_point_cloud_normals(curr_cloud)
+                        if HAS_CKDTREE:
+                            self.prev_kdtree = cKDTree(curr_cloud)
 
-                # Clamp residual translation during pivot with lever arm tolerance
+                # Clamp residual translation during pivot: in pure rotation (v_cmd=0), axle translation is strictly zero
                 if is_pivot or abs(v_cmd) < 0.02:
                     step_norm = math.hypot(dx_res, dy_res)
-                    max_pivot_trans = max(0.04, lever_arm * abs(dth_res))
+                    max_pivot_trans = max(0.002, abs(v_cmd) * dt + 0.001)
                     if step_norm > max_pivot_trans:
                         dx_res = (dx_res / step_norm) * max_pivot_trans
                         dy_res = (dy_res / step_norm) * max_pivot_trans

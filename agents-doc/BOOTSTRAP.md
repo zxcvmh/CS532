@@ -30,9 +30,9 @@
   1. `01-HieuMe/`: Module Computer Vision hoàn thiện toàn diện (YOLO26-n FP16 2.4M params, Letterbox `640x640`, Floor IPM bù mù LiDAR 16cm chống chia cho 0, Asymmetric Gaussian Proxemics). Đạt **5/5 PASS** trong `test_cv_local.py`.
   2. `02-DuyHieu/`: Module thuật toán A* mới của Duy Hiếu, đột phá tăng tốc bằng nhân C `astar_core.c` (`libastar_core.so`), đạt **0.16 ms** (nhanh gấp **39.38x** baseline cũ), khắc phục lỗi detour và trượt quay spinout.
   3. `03-MinhHieu/`: Web Dashboard hoàn thiện (React 19, FastAPI, WebSocket 10Hz, `jetbot_bridge.py` tự động khởi chạy, bộ công cụ hiệu chuẩn `test-hardware/calibrate_motors.py`).
-  4. `04-hieu-MotionControl/`: Thuật toán điều khiển nâng cao riêng của Team Lead: Dynamic Disparity Extender (DDE), Control Barrier Function (CBF) Safety Filter, LiDAR Odometry, Goal Deceleration. Đạt **3/3 kịch bản động khép vòng PASS 100%**.
+  4. `05-d500lib-motion/`: Thư viện điều hướng thực địa & driver LiDAR D500: Likelihood Field SLAM, Lever-Arm Odometry bù tâm quay vi sai chống trượt gạch men, Single-Pass EDT, Kinodynamic RVO né cản động, Polar Gap Navigation dự phòng, và Pivot Clearance Gating triệt tiêu lỗi Actuation Deadlock ($v=0 \implies \omega=0$).
 - **Hiệu chuẩn động học thực nghiệm (`setup/robot_dynamics.json`):**
-  - `cruise_speed`: 0.10 m/s | `turn_speed`: 0.10 m/s | `max_angular_speed_rads`: 0.28 rad/s (an toàn tuyệt đối trên sàn gạch men, LiDAR Odometry và planning luôn theo kịp).
+  - `cruise_speed`: 0.10 m/s | `turn_speed`: 0.10 m/s | `max_angular_speed_rads`: 0.28 rad/s (an toàn tuyệt đối trên sàn gạch men, Likelihood Field SLAM và planning luôn theo kịp).
 
 ---
 
@@ -94,42 +94,39 @@ Dự án đã trải qua 5 giai đoạn đột phá kỹ thuật cốt tử:
 │   ├── frontend/            # React 19 UI visionOS glassmorphism
 │   ├── test-hardware/       # calibrate_motors.py & robot_dynamics.json
 │   └── jetbot_bridge.py     # Cầu nối phần cứng đọc LiDAR, Camera, Motor
-├── 04-hieu-MotionControl/   # Module Thuật toán Điều khiển Nâng cao của Team Lead
+├── 05-d500lib-motion/       # Module Điều hướng Thực địa & Driver LiDAR D500
 │   ├── planning/
+│   │   ├── astar_planner.py       # A* kết hợp nhân C
 │   │   ├── cbf_safety_filter.py   # Lá chắn Control Barrier Function
-│   │   ├── disparity_extender.py  # Né chướng ngại vật Dynamic Disparity Extender
-│   │   └── lidar_odometry.py      # Định vị quét đối sánh 2D ICP 10Hz
-│   ├── ALGORITHM_STATE.md   # Nhật ký ma trận giả thuyết sa bàn 2m x 1m
-│   └── test_closed_loop_continuous_navigation.py # Test khép vòng 3/3 Scenarios PASS
+│   │   ├── disparity_extender.py  # Né chướng ngại vật Disparity Extender
+│   │   ├── kinodynamic_rvo.py     # Kinodynamic Reciprocal Velocity Obstacles
+│   │   ├── controller.py          # Pivot Clearance Gating & Actuation Control
+│   │   └── lidar_odometry.py      # Định vị quét đối sánh chống trượt sàn gạch
+│   ├── d500_driver.py       # Driver LiDAR D500 qua UART 230400
+│   └── jetbot_bridge.py     # Cầu nối phần cứng tích hợp soft u_spin slew-rate
 └── agents-doc/
     ├── BOOTSTRAP.md         # File này (Context Handover cho Agent mới)
     ├── STATE.md             # Bảng trạng thái living state của dự án
-    └── agents/              # 5 hồ sơ tác nhân nòng cốt
+    └── agents/              # 7 hồ sơ tác nhân nòng cốt
 ```
 
 ---
 
 ## 5. LỆNH CHẠY KIỂM THỬ TRÊN LOCAL PC
 
-Chạy kiểm tra toàn bộ 4 module trên PC bằng môi trường `.venv`:
+Hệ thống đã loại bỏ hoàn toàn các bài test lý thuyết vòng lặp mock LiDAR (vì vô dụng trên phần cứng thật). Quy trình kiểm thử tập trung vào:
 
 ```bash
-# 0. Kiểm định Toàn diện Tính Toàn Vẹn & Chống Hallucination (Harness Auditor)
+# 0. Kiểm định Toàn diện Cú pháp AST & Tính Toàn vẹn Tài liệu (Zero-Hallucination)
 python3 scripts/verify_agent_integrity.py
 
 # 1. Kiểm thử Computer Vision & Floor IPM (01-HieuMe)
 /home/zxcvmh/Projects/CS532/03-MinhHieu/backend/.venv/bin/python 01-HieuMe/test_cv_local.py
 
-# 2. Kiểm thử A* C-Core Engine (02-DuyHieu)
+# 2. Benchmark A* C-Core Engine siêu tốc (02-DuyHieu)
 /home/zxcvmh/Projects/CS532/03-MinhHieu/backend/.venv/bin/python 02-DuyHieu/verify_step1_astar.py
-
-# 3. Kiểm thử Khép Vòng Điều Khiển Nâng Cao DDE + CBF (04-hieu-MotionControl)
-/home/zxcvmh/Projects/CS532/03-MinhHieu/backend/.venv/bin/python 04-hieu-MotionControl/test_closed_loop_continuous_navigation.py
-
-# 4. Kiểm thử Cầu Nối & Khóa Anchor Map (03-MinhHieu)
-/home/zxcvmh/Projects/CS532/03-MinhHieu/backend/.venv/bin/python 03-MinhHieu/backend/test_recovery_and_anchor.py
+/home/zxcvmh/Projects/CS532/03-MinhHieu/backend/.venv/bin/python 02-DuyHieu/bench_hardware_dh.py
 ```
-*(Tất cả bài test đều in `PASS 100%`).*
 
 ---
 

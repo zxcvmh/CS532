@@ -77,7 +77,8 @@ export default function NavigationPanel({
   };
 
   const currentStatus = getStatusConfig(status.status);
-  const progressPercent = Math.min(100, Math.max(0, Math.round(status.progress * 100)));
+  const rawProgress = status.progress ?? 0;
+  const progressPercent = Math.min(100, Math.max(0, Math.round(rawProgress <= 1.0 ? rawProgress * 100 : rawProgress)));
   const isNavigating = ['NAVIGATING', 'PLANNING'].includes(status.status);
 
   // Approximate ETA
