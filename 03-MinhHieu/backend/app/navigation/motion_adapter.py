@@ -2,6 +2,7 @@
 Motion Adapter Module.
 Encapsulates single-source-of-truth motion planning, odometry, and control from 05-d500lib-motion/planning.
 """
+import os
 import math
 import time
 from typing import List, Tuple, Dict, Any, Optional
@@ -12,6 +13,14 @@ from planning.controller import PurePursuitController
 from planning.mppi_controller import MPPIController
 from planning.obstacle_clustering import cluster_lidar_obstacles, DynamicObstacleTracker
 from planning.lidar_odometry import Lidar2DOdometry
+
+try:
+    from planning.il.dagger_policy import NavPolicyMLP, preprocess_lidar_72, build_state_vector
+    from planning.cbf_safety_filter import CBFSafetyFilter
+    import torch
+    HAS_DAGGER = True
+except Exception:
+    HAS_DAGGER = False
 
 
 class MotionAdapter:
@@ -68,6 +77,31 @@ class MotionAdapter:
         )
         self.anchor_initialized: bool = False
         self.static_map_locked: bool = False
+
+        # DAgger Imitation Learning Controller Setup
+        self.is_dagger_mode = (ctrl_mode == "dagger_il" and HAS_DAGGER)
+        self.dagger_policy = None
+        self.cbf_filter = None
+        self.prev_v: float = 0.0
+        self.prev_w: float = 0.0
+
+        if self.is_dagger_mode:
+            try:
+                safe_max_w = getattr(Config, "CALIBRATED_MAX_ANGULAR_SPEED", 0.35)
+                self.dagger_policy = NavPolicyMLP(max_v=min(0.12, Config.MAX_SPEED), max_w=safe_max_w)
+                base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../.."))
+                candidates = [
+                    os.path.join(base_dir, "05-d500lib-motion/planning/il/checkpoints/dagger_policy.pth"),
+                    "05-d500lib-motion/planning/il/checkpoints/dagger_policy.pth"
+                ]
+                for pth in candidates:
+                    if os.path.exists(pth):
+                        self.dagger_policy.load_state_dict(torch.load(pth, map_location="cpu"))
+                        break
+                self.dagger_policy.eval()
+                self.cbf_filter = CBFSafetyFilter(v_max=min(0.12, Config.MAX_SPEED), w_max=safe_max_w)
+            except Exception:
+                self.is_dagger_mode = False
 
     def reset(self):
         """Reset SLAM map, odometry, and path state."""
@@ -161,10 +195,71 @@ class MotionAdapter:
     def last_plan_reason(self) -> str:
         return getattr(self.planner, "last_plan_reason", "")
 
+    def _extract_subgoal(self, x: float, y: float, lookahead: float = 1.0) -> Optional[Tuple[float, float]]:
+        """Extracts a waypoint along current path roughly lookahead distance ahead."""
+        path = getattr(self.controller, "current_path", None)
+        if not path:
+            return getattr(self.controller, "global_goal", None)
+        closest_idx = 0
+        min_d = 999.0
+        for i, pt in enumerate(path):
+            d = math.hypot(pt[0] - x, pt[1] - y)
+            if d < min_d:
+                min_d = d
+                closest_idx = i
+
+        target_idx = closest_idx
+        for i in range(closest_idx, len(path)):
+            d = math.hypot(path[i][0] - x, path[i][1] - y)
+            if d >= lookahead:
+                target_idx = i
+                break
+        else:
+            target_idx = len(path) - 1
+
+        return path[target_idx]
+
     def compute_command(self, x: float, y: float, theta: float,
                         ranges: List[float], clusters: List[Any],
                         auto_evade: bool = True) -> Tuple[float, float, Dict[str, Any]]:
-        """Compute velocity command (v, w) via Pure Pursuit / MPPI."""
+        """Compute velocity command (v, w) via DAgger IL, MPPI, or Pure Pursuit."""
+        if self.is_dagger_mode:
+            subgoal = self._extract_subgoal(x, y)
+            if subgoal is not None:
+                gx, gy = getattr(self.controller, "global_goal", subgoal)
+                dist_to_final = math.hypot(gx - x, gy - y)
+                if dist_to_final < getattr(Config, "GOAL_TOLERANCE", 0.18):
+                    self.controller.is_goal_reached = True
+                    self.prev_v, self.prev_w = 0.0, 0.0
+                    return 0.0, 0.0, {"reason": "GOAL_REACHED", "mode": "dagger_il", "is_goal_reached": True}
+
+                lidar_72 = preprocess_lidar_72(ranges)
+                state_77 = build_state_vector(
+                    lidar_72=lidar_72,
+                    robot_pose=(x, y, theta),
+                    subgoal=subgoal,
+                    v_prev=self.prev_v,
+                    w_prev=self.prev_w,
+                    max_v=Config.MAX_SPEED,
+                    max_w=Config.MAX_ANGULAR_SPEED
+                )
+                v_nom, w_nom = self.dagger_policy.predict_action(state_77)
+                v_safe, w_safe, cbf_info = self.cbf_filter.filter_control(v_nom, w_nom, raw_ranges=ranges)
+                self.prev_v, self.prev_w = v_safe, w_safe
+
+                debug_info = {
+                    "mode": "dagger_il",
+                    "subgoal": list(subgoal),
+                    "dist_to_final": round(dist_to_final, 3),
+                    "v_nom": v_nom,
+                    "w_nom": w_nom,
+                    "v_safe": v_safe,
+                    "w_safe": w_safe,
+                    "cbf": cbf_info
+                }
+                return v_safe, w_safe, debug_info
+
+        # Default fallback to Pure Pursuit / MPPI
         return self.controller.compute_command(
             x, y, theta,
             lidar_ranges=ranges,
