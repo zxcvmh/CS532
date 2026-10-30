@@ -301,8 +301,9 @@ class NavigationCoordinator:
             self.add_event("SUCCESS", "🎯 [ONNX IL] Đã đến đích thành công!")
             return
 
-        # ─── PRIMARY: IMITATION LEARNING ONNX POLICY RUNNER ───
-        if self.il_runner is not None:
+        # ─── PRIMARY: IMITATION LEARNING ONNX POLICY RUNNER (Configurable via USE_IL_NAVIGATION) ───
+        enable_il = os.environ.get("USE_IL_NAVIGATION", "1") == "1"
+        if enable_il and self.il_runner is not None:
             ranges = self.latest_raw_ranges if (hasattr(self, "latest_raw_ranges") and self.latest_raw_ranges) else [3.0] * 360
 
             # Local lookahead waypoint extraction along planned path
