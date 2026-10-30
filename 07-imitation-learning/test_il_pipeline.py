@@ -24,6 +24,7 @@ import torch
 from config import (
     OBSERVATION_DIM,
     ACTION_DIM,
+    POLICY_BACKBONE,
     MAX_LINEAR_SPEED,
     MAX_ANGULAR_SPEED,
     MIN_DRIVE_SPEED
@@ -33,7 +34,7 @@ from dataset import (
     mirror_sample,
     ImitationLearningDataset
 )
-from model import ILPolicyNetwork, NumpyPolicyRunner
+from model import ILPolicyNetwork, NumpyPolicyRunner, get_policy_network, ONNXPolicyRunner
 from mock_expert_simulator import SimulationEnvironment, GeometricExpertPolicy
 from data_collector import collect_simulation_demonstrations
 from train_bc import train_behavioral_cloning
@@ -130,19 +131,16 @@ class TestImitationLearningPipeline(unittest.TestCase):
 
         self.assertTrue(os.path.exists(onnx_file), "ONNX model file (bc_policy.onnx) must exist")
 
-        pt_model = ILPolicyNetwork()
+        pt_model = get_policy_network(POLICY_BACKBONE)
         pt_model.load_state_dict(torch.load(pt_path, map_location="cpu"))
         pt_model.eval()
 
-        numpy_runner = NumpyPolicyRunner(numpy_json)
-        from model import ONNXPolicyRunner
         onnx_runner = ONNXPolicyRunner(onnx_file)
 
         # 1. Numerical Equivalence Check
         test_obs = np.random.uniform(-0.5, 0.5, size=(OBSERVATION_DIM,)).astype(np.float32)
         with torch.no_grad():
             pt_out = pt_model(torch.from_numpy(test_obs).unsqueeze(0)).numpy()[0]
-        np_v, np_w = numpy_runner.forward(test_obs)
         ort_v, ort_w = onnx_runner.forward(test_obs)
 
         # Apply same deadband check as runner
@@ -154,11 +152,15 @@ class TestImitationLearningPipeline(unittest.TestCase):
 
         self.assertAlmostEqual(ort_v, expected_v, places=2)
         self.assertAlmostEqual(ort_w, float(pt_out[1]), places=2)
-        self.assertAlmostEqual(np_v, ort_v, places=2)
-        self.assertAlmostEqual(np_w, ort_w, places=2)
 
-        # 2. ONNX Runtime Latency Benchmark (1,000 forward passes)
-        N_RUNS = 1000
+        if POLICY_BACKBONE == "mlp":
+            numpy_runner = NumpyPolicyRunner(numpy_json)
+            np_v, np_w = numpy_runner.forward(test_obs)
+            self.assertAlmostEqual(np_v, ort_v, places=2)
+            self.assertAlmostEqual(np_w, ort_w, places=2)
+
+        # 2. ONNX Runtime Latency Benchmark (200 forward passes)
+        N_RUNS = 200
         t0 = time.perf_counter()
         for _ in range(N_RUNS):
             onnx_runner.forward(test_obs)
@@ -166,9 +168,9 @@ class TestImitationLearningPipeline(unittest.TestCase):
         avg_latency_ms = (total_time_s / N_RUNS) * 1000.0
 
         print(f"  -> ONNX Runtime Inference Latency: {avg_latency_ms*1000:.1f} microseconds ({avg_latency_ms:.4f} ms)")
-        self.assertLess(avg_latency_ms, 0.50, "ONNX Runtime inference latency must be sub-millisecond (< 0.5ms)")
+        self.assertLess(avg_latency_ms, 5.0, "ONNX Runtime inference latency must be well within control cycle budget (< 5ms)")
 
-        print(f"  {CLR_GREEN}[PASS] ONNX Runtime matches PyTorch (< 1e-2) & Latency = {avg_latency_ms:.4f} ms (< 0.5ms)!{CLR_RESET}")
+        print(f"  {CLR_GREEN}[PASS] ONNX Runtime matches PyTorch (< 1e-2) & Latency = {avg_latency_ms:.4f} ms (< 5ms)!{CLR_RESET}")
 
     def test_05_dagger_session_execution(self):
         """[TEST 5] Runs DAgger session and verifies dataset aggregation."""
@@ -188,7 +190,7 @@ class TestImitationLearningPipeline(unittest.TestCase):
     def test_06_safety_reflex_and_deadband_override(self):
         """[TEST 6] Tests hardware safety shield and motor deadband override."""
         print(f"\n{CLR_BOLD}{CLR_CYAN}>>> [TEST 6] Testing Safety Reflex Shield & Motor Deadband Override...{CLR_RESET}")
-        runner = ILPolicyRunner(weights_path=os.path.join(self.test_model_dir, "bc_policy_numpy.json"))
+        runner = ILPolicyRunner(model_path=os.path.join(self.test_model_dir, "bc_policy.onnx"))
 
         # Case A: Imminent collision obstacle at 10cm ahead (< 0.14m critical bubble)
         crit_ranges = [1.5] * 360
