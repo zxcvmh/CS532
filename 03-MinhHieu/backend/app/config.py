@@ -77,7 +77,7 @@ class Config:
         0.15  # m (safe detour arc in 1m-wide arena, ensures >18cm wall clearance)
     )
     ROBOT_UPDATE_RATE = 25  # Hz
-    NAVIGATION_CONTROLLER = os.environ.get("NAVIGATION_CONTROLLER", "pure_pursuit")  # "pure_pursuit" (default active), "dagger_il", or "mppi"
+    NAVIGATION_CONTROLLER = "pure_pursuit"  # "pure_pursuit" (RPP active) or "mppi"
 
     # Map parameters
     MAP_RESOLUTION = 0.05  # meters per cell

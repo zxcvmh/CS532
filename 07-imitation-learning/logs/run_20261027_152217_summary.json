@@ -1,0 +1,18 @@
+{
+  "session_id": "run_20261027_152217",
+  "duration_seconds": 11.35,
+  "goal_reached": false,
+  "initial_distance_m": 1.567,
+  "final_distance_m": 0.16,
+  "total_path_length_m": 1.43,
+  "trajectory_efficiency_pct": 0.0,
+  "average_latency_ms": 0.395,
+  "max_latency_ms": 1.102,
+  "min_obstacle_clearance_m": 0.25,
+  "avg_obstacle_clearance_m": 0.492,
+  "max_linear_accel_mps2": 0.99,
+  "max_angular_jerk_rads2": 115.25,
+  "deadband_violations": 0,
+  "reflex_triggers": 0,
+  "total_samples": 114
+}
