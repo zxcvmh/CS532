@@ -1,159 +1,121 @@
 # MODULE THỊ GIÁC MÁY TÍNH & BÙ ĐIỂM MÙ LIDAR (COMPUTER VISION & FLOOR IPM)
-## ĐỒ ÁN CS532 — AUTONOMOUS JETBOT NAVIGATION & PERCEPTION SYSTEM
-**Thành viên phụ trách:** Hiếu me  
-**Phạm vi:** Thư mục `01-HieuMe/` (Phát triển PC-First độc lập & Chuyển giao nạp lên JetBot)
+## ĐỒ ÁN CS532 — HỆ THỐNG ĐIỀU HƯỚNG TỰ HÀNH & NÉ VẬT CẢN JETBOT
+**Thành viên phụ trách:** Hiếu Me  
+**Phạm vi:** Gói phần mềm `01-HieuMe/` (Modular Perception & Floor Obstacle Compensation Engine)
 
 ---
 
-## 📌 1. Sứ Mệnh & Đóng Góp Học Thuật (Core Contribution)
+## 📌 1. Sứ Mệnh & Đóng Góp Học Thuật
 
-Cảm biến **LiDAR D500** trên robot quét ngang cố định ở độ cao **$z = 16\text{ cm}$**. Mọi vật cản sát mặt sàn có chiều cao **$< 16\text{ cm}$** (dây điện, ổ cắm, dép, đồ chơi, sách, gờ cửa...) hoàn toàn **"tàng hình"** trước tia laser!
+Cảm biến **LiDAR D500** quét ngang 360° cố định ở độ cao $z = 16\text{ cm}$. Mọi vật thể thấp sát mặt sàn ($z < 16\text{ cm}$) như **dây điện, dép, gờ cửa, sách, đồ chơi** hoàn toàn "vô hình" trước tia laser!
 
-**Module thị giác của Hiếu me** sử dụng camera CSI (IMX219, góc rộng $160^\circ$ FOV, gắn chúc xuống $15^\circ - 20^\circ$) để giải quyết triệt để 2 bài toán:
-1. **Phát hiện đối tượng & Vùng an toàn xã hội (Social Bubble):** Nhận diện người (`person`), tính góc lệch phương vị $\theta_{\text{azimuth}} \in [-80^\circ, +80^\circ]$, cự ly ước lượng và gán bán kính né an toàn $0.90\text{ m}$ (theo quy chuẩn Hall's Proxemics).
-2. **Bù điểm mù sàn nhà bằng Inverse Perspective Mapping (IPM):** Áp dụng ma trận biến đổi phối cảnh ngược $H_{3 \times 3}$ chuyển ảnh camera góc nghiêng thành ảnh nhìn từ trên xuống (Bird's Eye View - BEV), trích xuất danh sách tọa độ mét thực tế 2D của các vật cản thấp sát sàn:
-   $$\text{low\_obstacles} = [[x_1, y_1], [x_2, y_2], ...]$$
-   Dữ liệu này nạp trực tiếp vào **Costmap của Planning (Duy Hiếu)** để xe tự bẻ lái né tránh.
+**Module thị giác máy tính của Hiếu Me** kết hợp Camera CSI IMX219 (góc rộng 160° FOV, chúc 20°) để giải quyết triệt để 2 bài toán:
+1. **Bù điểm mù sàn nhà bằng Inverse Perspective Mapping (IPM):**
+   * Áp dụng ma trận biến đổi phối cảnh ngược $H_{3 \times 3}$ chuyển ảnh camera nghiêng thành Bird's Eye View (BEV).
+   * Phân đoạn vật cản sàn và chiếu trực tiếp sang tọa độ mét robot $(X, Y)$ với lớp bảo vệ triệt tiêu 100% lỗi chia cho 0 ($Z_{\text{cam}} < 10^{-6}$).
+   * Bộ lọc làm mượt thời gian **Temporal Smoothing Filter (EMA $\alpha=0.65$, `min_hits=2`)** chống rung lắc khung gầm và phản xạ khẩn cấp nếu vật cản sát mũi xe $< 0.35\text{m}$.
+   * Dữ liệu `low_obstacles` nạp trực tiếp vào Costmap của Planning (`05-d500lib-motion/planning/slam/costmap_inflation.py`) ở tầng Short-TTL để né tránh an toàn mà không làm bẩn bản đồ SLAM.
+2. **Nhận diện đối tượng & Vùng an toàn xã hội (Asymmetric Gaussian Social Bubble):**
+   * Nhận diện người (`person`) và vật thể dẫn đường bằng YOLO26-n.
+   * Tính góc lệch phương vị $\theta_{\text{azimuth}} \in [-80^\circ, +80^\circ]$ chuẩn quốc tế **ROS REP-103 CCW** (bên trái dương, bên phải âm).
+   * Gán vùng an toàn xã hội hình elip bất đối xứng: trực diện $0.80\text{ m}$, bên sườn $0.40\text{ m}$, phía sau $0.30\text{ m}$ (Hall's Proxemics).
 
 ---
 
-## 📂 2. Cấu Trúc Thư Mục `01-HieuMe/`
+## 📂 2. Cấu Trúc Thư Mục Chuẩn Hóa
 
 ```text
 01-HieuMe/
-├── camera_config.json        # File cấu hình thông số camera, 4 điểm hiệu chuẩn IPM & Safety Margins
-├── floor_ipm.py              # Class FloorIPMTransformer: Biến đổi phối cảnh ngược & chiếu tọa độ mét
-├── camera_loader.py          # Class CameraLoader: Đọc video đa nguồn kèm Zero-Buffer Threaded Grabber
-├── yolo_seg_runner.py        # Class YoloSegRunner: Suy luận YOLOv8 & đóng gói JSON theo INTERFACE.md
-├── pipeline_demo.py          # Script chạy demo đo đạc độ trễ thời gian thực end-to-end
-├── test_live_phone.py        # Script test trực tiếp bằng camera điện thoại (HUD thời gian thực)
-├── test_cv_local.py          # Script unit test độc lập 3 bài kiểm tra trên PC (Pass 100%)
-├── generate_sample_data.py   # Script tự động tạo ảnh sàn 3D giả lập kèm lưới hiệu chuẩn
-├── record.py                 # Script quay video từ CSI camera trên JetBot
-├── health.py                 # Script kiểm tra môi trường & thiết bị
-├── requirements.txt          # Danh sách thư viện Python cần cài đặt
-├── sample_data/              # Thư mục chứa ảnh mẫu sàn nhà
-│   ├── csi_floor_sample.jpg  # Ảnh sàn phối cảnh chuẩn kèm vật cản mẫu
-│   └── jetbot_default_cam.jpg# Bản sao ảnh camera mặc định
-└── readme.md                 # Tài liệu hướng dẫn này
+├── config/
+│   └── camera_config.json      # File cấu hình thông số camera, 4 điểm hiệu chuẩn IPM & Safety Margins
+├── core/
+│   ├── __init__.py             # Export các module cốt lõi
+│   ├── frame_grabber.py        # FrameGrabber: Đọc đa nguồn (CSI, USB, IP MJPEG, ảnh mẫu) kèm Zero-Buffer Thread
+│   ├── floor_ipm.py            # FloorIPMTransformer: Biến đổi IPM & trích xuất vật cản sàn (<16cm)
+│   ├── yolo_detector.py        # YoloDetector: Suy luận YOLO đa backend (TensorRT/ONNX) + Giải mã tensor vector
+│   └── proxemics.py            # Tính toán góc Azimuth (ROS REP-103) & Asymmetric Social Bubble
+├── models/
+│   ├── yolo26n.onnx            # Trọng số ONNX chuẩn (Input 1x3x640x640, Output 1x84x8400)
+│   ├── yolo26n.pt              # Trọng số PyTorch gốc
+│   └── README.md               # Hướng dẫn build TensorRT FP16 .engine bằng trtexec
+├── sample_data/
+│   ├── csi_floor_sample.jpg    # Ảnh sàn phối cảnh chuẩn kèm vật cản mẫu
+│   └── jetbot_default_cam.jpg  # Ảnh camera JetBot mặc định
+├── pipeline.py                 # Pipeline hoàn chỉnh End-to-End: Frame -> Detections + IPM -> JSON Payload
+├── test_cv_pipeline.py         # Bộ kiểm thử Unit Test độc lập 5/5 bài kiểm tra
+├── requirements.txt            # Danh sách thư viện Python cần thiết
+└── README.md                   # Tài liệu hướng dẫn này
 ```
 
 ---
 
-## ⚙️ 3. Cài Đặt Môi Trường (Setup)
+## 🚀 3. Hướng Dẫn Sử Dụng & Kiểm Thử
 
-Cài đặt các thư viện phụ thuộc trên máy tính cá nhân:
+### 3.1. Cài Đặt Môi Trường
 ```bash
 pip install -r 01-HieuMe/requirements.txt
 ```
-*(Yêu cầu: `opencv-python`, `numpy`, `ultralytics`, `onnx`, `onnxruntime`).*
 
----
-
-## 🚀 4. Hướng Dẫn Sử Dụng & Kiểm Thử
-
-### 4.1. Chạy Unit Test Độc Lập Trên PC
-Kiểm tra nạp ảnh mẫu, trích xuất góc Azimuth, Social Bubble, ma trận IPM chống chia cho 0, YOLO26-n Vectorized Runner và chuẩn hợp đồng dữ liệu:
+### 3.2. Chạy Bộ Kiểm Thử Unit Test (Không Cần Phần Cứng Thật)
 ```bash
-python 01-HieuMe/test_cv_local.py
+python 01-HieuMe/test_cv_pipeline.py
 ```
-*(Kết quả: Pass 5/5 bài kiểm tra toàn diện).*
+*(Kiểm tra 5/5 hạng mục: Frame Grabber, Floor IPM & Zero-Division, Azimuth CCW & Proxemics, Vectorized Tensor Decoding, và Hợp đồng dữ liệu JSON).*
 
----
-
-### 4.2. Chạy Demo Pipeline Đo Đạc Hiệu Năng
-Chạy luồng xử lý hoàn chỉnh từ ảnh/camera $\to$ YOLO26-n (ONNX/TensorRT) $\to$ IPM $\to$ JSON:
-```bash
-python 01-HieuMe/pipeline_demo.py
-```
-* **Độ trễ trung bình đo được (CUDA ONNX):** $\approx 14.43\text{ ms}$ (tương đương $\sim 69.3\text{ FPS}$), vượt xa ngân sách thời gian thực $\le 35\text{ ms}$ của đồ án!
-
----
-
-### 4.3. Test Trực Tiếp Bằng Camera Điện Thoại (Live Stream HUD)
-Bạn có thể đặt điện thoại sát sàn (cao $\approx 12\text{ cm}$, chúc xuống $\approx 20^\circ$) để mô phỏng camera JetBot:
-
-* **Cách 1: Qua Cáp USB to Type-C (Khuyên dùng — Không có độ trễ):** //Chưa thử qua
-  Cài app **Iriun Webcam** trên điện thoại và laptop $\to$ cắm cáp USB Type-C $\to$ chạy lệnh:
+### 3.3. Chạy Pipeline Thời Gian Thực
+* **Test với ảnh mẫu / video tĩnh:**
   ```bash
-  $env:PYTHONIOENCODING="utf-8"; python 01-HieuMe/test_live_phone.py -s 1
+  python 01-HieuMe/pipeline.py -s 01-HieuMe/sample_data/csi_floor_sample.jpg
   ```
-  *(Đổi `-s 1` thành `-s 2` hoặc `-s 0` tùy số thứ tự webcam máy bạn).*
-
-* **Cách 2: Qua Wi-Fi bằng app IP Webcam:** // Đã thử qua (Đề xuất test bằng cách này)
-  Mở app **IP Webcam** trên điện thoại, bấm *Start Server*, rồi chạy lệnh:
+* **Test trực tiếp từ luồng MJPEG của JetBot:**
   ```bash
-  $env:PYTHONIOENCODING="utf-8"; python 01-HieuMe/test_live_phone.py -s "http://192.168.x.x:8080/video"
+  python 01-HieuMe/pipeline.py -s "http://192.168.1.11:8080/api/stream/mjpeg"
+  ```
+* **Test với USB Webcam trên Laptop:**
+  ```bash
+  python 01-HieuMe/pipeline.py -s 0
   ```
 
-> Nhấn phím **'q'** hoặc **ESC** trên cửa sổ video để dừng chương trình.
-
 ---
 
-## 📡 5. Chuẩn Hợp Đồng Dữ Liệu Bàn Giao (`agents-doc/INTERFACE.md`)
+## 📡 4. Hợp Đồng Dữ Liệu Tích Hợp (Data Contract)
 
-Mỗi chu kỳ, module xuất ra đúng 1 dictionary JSON sạch sẽ gửi cho Planning và Web Dashboard:
+Mỗi chu kỳ, `CVPipeline.process_frame(frame)` xuất ra đúng 1 dictionary JSON sạch sẽ gửi cho Planning và Backend Dashboard:
 
 ```json
 {
   "timestamp": 1727500000.150,
+  "frame_id": 142,
   "detections": [
     {
+      "class_id": 0,
       "class_name": "person",
       "confidence": 0.88,
-      "azimuth_deg": -15.4,
-      "estimated_dist": 1.85,
-      "safety_margin_m": 0.90
-    },
-    {
-      "class_name": "chair",
-      "confidence": 0.75,
-      "azimuth_deg": 22.1,
-      "estimated_dist": 1.10,
-      "safety_margin_m": 0.35
+      "azimuth_deg": 14.5,
+      "distance": 1.25,
+      "estimated_dist": 1.25,
+      "safety_margin_m": 0.77,
+      "proxemics": {
+        "front_m": 0.80,
+        "side_m": 0.40,
+        "back_m": 0.30
+      },
+      "bbox": [200, 150, 320, 420]
     }
   ],
   "low_obstacles": [
-    [0.65, 0.12],
-    [0.70, -0.15]
-  ]
+    [0.45, 0.08],
+    [0.55, -0.12]
+  ],
+  "social_bubbles": [
+    {
+      "x": 1.21,
+      "y": 0.31,
+      "radius_m": 0.77,
+      "azimuth_deg": 14.5,
+      "distance_m": 1.25
+    }
+  ],
+  "latency_ms": 14.2
 }
 ```
-
-* `detections`: Kích hoạt **Social Bubble** để robot tự động giữ khoảng cách lịch sự $0.9\text{ m}$ khi gặp người.
-* `low_obstacles`: Nạp trực tiếp tọa độ mét vào **Costmap của Duy Hiếu** để xe tự bẻ lái né các vật cản thấp sát sàn.
-
----
-
-## 🛠️ 6. Cấu Hình Tùy Biến (`camera_config.json`)
-
-Mọi thông số hiệu chuẩn vật lý được tách riêng tại [camera_config.json](camera_config.json):
-* `mount_height_m`: Chiều cao camera đặt trên xe (mặc định: $0.12\text{ m}$).
-* `pitch_angle_deg`: Góc nghiêng camera chúc xuống (mặc định: $20.0^\circ$).
-* `source_points`: 4 tọa độ pixel của hình chữ nhật hiệu chuẩn trên sàn. Khi Team Lead chụp ảnh thực tế có thước đo trên sàn, chỉ cần cập nhật 4 tọa độ này là toàn bộ hệ thống khớp ngay lập tức mà không phải sửa mã nguồn!
-
----
-
-## ⚡ 7. Hướng Dẫn Chuyển Giao Nạp Lên Jetson Nano (TensorRT Mode)
-
-Khi JetBot kết nối mạng, Team Lead thực hiện nạp và build Engine TensorRT FP16:
-
-1. **Chuyển giao file sang Jetson Nano:**
-   ```bash
-   scp 01-HieuMe/yolo26n.onnx jetbot@<JETBOT_IP>:~/CS532/01-HieuMe/
-   ```
-
-2. **Biên dịch TensorRT FP16 Engine (Tận dụng 128 CUDA Cores Maxwell):**
-   ```bash
-   /usr/src/tensorrt/bin/trtexec \
-     --onnx=01-HieuMe/yolo26n.onnx \
-     --saveEngine=01-HieuMe/yolo26n.engine \
-     --fp16 \
-     --workspace=512
-   ```
-
-3. **Khởi chạy hệ thống trên Jetson Nano:**
-   ```bash
-   python3 01-HieuMe/pipeline_demo.py
-   ```
-
