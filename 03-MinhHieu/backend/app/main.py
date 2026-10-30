@@ -8,7 +8,6 @@ import asyncio
 import logging
 import json
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from starlette.websockets import WebSocketDisconnected
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, Response
 from fastapi.staticfiles import StaticFiles
