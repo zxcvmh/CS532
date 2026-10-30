@@ -32,6 +32,7 @@ except ImportError:
 from config import (
     OBSERVATION_DIM,
     ACTION_DIM,
+    POLICY_BACKBONE,
     HIDDEN_DIMS,
     MAX_LINEAR_SPEED,
     MAX_ANGULAR_SPEED,
@@ -39,6 +40,20 @@ from config import (
     USE_LAYER_NORM,
     DROPOUT_RATE
 )
+
+if HAS_TORCH:
+    from spiral_nav_policy import SpiralNavPolicy, SpiralNavConfig
+
+    def get_policy_network(backbone: Optional[str] = None, **kwargs) -> nn.Module:
+        """
+        Factory function to instantiate either the state-of-the-art SpiralMLP policy
+        (Mu et al., arXiv:2404.00648v2) or the classical baseline MLP.
+        """
+        chosen = backbone or POLICY_BACKBONE
+        if chosen.lower() == "spiral":
+            return SpiralNavPolicy(**kwargs)
+        return ILPolicyNetwork(**kwargs)
+
 
 
 if HAS_TORCH:

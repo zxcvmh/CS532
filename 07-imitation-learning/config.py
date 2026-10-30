@@ -41,8 +41,16 @@ ROBOT_RADIUS_M = 0.09         # m (JetBot physical chassis radius)
 
 
 # =============================================================================
-# 2. NEURAL NETWORK ARCHITECTURE
+# 2. NEURAL NETWORK ARCHITECTURE (SpiralMLP - Mu et al. arXiv:2404.00648v2)
 # =============================================================================
+POLICY_BACKBONE = "spiral"    # "spiral" (SpiralMLP with Spiral FC) or "mlp" (baseline)
+SPIRAL_EMBED_DIM = 32         # Channel dimension C for spatial tokens
+SPIRAL_DEPTH = 2              # Number of stacked SpiralBlocks
+SPIRAL_MLP_RATIO = 2.0        # Expansion ratio in Channel Mixing MLP
+SPIRAL_MAX_RADIUS = 2         # Maximum spiral offset radius R for 6x6 spatial grid
+SPIRAL_PERIOD = 16            # Trigonometric wave period T for spiral offsets
+
+# Baseline MLP fallback settings
 HIDDEN_DIMS = (64, 64, 32)
 ACTIVATION = "relu"           # "relu", "elu", or "tanh"
 USE_LAYER_NORM = True

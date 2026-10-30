@@ -34,10 +34,11 @@ from config import (
     VAL_SPLIT_RATIO,
     EARLY_STOP_PATIENCE,
     W_LINEAR_LOSS,
-    W_ANGULAR_LOSS
+    W_ANGULAR_LOSS,
+    POLICY_BACKBONE
 )
 from dataset import ImitationLearningDataset
-from model import ILPolicyNetwork
+from model import get_policy_network
 
 
 def train_behavioral_cloning(
@@ -45,8 +46,9 @@ def train_behavioral_cloning(
     model_save_dir: str = "models",
     epochs: int = NUM_EPOCHS,
     batch_size: int = BATCH_SIZE,
-    lr: float = LEARNING_RATE
-) -> Tuple[ILPolicyNetwork, Dict[str, Any]]:
+    lr: float = LEARNING_RATE,
+    backbone: str = POLICY_BACKBONE
+) -> Tuple[nn.Module, Dict[str, Any]]:
     """
     Trains the policy network using Behavioral Cloning.
     """
@@ -79,9 +81,9 @@ def train_behavioral_cloning(
 
     # 2. Model & Optimizer
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"[INFO] Training on compute device: {device}")
+    print(f"[INFO] Training backbone: {backbone.upper()} on compute device: {device}")
 
-    model = ILPolicyNetwork().to(device)
+    model = get_policy_network(backbone=backbone).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=WEIGHT_DECAY)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=COSINE_LR_MIN)
 
@@ -181,11 +183,13 @@ if __name__ == "__main__":
     parser.add_argument("--save-dir", type=str, default="models", help="Directory to save models")
     parser.add_argument("--epochs", type=int, default=NUM_EPOCHS, help="Number of training epochs")
     parser.add_argument("--batch-size", type=int, default=BATCH_SIZE, help="Batch size")
+    parser.add_argument("--backbone", type=str, default=POLICY_BACKBONE, choices=["spiral", "mlp"], help="Backbone architecture")
     args = parser.parse_args()
 
     train_behavioral_cloning(
         data_path=args.data,
         model_save_dir=args.save_dir,
         epochs=args.epochs,
-        batch_size=args.batch_size
+        batch_size=args.batch_size,
+        backbone=args.backbone
     )

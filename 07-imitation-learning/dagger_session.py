@@ -36,13 +36,14 @@ from config import (
     DAGGER_FINETUNE_LR,
     BATCH_SIZE,
     W_LINEAR_LOSS,
-    W_ANGULAR_LOSS
+    W_ANGULAR_LOSS,
+    POLICY_BACKBONE
 )
 from dataset import (
     extract_observation_vector,
     ImitationLearningDataset
 )
-from model import ILPolicyNetwork, NumpyPolicyRunner
+from model import get_policy_network, NumpyPolicyRunner
 from mock_expert_simulator import (
     SimulationEnvironment,
     GeometricExpertPolicy
@@ -54,7 +55,8 @@ def run_dagger_session(
     model_save_dir: str = "models",
     iterations: int = DAGGER_MAX_ITERATIONS,
     episodes_per_iter: int = 15,
-    finetune_epochs: int = DAGGER_FINETUNE_EPOCHS
+    finetune_epochs: int = DAGGER_FINETUNE_EPOCHS,
+    backbone: str = POLICY_BACKBONE
 ) -> Dict[str, Any]:
     """
     Executes complete DAgger interactive aggregation and training loop.
@@ -72,13 +74,17 @@ def run_dagger_session(
 
     # 2. Initialize Model
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = ILPolicyNetwork().to(device)
+    print(f"[DAgger] Initializing backbone: {backbone.upper()} on device: {device}")
+    model = get_policy_network(backbone=backbone).to(device)
 
     # Check if a pre-trained BC model exists to jumpstart
     bc_model_path = os.path.join(model_save_dir, "bc_policy_best.pt")
     if os.path.exists(bc_model_path):
-        print(f"[DAgger] Loading baseline pre-trained BC weights from: {bc_model_path}")
-        model.load_state_dict(torch.load(bc_model_path, map_location=device))
+        try:
+            print(f"[DAgger] Loading baseline pre-trained BC weights from: {bc_model_path}")
+            model.load_state_dict(torch.load(bc_model_path, map_location=device))
+        except Exception as e:
+            print(f"[DAgger] Note: Could not load BC weights (architecture may differ): {e}")
 
     env = SimulationEnvironment()
     expert = GeometricExpertPolicy()
@@ -217,10 +223,12 @@ if __name__ == "__main__":
     parser.add_argument("--data", type=str, default="data/expert_demonstrations.npz", help="Initial dataset")
     parser.add_argument("--save-dir", type=str, default="models", help="Model directory")
     parser.add_argument("--iterations", type=int, default=DAGGER_MAX_ITERATIONS, help="DAgger iterations")
+    parser.add_argument("--backbone", type=str, default=POLICY_BACKBONE, choices=["spiral", "mlp"], help="Backbone architecture")
     args = parser.parse_args()
 
     run_dagger_session(
         initial_dataset_path=args.data,
         model_save_dir=args.save_dir,
-        iterations=args.iterations
+        iterations=args.iterations,
+        backbone=args.backbone
     )
