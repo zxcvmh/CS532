@@ -21,6 +21,10 @@ import unittest
 import numpy as np
 import torch
 
+_this_dir = os.path.dirname(os.path.abspath(__file__))
+if _this_dir not in sys.path:
+    sys.path.insert(0, _this_dir)
+
 from config import (
     OBSERVATION_DIM,
     ACTION_DIM,
@@ -198,14 +202,25 @@ class TestImitationLearningPipeline(unittest.TestCase):
         crit_ranges[5] = 0.11
         crit_ranges[355] = 0.11
 
-        v, w, info = runner.compute_command(
+        # Step 1: Initial sudden obstacle triggers Dynamic Yield (halt)
+        v_yield, w_yield, info_yield = runner.compute_command(
             lidar_ranges_360=crit_ranges,
             goal_x=1.8, goal_y=0.0,
             robot_x=0.0, robot_y=0.0, robot_theta=0.0
         )
+        self.assertEqual(v_yield, 0.0, "Linear velocity must halt on sudden obstacle")
+        self.assertEqual(info_yield["status"], "DYNAMIC_YIELD", "Sudden obstacle must trigger DYNAMIC_YIELD")
+
+        # Step 2: Persistent obstruction after yield period triggers Active Reflex Evade
+        for _ in range(runner.max_yield_steps + 1):
+            v, w, info = runner.compute_command(
+                lidar_ranges_360=crit_ranges,
+                goal_x=1.8, goal_y=0.0,
+                robot_x=0.0, robot_y=0.0, robot_theta=0.0
+            )
 
         self.assertEqual(v, 0.0, "Linear velocity must be zeroed on critical obstacle breach")
-        self.assertEqual(info["status"], "REFLEX_EVADE", "Status must trigger REFLEX_EVADE")
+        self.assertEqual(info["status"], "REFLEX_EVADE", "Persistent obstacle must trigger REFLEX_EVADE")
         self.assertNotEqual(w, 0.0, "Angular velocity must pivot to escape")
 
         # Case B: Deadband enforcement: commanded linear speed must never be in (0, MIN_DRIVE_SPEED)
