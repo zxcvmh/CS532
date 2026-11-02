@@ -45,7 +45,7 @@ ROBOT_RADIUS_M = 0.09         # m (JetBot physical chassis radius)
 # =============================================================================
 POLICY_BACKBONE = "spiral"    # "spiral" (SpiralMLP with Spiral FC) or "mlp" (baseline)
 SPIRAL_EMBED_DIM = 32         # Channel dimension C for spatial tokens
-SPIRAL_DEPTH = 3              # Number of stacked SpiralBlocks (enhanced 3-stage depth)
+SPIRAL_DEPTH = 2              # Number of stacked SpiralBlocks
 SPIRAL_MLP_RATIO = 2.0        # Expansion ratio in Channel Mixing MLP
 SPIRAL_MAX_RADIUS = 2         # Maximum spiral offset radius R for 6x6 spatial grid
 SPIRAL_PERIOD = 16            # Trigonometric wave period T for spiral offsets
