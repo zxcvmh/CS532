@@ -38,7 +38,7 @@ from mock_expert_simulator import (
 
 
 def collect_simulation_demonstrations(
-    num_episodes: int = 30,
+    num_episodes: int = 250,
     max_steps_per_episode: int = 250,
     enable_dart: bool = True,
     output_path: str = "data/expert_demonstrations.npz"
@@ -132,7 +132,7 @@ def collect_simulation_demonstrations(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Collect Imitation Learning Demonstrations")
-    parser.add_argument("--episodes", type=int, default=35, help="Number of episodes to record")
+    parser.add_argument("--episodes", type=int, default=250, help="Number of episodes to record")
     parser.add_argument("--no-dart", action="store_true", help="Disable DART noise injection")
     parser.add_argument("--output", type=str, default="data/expert_demonstrations.npz", help="Output file path")
     args = parser.parse_args()

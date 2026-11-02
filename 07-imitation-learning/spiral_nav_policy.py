@@ -42,7 +42,7 @@ from config import (
 class SpiralNavConfig:
     """Configuration dataclass for SpiralMLP Navigation Policy."""
     embed_dim: int = 32              # Token channel dimension C
-    depth: int = 2                   # Number of SpiralBlocks
+    depth: int = 3                   # Number of SpiralBlocks (enhanced 3-stage depth)
     mlp_ratio: float = 2.0           # Channel mixing MLP expansion ratio
     drop_rate: float = 0.05          # Dropout rate
     num_partitions: int = 2          # k partitions in Spiral FC
