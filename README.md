@@ -98,7 +98,7 @@ Phụ trách: **Hiếu Me**
   python 01-HieuMe/pipeline.py -s 01-HieuMe/sample_data/csi_floor_sample.jpg
 
   # Hoặc đọc trực tiếp từ luồng camera MJPEG của JetBot:
-  python 01-HieuMe/pipeline.py -s "http://192.168.1.11:8080/api/stream/mjpeg"
+  python 01-HieuMe/pipeline.py -s "http://ip_jetbot:8080/api/stream/mjpeg"
   ```
 
 ---

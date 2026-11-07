@@ -24,6 +24,15 @@ from typing import Dict, List, Tuple, Optional, Any, Union
 import numpy as np
 import cv2
 
+if sys.platform.startswith("win"):
+    try:
+        if hasattr(sys.stdout, "reconfigure"):
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        if hasattr(sys.stderr, "reconfigure"):
+            sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 from .floor_ipm import FloorIPMTransformer
 from .proxemics import pixel_to_azimuth_deg, compute_dynamic_proxemics
 

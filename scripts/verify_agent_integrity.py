@@ -17,6 +17,11 @@ import ast
 import re
 from pathlib import Path
 
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+if hasattr(sys.stderr, 'reconfigure'):
+    sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+
 ROOT_DIR = Path(__file__).resolve().parent.parent
 
 # Các module cốt lõi thực tế trên codebase hiện tại

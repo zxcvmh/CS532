@@ -332,3 +332,182 @@ class FloorIPMTransformer:
 
         detected_points.sort(key=lambda p: math.hypot(p[0], p[1]))
         return detected_points
+
+    def segment_floor_obstacles(
+        self,
+        frame: np.ndarray,
+        detections: Optional[List[Dict[str, Any]]] = None,
+        min_contrast: float = 18.0,
+        apply_filter: bool = True
+    ) -> Tuple[np.ndarray, List[Dict[str, Any]]]:
+        """
+        Phân đoạn thích ứng vật cản sàn (< 16cm) trong vùng mù LiDAR:
+          - Tự động lấy mẫu màu sàn nền (Floor Baseline) từ dải chân trước xe (y in [h-30, h-5]).
+          - Tính độ tương phản sai lệch (Contrast Difference) thích ứng với mọi màu sàn và điều kiện chiếu sáng.
+          - Áp dụng Otsu thresholding tự động điều chỉnh ngưỡng tách vật cản.
+          - Loại bỏ vùng Bounding Box của người/ghế đã được YOLO nhận diện.
+          - Trích xuất danh sách chi tiết: Tọa độ mét robot, Bounding box pixel, điểm tiếp xúc sàn, và contour.
+        """
+        h, w = frame.shape[:2]
+        roi_y_start = int(h * 0.65)
+        roi = frame[roi_y_start:h, 0:w]
+
+        gray_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+        blurred = cv2.GaussianBlur(gray_roi, (5, 5), 0)
+
+        # 1. Đo màu sàn chuẩn (Baseline) từ dải sát mũi xe (bottom 25px)
+        baseline_sample = blurred[max(0, blurred.shape[0] - 25):blurred.shape[0] - 5, :]
+        if baseline_sample.size > 0:
+            floor_baseline = float(np.median(baseline_sample))
+        else:
+            floor_baseline = float(np.median(blurred))
+
+        diff = cv2.absdiff(blurred, int(floor_baseline))
+
+        # 2. Ngưỡng phân tách Otsu thích ứng
+        otsu_val, binary = cv2.threshold(diff, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+        # Nếu độ lệch Otsu quá nhỏ (< min_contrast), mặt sàn đồng nhất -> không có vật cản
+        if otsu_val < min_contrast:
+            binary = np.zeros_like(binary)
+        else:
+            # Lọc nhiễu muối tiêu và kết nối các mảnh vỡ của vật thể
+            kernel_open = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+            kernel_close = cv2.getStructuringElement(cv2.MORPH_RECT, (7, 7))
+            binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel_open)
+            binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel_close)
+
+        full_mask = np.zeros((h, w), dtype=np.uint8)
+        full_mask[roi_y_start:h, 0:w] = binary
+
+        # 3. Loại trừ BBox các vật thể lớn (person, chair...) từ YOLO
+        if detections:
+            for det in detections:
+                b = det.get("bbox", [0, 0, 0, 0])
+                bx1, by1, bx2, by2 = int(b[0]), int(b[1]), int(b[2]), int(b[3])
+                full_mask[max(0, by1):min(h, by2), max(0, bx1):min(w, bx2)] = 0
+
+        # 4. Trích xuất contours và tọa độ mét
+        contours, _ = cv2.findContours(full_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        candidates = []
+        raw_pts = []
+
+        for cnt in contours:
+            area = cv2.contourArea(cnt)
+            if area < self.min_area_px or area > self.max_area_px:
+                continue
+
+            pts = cnt.reshape(-1, 2)
+            u_center = float(np.mean(pts[:, 0]))
+            v_bottom = float(np.max(pts[:, 1]))
+
+            # Chỉ xét vật cản nằm trong vùng quan sát mặt sàn
+            if v_bottom < float(h) * 0.60:
+                continue
+
+            xm, ym = self.image_pixel_to_robot_metric(u_center, v_bottom)
+            if xm < 900.0:
+                bx, by, bw, bh = cv2.boundingRect(cnt)
+                raw_pts.append([xm, ym])
+                candidates.append({
+                    "metric": [xm, ym],
+                    "bbox": [bx, by, bx + bw, by + bh],
+                    "contact_px": (int(u_center), int(v_bottom)),
+                    "distance_m": round(math.hypot(xm, ym), 2),
+                    "area_px": int(area),
+                    "contour": cnt
+                })
+
+        # 5. Lọc mượt thời gian Temporal Smoothing Filter
+        if apply_filter and self.temporal_filter is not None:
+            confirmed_points = self.temporal_filter.update(raw_pts)
+            confirmed_obs = []
+            for c in candidates:
+                cx, cy = c["metric"]
+                if any(math.hypot(cx - px, cy - py) < 0.15 for px, py in confirmed_points):
+                    confirmed_obs.append(c)
+            candidates = confirmed_obs
+
+        candidates.sort(key=lambda d: d["distance_m"])
+        return full_mask, candidates
+
+
+def draw_bev_radar(
+    detections: List[Dict[str, Any]],
+    low_obstacles: List[Any],
+    size: int = 180,
+    max_range_m: float = 2.0
+) -> np.ndarray:
+    """
+    Vẽ widget Mini BEV Radar 2D hiển thị trực quan không gian xung quanh JetBot:
+      - Gốc tọa độ robot (0, 0) ở giữa cạnh dưới.
+      - Trục +X hướng lên (tiến về trước).
+      - Trục +Y hướng sang trái.
+      - Vòng tròn cự ly: 0.5m, 1.0m, 1.5m.
+      - Điểm xanh lá: Đối tượng YOLO (người, ghế...).
+      - Điểm cam/đỏ: Vật cản thấp sát sàn (< 16cm).
+    """
+    radar = np.zeros((size, size, 3), dtype=np.uint8)
+    radar[:] = (24, 26, 32)  # Nền tối
+
+    cx = size // 2
+    cy = int(size * 0.88)
+    scale = (size * 0.80) / max_range_m  # px / meter
+
+    # Vẽ các vòng tròn cự ly
+    for r_m in [0.5, 1.0, 1.5]:
+        r_px = int(r_m * scale)
+        if r_px < size:
+            cv2.circle(radar, (cx, cy), r_px, (65, 70, 80), 1, cv2.LINE_AA)
+            cv2.putText(radar, f"{r_m:.1f}m", (cx + 4, cy - r_px + 10),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.28, (130, 135, 145), 1)
+
+    # Vẽ góc nhìn camera (FOV 160° cone)
+    fov_half_rad = math.radians(80.0)
+    ray_len = size * 0.85
+    lx = int(cx - ray_len * math.sin(fov_half_rad))
+    ly = int(cy - ray_len * math.cos(fov_half_rad))
+    rx = int(cx + ray_len * math.sin(fov_half_rad))
+    ry = int(cy - ray_len * math.cos(fov_half_rad))
+    cv2.line(radar, (cx, cy), (lx, ly), (55, 60, 70), 1, cv2.LINE_AA)
+    cv2.line(radar, (cx, cy), (rx, ry), (55, 60, 70), 1, cv2.LINE_AA)
+
+    # Vẽ robot (tam giác xanh cyan hướng lên)
+    bot_pts = np.array([
+        [cx, cy - 8],
+        [cx - 6, cy + 4],
+        [cx + 6, cy + 4]
+    ], dtype=np.int32)
+    cv2.fillPoly(radar, [bot_pts], (255, 180, 0))
+
+    # Vẽ YOLO Detections (chấm xanh lá)
+    for d in detections:
+        dist = d.get("distance", d.get("estimated_dist", 1.0))
+        az = d.get("azimuth_deg", 0.0)
+        cname = d.get("class_name", "")
+        az_rad = math.radians(az)
+        xm = dist * math.cos(az_rad)
+        ym = dist * math.sin(az_rad)
+        px = int(cx - ym * scale)
+        py = int(cy - xm * scale)
+        if 0 <= px < size and 0 <= py < size:
+            cv2.circle(radar, (px, py), 4, (0, 255, 120), -1, cv2.LINE_AA)
+            lbl = "P" if cname == "person" else cname[:1].upper()
+            cv2.putText(radar, lbl, (px - 3, py - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.32, (0, 255, 120), 1)
+
+    # Vẽ Low Obstacles (chấm cam/đỏ + tia vector)
+    for obs in low_obstacles:
+        metric = obs.get("metric", obs) if isinstance(obs, dict) else obs
+        if isinstance(metric, (list, tuple)) and len(metric) >= 2:
+            xm, ym = metric[0], metric[1]
+            px = int(cx - ym * scale)
+            py = int(cy - xm * scale)
+            if 0 <= px < size and 0 <= py < size:
+                cv2.line(radar, (cx, cy), (px, py), (0, 140, 255), 1, cv2.LINE_AA)
+                cv2.circle(radar, (px, py), 5, (0, 80, 255), -1, cv2.LINE_AA)
+                cv2.circle(radar, (px, py), 7, (0, 160, 255), 1, cv2.LINE_AA)
+
+    # Viền khung radar
+    cv2.rectangle(radar, (0, 0), (size - 1, size - 1), (90, 95, 110), 1)
+    cv2.putText(radar, "BEV RADAR (z<16cm)", (6, 14), cv2.FONT_HERSHEY_SIMPLEX, 0.32, (200, 205, 215), 1)
+    return radar

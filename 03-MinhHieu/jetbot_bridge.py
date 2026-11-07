@@ -471,11 +471,18 @@ class MJPEGStreamHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path in ('/api/stream/mjpeg', '/video_feed', '/stream', '/'):
+            # Vô hiệu hóa thuật toán Nagle (TCP_NODELAY) để ép gửi gói tin mạng tức thì, không đệm trễ
+            try:
+                import socket
+                self.request.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            except Exception:
+                pass
             self.send_response(200)
             self.send_header('Content-Type', 'multipart/x-mixed-replace; boundary=frame')
             self.send_header('Access-Control-Allow-Origin', '*')
             self.end_headers()
-            encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 50]
+            # Giảm chất lượng từ 50 xuống 42 để giảm kích thước gói mạng 30-40% mà không ảnh hưởng AI
+            encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 42]
             while True:
                 try:
                     if self.camera_thread and self.camera_thread.latest_frame is not None:
@@ -483,7 +490,8 @@ class MJPEGStreamHandler(BaseHTTPRequestHandler):
                         ret, jpeg = cv2.imencode('.jpg', frame, encode_param)
                         if ret:
                             self.wfile.write(b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + jpeg.tobytes() + b'\r\n')
-                    time.sleep(0.066)  # ~15 FPS native stream
+                            self.wfile.flush()
+                    time.sleep(0.04)  # ~25 FPS stream độ trễ thấp
                 except Exception:
                     break
         elif self.path == '/snapshot':

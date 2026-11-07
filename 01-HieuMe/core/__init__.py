@@ -4,7 +4,7 @@
 Core Computer Vision Modules for CS532 Autonomous JetBot
 """
 
-from .floor_ipm import FloorIPMTransformer, TemporalObstacleFilter
+from .floor_ipm import FloorIPMTransformer, TemporalObstacleFilter, draw_bev_radar
 from .frame_grabber import FrameGrabber, CameraLoader
 from .yolo_detector import YoloDetector, YoloSegRunner, letterbox_blob, decode_yolo_output
 from .proxemics import ProxemicsEngine, pixel_to_azimuth_deg, compute_dynamic_proxemics
@@ -12,6 +12,7 @@ from .proxemics import ProxemicsEngine, pixel_to_azimuth_deg, compute_dynamic_pr
 __all__ = [
     "FloorIPMTransformer",
     "TemporalObstacleFilter",
+    "draw_bev_radar",
     "FrameGrabber",
     "CameraLoader",
     "YoloDetector",
