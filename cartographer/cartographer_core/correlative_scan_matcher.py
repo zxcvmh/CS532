@@ -69,6 +69,14 @@ class RealTimeCorrelativeScanMatcher2D:
         best_score = -1e9
         best_pose = (x0, y0, th0)
 
+        # Precompute probability grid once to avoid millions of floating-point divisions
+        prob_grid = grid.odds / (1.0 + grid.odds)
+        N = len(point_cloud_local)
+
+        inv_res = grid.inv_resolution
+        ox, oy = grid.origin_x, grid.origin_y
+        w, h = grid.width, grid.height
+
         # Precompute rotated point clouds for each candidate angle
         for cand_th in theta_candidates:
             c = math.cos(cand_th)
@@ -81,50 +89,43 @@ class RealTimeCorrelativeScanMatcher2D:
             dth = abs(cand_th - th0)
             rot_penalty = self.rotation_weight * (dth ** 2)
 
-            for dx in dx_candidates:
-                cand_x = x0 + dx
-                trans_x = rot_x + cand_x
+            # Hoist coordinate transformations: compute once per candidate slice (7 instead of 49)
+            cols_list = [np.floor((rot_x + (x0 + dx) - ox) * inv_res).astype(np.int32) for dx in dx_candidates]
+            rows_list = [np.floor((rot_y + (y0 + dy) - oy) * inv_res).astype(np.int32) for dy in dy_candidates]
 
-                for dy in dy_candidates:
-                    cand_y = y0 + dy
-                    trans_y = rot_y + cand_y
+            for dx_idx, dx in enumerate(dx_candidates):
+                cols = cols_list[dx_idx]
+                v_col_mask = (cols >= 0) & (cols < w)
+                if not np.any(v_col_mask):
+                    continue
 
-                    # Penalty for linear translation deviation
-                    trans_penalty = self.translation_weight * (dx * dx + dy * dy)
+                dx_sq = dx * dx
+                for dy_idx, dy in enumerate(dy_candidates):
+                    rows = rows_list[dy_idx]
+                    valid_mask = v_col_mask & (rows >= 0) & (rows < h)
 
-                    # Compute score across points
-                    score_sum = 0.0
-                    valid_pts = 0
-
-                    cols = np.floor((trans_x - grid.origin_x) * grid.inv_resolution).astype(np.int32)
-                    rows = np.floor((trans_y - grid.origin_y) * grid.inv_resolution).astype(np.int32)
-
-                    valid_mask = (cols >= 0) & (cols < grid.width) & (rows >= 0) & (rows < grid.height)
                     if np.any(valid_mask):
                         v_cols = cols[valid_mask]
                         v_rows = rows[valid_mask]
-                        odds_vals = grid.odds[v_rows, v_cols]
-                        # Probability = odds / (1 + odds)
-                        probs = odds_vals / (1.0 + odds_vals)
-                        score_sum = float(np.sum(probs))
-                        valid_pts = int(np.sum(valid_mask))
-
-                    if valid_pts > 0:
-                        norm_score = (score_sum / len(point_cloud_local)) - (trans_penalty + rot_penalty)
+                        score_sum = float(np.sum(prob_grid[v_rows, v_cols]))
+                        trans_penalty = self.translation_weight * (dx_sq + dy * dy)
+                        norm_score = (score_sum / N) - (trans_penalty + rot_penalty)
                         if norm_score > best_score:
                             best_score = norm_score
-                            best_pose = (cand_x, cand_y, cand_th)
+                            best_pose = (x0 + dx, y0 + dy, cand_th)
+
 
         # Local gradient refinement (Ceres emulation) around best discrete candidate
-        refined_pose = self._refine_pose_gradient(grid, point_cloud_local, best_pose)
+        refined_pose = self._refine_pose_gradient(grid, prob_grid, point_cloud_local, best_pose, max_iters=4)
         return refined_pose, max(0.0, best_score)
 
     def _refine_pose_gradient(
         self,
         grid: ProbabilityGrid2D,
+        prob_grid: np.ndarray,
         points: np.ndarray,
         seed_pose: Tuple[float, float, float],
-        max_iters: int = 10
+        max_iters: int = 4
     ) -> Tuple[float, float, float]:
         """Sub-pixel gradient refinement with trust region bounded inside seed cell."""
         x, y, th = seed_pose
@@ -135,7 +136,7 @@ class RealTimeCorrelativeScanMatcher2D:
         max_delta_th = math.radians(2.0)
 
         def eval_score(p: Tuple[float, float, float]) -> float:
-            return self._eval_score(grid, points, p) / N
+            return self._eval_score(grid, prob_grid, points, p) / N
 
         curr_score = eval_score((x, y, th))
         for _ in range(max_iters):
@@ -166,7 +167,7 @@ class RealTimeCorrelativeScanMatcher2D:
 
         return (float(x), float(y), float(th))
 
-    def _eval_score(self, grid: ProbabilityGrid2D, points: np.ndarray, pose: Tuple[float, float, float]) -> float:
+    def _eval_score(self, grid: ProbabilityGrid2D, prob_grid: np.ndarray, points: np.ndarray, pose: Tuple[float, float, float]) -> float:
         px, py, pth = pose
         c = math.cos(pth)
         s = math.sin(pth)
@@ -178,6 +179,6 @@ class RealTimeCorrelativeScanMatcher2D:
         valid = (cols >= 0) & (cols < grid.width) & (rows >= 0) & (rows < grid.height)
         if not np.any(valid):
             return 0.0
-        odds_vals = grid.odds[rows[valid], cols[valid]]
-        return float(np.sum(odds_vals / (1.0 + odds_vals)))
+        return float(np.sum(prob_grid[rows[valid], cols[valid]]))
+
 

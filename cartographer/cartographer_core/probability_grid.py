@@ -127,26 +127,54 @@ class ProbabilityGrid2D:
         - Hit points updated with hit_odds
         """
         origin_col, origin_row = self.world_to_grid(robot_x, robot_y)
-        if not self.is_inside(origin_col, origin_row):
+        w, h = self.width, self.height
+        if not (0 <= origin_col < w and 0 <= origin_row < h):
             return
+
+        min_odds = probability_to_odds(P_MIN)
+        max_odds = probability_to_odds(P_MAX)
+        m_odds = self.miss_odds
+        h_odds = self.hit_odds
+        odds = self.odds
+        obs = self.observed
+        bresenham = self.bresenham_line
 
         for pt in hit_points_world:
             hx, hy = float(pt[0]), float(pt[1])
-            dist = math.hypot(hx - robot_x, hy - robot_y)
-            if dist < 0.05:
+            dist_sq = (hx - robot_x) ** 2 + (hy - robot_y) ** 2
+            if dist_sq < 0.0025:
                 continue
 
-            hit_col, hit_row = self.world_to_grid(hx, hy)
-            line = self.bresenham_line(origin_col, origin_row, hit_col, hit_row)
+            x1, y1 = self.world_to_grid(hx, hy)
+            x0, y0 = origin_col, origin_row
 
-            # Raycast free cells along line (excluding the final hit cell)
-            for fc, fr in line[:-1]:
-                if self.is_inside(fc, fr):
-                    self.apply_odds(fc, fr, self.miss_odds)
+            dx = abs(x1 - x0)
+            dy = abs(y1 - y0)
+            sx = 1 if x0 < x1 else -1
+            sy = 1 if y0 < y1 else -1
+            err = dx - dy
+            curr_x, curr_y = x0, y0
+
+            while curr_x != x1 or curr_y != y1:
+                if 0 <= curr_x < w and 0 <= curr_y < h:
+                    val = odds[curr_y, curr_x] * m_odds
+                    odds[curr_y, curr_x] = max(min_odds, min(max_odds, val))
+                    obs[curr_y, curr_x] = True
+                e2 = 2 * err
+                if e2 > -dy:
+                    err -= dy
+                    curr_x += sx
+                if e2 < dx:
+                    err += dx
+                    curr_y += sy
 
             # Mark hit cell
-            if self.is_inside(hit_col, hit_row):
-                self.apply_odds(hit_col, hit_row, self.hit_odds)
+            if 0 <= x1 < w and 0 <= y1 < h:
+                val = odds[y1, x1] * h_odds
+                odds[y1, x1] = max(min_odds, min(max_odds, val))
+                obs[y1, x1] = True
+
+
 
     def get_probability(self, x: float, y: float) -> float:
         """Query continuous probability via bilinear interpolation."""

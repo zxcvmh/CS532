@@ -150,9 +150,12 @@ class CartographerAdapter:
             score = 1.0
             self.is_first_scan = False
         else:
-            # Match against currently active submap
+            # Match against currently active submap with decimated points (Cartographer Section II-A)
             target_grid = self.submaps_mgr.submaps[0].grid if self.submaps_mgr.submaps else self.global_grid
-            best_pose, score = self.csm.match(target_grid, local_pts, initial_pose=initial_guess)
+            match_pts = local_pts[::3] if len(local_pts) > 90 else local_pts
+            best_pose, score = self.csm.match(target_grid, match_pts, initial_pose=initial_guess)
+
+
 
         self.current_pose = best_pose
         bx, by, bth = best_pose
@@ -249,3 +252,24 @@ class CartographerAdapter:
         # Set cells to free (odd < 0 or prob ~ 0.1)
         self.global_grid.odds[r_start:r_end, c_start:c_end][mask] = probability_to_odds(0.1)
         self.global_grid.observed[r_start:r_end, c_start:c_end][mask] = True
+
+    def world_to_grid(self, x: float, y: float) -> Tuple[int, int]:
+        return self.global_grid.world_to_grid(x, y)
+
+    def grid_to_world(self, col: int, row: int) -> Tuple[float, float]:
+        return self.global_grid.grid_to_world(col, row)
+
+    def is_inside(self, col: int, row: int) -> bool:
+        return self.global_grid.is_inside(col, row)
+
+    def bresenham_line(self, x0: int, y0: int, x1: int, y1: int) -> List[Tuple[int, int]]:
+        return self.global_grid.bresenham_line(x0, y0, x1, y1)
+
+    def insert_obstacle_clusters(self, clusters: List[Any], robot_x: float, robot_y: float, robot_th: float, defer_costmap: bool = False):
+        """Dynamic obstacle cluster ingestion interface."""
+        pass
+
+    def insert_low_obstacles(self, low_obstacles: List[Any], robot_x: float, robot_y: float, robot_th: float, defer_costmap: bool = False):
+        """Low obstacle ingestion interface."""
+        pass
+
