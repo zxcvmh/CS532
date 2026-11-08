@@ -160,3 +160,23 @@ Hệ thống rút gọn tối đa còn **4 Core Agents**, tuân thủ phong các
     + Tỷ lệ thành công nhảy vọt từ $0.0\%$ lên **$60.0\% - 64.0\%$** (vòng 0 & 1) và đạt **$52.0\%$** ở vòng cuối khi mạng tự lái hoàn toàn ($\beta = 0.0$).
     + Xuất checkpoint và ONNX Engine đồng bộ vào `05-d500lib-motion/planning/il/checkpoints/` (`dagger_policy.pth`, `dagger_policy.onnx`).
   - **Kiểm định Toàn vẹn:** `test_dagger_policy.py` **8/8 PASS**, `verify_agent_integrity.py` đạt **100% AST Valid** và **Zero Phantom Paths**. Sẵn sàng bàn giao cho Quality Auditor.
+- **2026-11-05 (Phiên 17 — Tiếp Thu & Phục Hồi Toàn Bộ 5 Hạng Mục Đối Chứng QA Audit):**
+  - **Khôi phục CSM Angular Alignment:**
+    + Trả lại công thức tính điểm chuẩn Hector Likelihood Field: `score = float(np.sum(m_v[v_mask]))`.
+    + Bỏ điều kiện `and not is_stationary` để luôn quét thô $\pm 16^\circ$ đón đầu bước xoay của JetBot.
+  - **Gỡ Bỏ Khóa Cứng Góc Xoay Tại ZUPT:**
+    + Không cưỡng bức `gn_th = self.theta` hay `dth_matched = 0.0` khi `is_stationary`. Chỉ lọc nhiễu tịnh tiến $(x, y)$, giải phóng hoàn toàn góc xoay $\theta$ cho Scan-to-Map hội tụ.
+  - **Phục Hồi Vùng Đệm 1 Ô Chống Xói Mòn Biên:**
+    + Khôi phục ngắt Bresenham 1 ô trước cản `abs(cx - h_col) <= 1 and abs(cy - h_row) <= 1`.
+    + Khôi phục phản hồi cản 1 khung hình `flat[unique_occ] = np.maximum(flat[unique_occ] + l_occ, l_occ)`.
+  - **Khôi Phục Tham Số Log-Odds Mặc Định:**
+    + Trả lại `l_free = -0.50` và `l_max = 5.0` trong `grid_core.py` và `occupancy_grid.py`.
+  - **Kích Hoạt Bảo Vệ Tường Anchor Khỏi Tia Free:**
+    + Bổ sung `if anchor_locked and anchor_mask is not None: free_mask[anchor_mask.ravel()] = False` trước khi trừ log-odds.
+  - **Kiểm định Thực Nghiệm Đối Chứng:**
+    + `unittest discover -s 03-MinhHieu -p "test_*.py"`: **33/33 PASS 100%** (bao gồm `test_04_anchor_wall_locking_and_protection` và `test_01_continuous_360_rotation_stability`).
+    + `test_lidar_odometry.py`: **4/4 PASS 100%** (Độ trễ ICP $0.51\text{ms}$).
+    + `test_narrow_corridor_benchmark.py`: **PASS 100%** ($0.887\text{m}$, 2 waypoints).
+    + `test_algorithm_evasion.py`: **PASS 4/4 100%**.
+    + `test_cv_pipeline.py`: **PASS 5/5 100%**.
+    + `verify_agent_integrity.py`: **100% AST Valid**, **Zero Ghost Paths**.
