@@ -85,12 +85,12 @@ class TelemetryParser:
     @staticmethod
     def ranges_to_points(ranges: List[float], px: float, py: float, pth: float,
                          max_range: float = None) -> List[LidarPoint]:
-        """Transform 360-ray ranges to 2D world coordinates with LiDAR lever arm offset (+0.08m)."""
+        """Transform 360-ray ranges to 2D world coordinates (LiDAR centered at robot origin)."""
         if max_range is None:
             max_range = Config.MAX_RANGE
         points = []
-        lidar_x = px + 0.08 * math.cos(pth)
-        lidar_y = py + 0.08 * math.sin(pth)
+        lidar_x = px
+        lidar_y = py
         for ang_deg, dist in enumerate(ranges):
             if Config.LIDAR_MIN_RANGE <= dist <= max_range:
                 rad = math.radians(ang_deg) + pth
@@ -214,6 +214,10 @@ class TelemetryParser:
             coord.bridge.last_battery_time = time.time()
             coord.bridge.battery_connected = True
 
+        if "linear_vel" in data or "v" in data or "angular_vel" in data or "w" in data:
+            coord.linear_vel = float(data.get("linear_vel", data.get("v", coord.linear_vel)))
+            coord.angular_vel = float(data.get("angular_vel", data.get("w", coord.angular_vel)))
+
         # Deduplicate and synchronize LiDAR scans via ScanGate
         tick = None
         if hasattr(coord, "scan_gate") and coord.scan_gate:
@@ -292,48 +296,20 @@ class TelemetryParser:
                 coord.motion.anchor_initialized = True
 
             now_t = time.time()
-            if now_t - coord._last_map_update >= 0.045:
-                is_rotating = abs(getattr(coord, "angular_vel", 0.0)) > 0.15
-                coord.motion.grid_map.update_scan(
-                    ox,
-                    oy,
-                    oth,
-                    ranges=ranges,
-                    min_valid_range=Config.LIDAR_MIN_RANGE,
-                    max_valid_range=Config.MAPPING_MAX_RANGE,
-                    defer_costmap=True,
-                    is_rotating=is_rotating,
-                )
-                # Phase 3.2/3.3: ONE mutation order, matching the controller's replan path:
-                # clear the (real-radius) footprint, THEN insert the cluster set. The cluster
-                # set is passed unconditionally (Phase 3.4) so feeding an empty list actually
-                # clears stale clusters instead of leaving a ghost behind.
-                coord.motion.grid_map.clear_footprint(
-                    ox,
-                    oy,
-                    radius=Config.ROBOT_RADIUS,
-                    evict_clusters=False,
-                    defer_costmap=True,
-                )
-                if not is_rotating:
-                    coord.motion.grid_map.insert_obstacle_clusters(
-                        valid_cls, ox, oy, oth, defer_costmap=True
-                    )
+            coord._last_map_x = ox
+            coord._last_map_y = oy
+            coord._last_map_th = oth
 
-                # Phase 4.1/4.2: CV low-obstacle detections live in a short-TTL lethal
-                # layer only — they can never harden into the belief map.
-                raw_low = data.get("low_obstacles")
-                if isinstance(raw_low, list):
-                    coord.low_obstacles = raw_low[:32]
-                    coord.motion.grid_map.insert_low_obstacles(
-                        raw_low, ox, oy, oth, defer_costmap=True
-                    )
+            # CV low-obstacle detections
+            raw_low = data.get("low_obstacles")
+            if isinstance(raw_low, list):
+                coord.low_obstacles = raw_low[:32]
 
-                coord.motion.grid_map.update_costmap()
-                coord.map_data = coord.motion.grid_map.to_dashboard_data()
-                coord.map_data_b64 = coord.motion.grid_map.to_dashboard_b64()
-                coord.map_version += 1
-                coord._last_map_update = now_t
+            coord.map_data = coord.motion.to_dashboard_data()
+            coord.map_data_b64 = coord.motion.to_dashboard_b64()
+            coord.map_version += 1
+            coord._last_map_update = now_t
+
 
         raw_dets = data.get("detections")
         dets, yolo_act = cls.parse_detections(data)
@@ -448,26 +424,14 @@ class TelemetryParser:
                 coord.motion.anchor_initialized = True
 
             now_map = time.time()
-            if now_map - coord._last_map_update >= 0.045:
-                coord.motion.grid_map.update_scan(
-                    ox,
-                    oy,
-                    oth,
-                    ranges=ranges,
-                    min_valid_range=Config.LIDAR_MIN_RANGE,
-                    max_valid_range=Config.MAPPING_MAX_RANGE,
-                    defer_costmap=True,
-                    is_rotating=(abs(coord.angular_vel) > 0.15)
-                )
-                if abs(coord.angular_vel) <= 0.15:
-                    coord.motion.grid_map.insert_obstacle_clusters(
-                        valid_cls, ox, oy, oth, defer_costmap=True
-                    )
-                coord.motion.grid_map.update_costmap()
-                coord.map_data = coord.motion.grid_map.to_dashboard_data()
-                coord.map_data_b64 = coord.motion.grid_map.to_dashboard_b64()
-                coord.map_version += 1
-                coord._last_map_update = now_map
+            coord._last_map_x = ox
+            coord._last_map_y = oy
+            coord._last_map_th = oth
+            coord.map_data = coord.motion.to_dashboard_data()
+            coord.map_data_b64 = coord.motion.to_dashboard_b64()
+            coord.map_version += 1
+            coord._last_map_update = now_map
+
 
         # Patch SLAM world pose into the binary packet for instant forward to dashboard
         coord.latest_binary_telemetry = patch_binary_pose(raw_bytes, coord.pose.x, coord.pose.y, coord.pose.theta)

@@ -1,6 +1,6 @@
 """
 Motion Adapter Module.
-Encapsulates single-source-of-truth motion planning, odometry, and control from 05-d500lib-motion/planning.
+Encapsulates single-source-of-truth motion planning, odometry, and control from motion/planning.
 """
 import math
 import time
@@ -12,12 +12,21 @@ from planning.controller import PurePursuitController
 from planning.mppi_controller import MPPIController
 from planning.obstacle_clustering import cluster_lidar_obstacles, DynamicObstacleTracker
 from planning.lidar_odometry import Lidar2DOdometry
+from app.navigation.cartographer_adapter import CartographerAdapter
 
 
 class MotionAdapter:
-    """Interface adapter for A*, Pure Pursuit, MPPI, and LiDAR SLAM Odometry."""
+    """Interface adapter for A*, Pure Pursuit, MPPI, and Cartographer 2D SLAM."""
 
     def __init__(self):
+        self.cartographer = CartographerAdapter(
+            resolution=Config.MAP_RESOLUTION,
+            width=Config.MAP_WIDTH,
+            height=Config.MAP_HEIGHT,
+            robot_radius=Config.ROBOT_RADIUS,
+            inflation_radius=getattr(Config, "INFLATION_RADIUS", 0.045)
+        )
+
         self.grid_map = OccupancyGridMap(
             width=Config.MAP_WIDTH,
             height=Config.MAP_HEIGHT,
@@ -71,6 +80,7 @@ class MotionAdapter:
 
     def reset(self):
         """Reset SLAM map, odometry, and path state."""
+        self.cartographer.reset()
         self.grid_map.reset()
         self.anchor_initialized = False
         self.static_map_locked = False
@@ -79,15 +89,27 @@ class MotionAdapter:
 
     def set_pose(self, x: float, y: float, theta: float):
         """Sets odometry pose without resetting map or reference keyframes."""
+        self.cartographer.current_pose = (float(x), float(y), float(theta))
         if hasattr(self.lidar_odometry, "set_pose"):
             self.lidar_odometry.set_pose(x, y, theta)
 
     def update_odometry(self, ranges: List[float], dt: float,
                         v_cmd: float, w_cmd: float) -> Tuple[float, float, float, Dict[str, Any]]:
-        """Update 2D LiDAR scan matching odometry."""
-        return self.lidar_odometry.update(
-            ranges, dt=dt, v_cmd=v_cmd, w_cmd=w_cmd, grid_map=self.grid_map
-        )
+        """Update 2D LiDAR scan matching odometry via Google Cartographer 2D Core."""
+        ox, oy, oth, info = self.cartographer.update_scan(ranges, dt=dt, v_cmd=v_cmd, w_cmd=w_cmd)
+        self.cartographer.update_costmap()
+        self.grid_map.costmap = self.cartographer.costmap
+        self.grid_map.dist_m = self.cartographer.dist_m
+        return ox, oy, oth, info
+
+    def to_dashboard_data(self) -> Dict[str, Any]:
+        """Produce JSON-compatible int8 occupancy grid map via Cartographer."""
+        return self.cartographer.to_dashboard_data()
+
+    def to_dashboard_b64(self) -> str:
+        """Produce Base64-encoded int8 occupancy grid stream via Cartographer."""
+        return self.cartographer.to_dashboard_b64()
+
 
     def process_clusters(self, ranges: List[float], pose_x: float, pose_y: float,
                          pose_theta: float) -> Tuple[List[Any], List[Dict[str, Any]]]:
@@ -97,7 +119,7 @@ class MotionAdapter:
         raw_clusters = cluster_lidar_obstacles(ranges, min_dist=Config.LIDAR_MIN_RANGE, max_dist=min(6.0, Config.MAX_RANGE))
         env_mode = getattr(Config, "ENVIRONMENT_MODE", "ROOM")
         c_th, s_th = math.cos(pose_theta), math.sin(pose_theta)
-        la = getattr(Config, "LIDAR_LEVER_ARM_X", 0.08)
+        la = 0.0
         lx = pose_x + la * c_th
         ly = pose_y + la * s_th
         tracked = self.obstacle_tracker.update(raw_clusters, robot_pose=(lx, ly, pose_theta))
@@ -114,14 +136,33 @@ class MotionAdapter:
                 if not (bounds[0] <= cw_x <= bounds[1] and bounds[2] <= cw_y <= bounds[3]):
                     continue
 
-            # Classify clusters: Objects > 1.80m are classified as static boundaries/walls rather than dropped
-            is_static_wall = (getattr(cl, "length_m", 0.0) > 1.80 or getattr(cl, "width_m", 0.0) > 1.80)
+            # Classify clusters: check if cluster is WALL_SURFACE, falls on/near static map wall, or is large structure
+            is_wall_type = (getattr(cl, "obstacle_type", "") == "WALL_SURFACE")
+
+            col, row = self.grid_map.grid_core.world_to_grid(cw_x, cw_y)
+            is_wall_cell = False
+            for dr in (-1, 0, 1):
+                for dc in (-1, 0, 1):
+                    nr, nc = row + dr, col + dc
+                    if self.grid_map.grid_core.is_inside(nc, nr):
+                        if self.grid_map.grid_core.log_odds[nr, nc] > 0.6:
+                            is_wall_cell = True
+                            break
+                if is_wall_cell:
+                    break
+
+            is_large_structure = (getattr(cl, "length_m", 0.0) > 0.80 or getattr(cl, "width_m", 0.0) > 0.80)
+            is_static_wall = is_wall_type or is_wall_cell or is_large_structure
+
             if is_static_wall:
                 setattr(cl, "is_static_boundary", True)
+                setattr(cl, "is_wall", True)
+                # Filter out perimeter walls and map boundaries from dynamic obstacle bounding box list
+                continue
 
             valid_clusters.append(cl)
             cd = cl.to_dict()
-            cd["is_wall"] = is_static_wall
+            cd["is_wall"] = False
             cd["centroid_world"] = [cw_x, cw_y]
             cd["bounding_box_world"] = [
                 [

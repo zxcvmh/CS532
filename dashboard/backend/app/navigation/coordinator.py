@@ -85,6 +85,8 @@ class NavigationCoordinator:
     @property
     def is_real_connected(self) -> bool: return self.bridge.is_connected
     @property
+    def cartographer(self): return getattr(self.motion, "cartographer", None)
+    @property
     def grid_map(self): return self.motion.grid_map
     @property
     def controller(self): return self.motion.controller
@@ -94,6 +96,9 @@ class NavigationCoordinator:
     def on_hardware_disconnected(self):
         """Cleanly transition state when physical hardware drops."""
         self._has_reset_real_map = False
+        self._last_map_x = None
+        self._last_map_y = None
+        self._last_map_th = None
         self.add_event("WARNING", "Physical JetBot disconnected. Falling back to simulation.")
 
     def add_event(self, level: str, message: str):
@@ -133,9 +138,10 @@ class NavigationCoordinator:
         """Reset SLAM grid map, trajectory, and odometry."""
         self.pose = RobotPose(x=0.0, y=0.0, theta=0.0)
         self.motion.reset()
-        self.map_data = self.motion.grid_map.to_dashboard_data()
-        self.map_data_b64 = self.motion.grid_map.to_dashboard_b64()
+        self.map_data = self.motion.to_dashboard_data()
+        self.map_data_b64 = self.motion.to_dashboard_b64()
         self.map_version += 1
+
         self.trajectory.clear()
         self.current_scan = LidarScan(points=[])
         self.latest_clusters, self.latest_clusters_dict = [], []
