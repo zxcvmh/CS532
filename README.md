@@ -19,7 +19,7 @@ Dự án được phân rã thành **các module độc lập** theo nguyên t�
 
 ```text
 CS532/
-├── 01-HieuMe/               # [THỊ GIÁC MÁY TÍNH & BÙ ĐIỂM MÙ LIDAR]
+├── perception/               # [THỊ GIÁC MÁY TÍNH & BÙ ĐIỂM MÙ LIDAR]
 │   ├── config/              # Cấu hình camera, 4 điểm hiệu chuẩn Homography IPM & Safety Margins
 │   ├── core/                # Thuật toán cốt lõi: FrameGrabber, FloorIPM, YoloDetector, Proxemics
 │   ├── models/              # Trọng số YOLO26-n ONNX/PT & Hướng dẫn build TensorRT FP16 .engine
@@ -28,25 +28,25 @@ CS532/
 │   ├── test_cv_pipeline.py  # Bộ kiểm thử độc lập 5/5 bài test (Pass 100% không cần phần cứng)
 │   └── requirements.txt     # Thư viện phụ thuộc (opencv-python, numpy, onnxruntime)
 │
-├── 02-DuyHieu/              # [ĐIỀU HƯỚNG C-CORE & BỘ SINH QUỸ ĐẠO CHUYÊN GIA]
+├── navigation/              # [ĐIỀU HƯỚNG C-CORE & BỘ SINH QUỸ ĐẠO CHUYÊN GIA]
 │   ├── planning/            # Nhân thuật toán A* tối ưu bằng C (astar_core.c < 0.2ms)
 │   ├── controller.py        # Curvature Velocity Scaling & Plateau Detour Splicing
 │   └── test_planning_local.py # Script kiểm thử A* và né cản cục bộ trên PC
 │
-├── 03-MinhHieu/             # [GIAO DIỆN WEB VISIONOS & BACKEND ĐIỀU PHỐI]
+├── dashboard/             # [GIAO DIỆN WEB VISIONOS & BACKEND ĐIỀU PHỐI]
 │   ├── frontend/            # Web Dashboard Apple visionOS glassmorphism (React 19 + Vite + Tailwind)
 │   ├── backend/             # Server điều phối FastAPI, WebSocket 10Hz & Telemetry Parser
 │   ├── jetbot_bridge.py     # Cầu nối phần cứng Edge (LiDAR D500, Camera CSI, Động cơ, Mux 50Hz)
 │   └── start_all.sh         # Script khởi động đồng bộ toàn bộ hệ thống
 │
-├── 05-d500lib-motion/       # [SLAM, ODOMETRY & AI IMITATION LEARNING]
+├── motion/       # [SLAM, ODOMETRY & AI IMITATION LEARNING]
 │   ├── d500_driver.py       # Driver LiDAR LDROBOT D500 chuẩn bảng tra CRC-8 & Revolution Sync
 │   ├── planning/            # Tầng quy hoạch: Likelihood Field SLAM, Lever-Arm Odometry, Kinodynamic RVO
 │   │   ├── il/              # Goal-Conditioned DAgger Imitation Learning (149D 1D-CNN Policy)
 │   │   └── slam/            # Multi-layer Decoupled Costmap (Static Anchor, Rolling, Cluster, Low-Obs)
 │   └── robot_dynamics.json  # Cấu hình động học xe thật (tốc độ, deadband động cơ GA25-370)
 │
-├── 06-cartographer/         # [CARTOGRAPHER 2D SLAM & ROS 2 BRIDGE]
+├── cartographer/         # [CARTOGRAPHER 2D SLAM & ROS 2 BRIDGE]
 │   ├── cartographer_core/   # Pipeline thuần Python: Odds ProbabilityGrid, CSM, Submap2D, PoseGraph2D
 │   ├── config/              # Cấu hình Cartographer 2D LUA (REP-103/REP-105 TF Tree)
 │   └── scripts/             # Bridge kết nối ROS 2 và Web Dashboard
@@ -86,65 +86,80 @@ python scripts/verify_agent_integrity.py
 
 ---
 
-### 3.2. Module Thị Giác Máy Tính (`01-HieuMe/`)
+### 3.2. Module Thị Giác Máy Tính (`perception/`)
 Phụ trách: **Hiếu Me**
 * **Chạy bộ Unit Test độc lập (5/5 PASS):**
   ```bash
-  python 01-HieuMe/test_cv_pipeline.py
+  python perception/test_cv_pipeline.py
   ```
 * **Chạy thử nghiệm Pipeline thời gian thực:**
   ```bash
   # Test với ảnh mẫu mặt sàn có sẵn:
-  python 01-HieuMe/pipeline.py -s 01-HieuMe/sample_data/csi_floor_sample.jpg
+  python perception/pipeline.py -s perception/sample_data/csi_floor_sample.jpg
 
   # Hoặc đọc trực tiếp từ luồng camera MJPEG của JetBot:
-  python 01-HieuMe/pipeline.py -s "http://192.168.1.11:8080/api/stream/mjpeg"
+  python perception/pipeline.py -s "http://192.168.1.11:8080/api/stream/mjpeg"
   ```
 
 ---
 
-### 3.3. Module Tìm Đường C-Core (`02-DuyHieu/`)
+### 3.3. Module Tìm Đường C-Core (`navigation/`)
 Phụ trách: **Duy Hiếu**
 * Chạy bộ test tìm đường A* C-core và kiểm tra vượt vật cản:
   ```bash
-  cd 02-DuyHieu
+  cd navigation
   python test_planning_local.py
   python verify_step1_astar.py
   ```
 
 ---
 
-### 3.4. Module Web Dashboard & Backend (`03-MinhHieu/`)
+### 3.4. Module Web Dashboard & Backend (`dashboard/`)
 Phụ trách: **Minh Hiếu / Team Lead**
 * **Khởi động trọn bộ Backend & Web Dashboard:**
   ```bash
-  cd 03-MinhHieu
+  cd dashboard
   bash start_all.sh
   ```
 * **Hoặc khởi động riêng Backend:**
   ```bash
-  cd 03-MinhHieu/backend
+  cd dashboard/backend
   uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
   ```
 * Truy cập Web Dashboard tại: `http://localhost:5173` (Frontend visionOS) và API Docs tại `http://localhost:8000/docs`.
 
 ---
 
-### 3.5. Module SLAM & AI Learning Policy (`05-d500lib-motion/`)
+### 3.5. Module SLAM & AI Learning Policy (`motion/`)
 Phụ trách: **Team Lead / AI Learning Engineer**
 * Chạy kiểm thử chính sách học máy Goal-Conditioned DAgger (8/8 PASS):
   ```bash
-  cd 05-d500lib-motion/planning/il
+  cd motion/planning/il
   python test_dagger_policy.py
   ```
 * Huấn luyện vòng lặp DAgger với môi trường mô phỏng 2D:
   ```bash
-  python dagger_trainer.py
+  python motion/planning/il/dagger_trainer.py
   ```
 
 ---
 
-### 3.6. Điều Khiển Xe Bằng Gamepad / Bàn Phím (`teleop_gamepad.py`)
+### 3.6. Module Google Cartographer 2D SLAM (`cartographer/`)
+Phụ trách: **Team Lead / AI Robotics Researcher**
+* **Chạy Bộ Kiểm Chứng 4 Cấp Độ (Deterministic Quality Audit Suite):**
+  ```bash
+  python dashboard/test_cartographer_audit_suite.py
+  ```
+  *(Kết quả nghiệm thu: 360° pivot drift = 0.0cm, yaw error = 0.00°, obstacle evaporation = 40, throughput = 17.0 Hz, dashboard contract = 100% PASS).*
+* **Chạy bộ kiểm thử hồi quy không hacky locks:**
+  ```bash
+  python -m unittest dashboard/test_no_hacky_locks_regression.py
+  ```
+
+---
+
+### 3.7. Điều Khiển Xe Bằng Gamepad / Bàn Phím (`teleop_gamepad.py`)
+
 * Chế độ tự động nhận diện tay cầm USB / Bluetooth:
   ```bash
   python teleop_gamepad.py
@@ -158,7 +173,7 @@ Phụ trách: **Team Lead / AI Learning Engineer**
 
 ## 📡 4. Hợp Đồng Dữ Liệu Tích Hợp (Data Contracts)
 
-### 4.1. Dữ Liệu Thị Giác (`01-HieuMe` $\to$ Planning / Dashboard)
+### 4.1. Dữ Liệu Thị Giác (`perception` $\to$ Planning / Dashboard)
 ```json
 {
   "timestamp": 1727500000.150,
@@ -200,7 +215,7 @@ Phụ trách: **Team Lead / AI Learning Engineer**
 
 ## 🔒 5. Quy Ước Kỷ Luật Mã Nguồn (Repository Rules)
 
-1. **Ranh giới module:** Mỗi thành viên chỉ chỉnh sửa trong thư mục được phân công (`01-HieuMe/`, `02-DuyHieu/`, `03-MinhHieu/`, `05-d500lib-motion/`).
+1. **Ranh giới module:** Mỗi thành viên chỉ chỉnh sửa trong thư mục được phân công (`perception/`, `navigation/`, `dashboard/`, `motion/`).
 2. **Kiểm tra trước khi commit:** Bắt buộc chạy pass bộ unit test của module và script `verify_agent_integrity.py`.
 3. **Bảo mật & Tối ưu:** Tuyệt đối không commit tệp nhị phân nặng không cần thiết (`.engine`, `node_modules`, `__pycache__`) hoặc tệp cấu hình chứa secret.
 4. **Quy chuẩn điều khiển:** Mọi thuật toán phải tuân thủ nghiêm ngặt các giới hạn an toàn trong [setup/robot_dynamics.json](setup/robot_dynamics.json) ($v \le 0.12\text{ m/s}$, $|\omega| \le 0.35\text{ rad/s}$ trên sàn gạch men).
