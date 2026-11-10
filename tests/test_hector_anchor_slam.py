@@ -58,6 +58,16 @@ class TestHectorAnchorSLAM(unittest.TestCase):
         wall_log_odds = adapter.grid_map.log_odds[wall_mask]
         self.assertTrue(np.all(wall_log_odds >= 1.0), "Anchor walls must not be eroded by free rays!")
 
+    def test_04_costmap_preservation_after_update_costmap(self):
+        adapter = MotionAdapter()
+        room_ranges = [1.0] * 360
+        adapter.update_odometry(room_ranges, dt=0.1, v_cmd=0.0, w_cmd=0.0)
+        nonzeros_before = np.count_nonzero(adapter.grid_map.costmap > 0)
+        self.assertGreater(nonzeros_before, 0, "Costmap should contain inflated obstacles from LiDAR scan")
+        adapter.update_costmap()
+        nonzeros_after = np.count_nonzero(adapter.grid_map.costmap > 0)
+        self.assertEqual(nonzeros_after, nonzeros_before, "update_costmap must not wipe costmap obstacles!")
+
 
 if __name__ == "__main__":
     unittest.main()

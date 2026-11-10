@@ -187,16 +187,11 @@ class MotionAdapter:
         """Update person social safety bubbles from YOLO detections."""
         if hasattr(self.grid_map, "update_social_bubbles_from_detections"):
             self.grid_map.update_social_bubbles_from_detections(detections, robot_x, robot_y, robot_theta, bubble_radius_m=bubble_radius_m)
-        if hasattr(self, "cartographer") and self.cartographer:
-            self.cartographer.update_social_bubbles_from_detections(detections, robot_x, robot_y, robot_theta, bubble_radius_m=bubble_radius_m)
-        self.grid_map.costmap = self.cartographer.costmap
-        self.grid_map.dist_m = self.cartographer.dist_m
+        self.grid_map.update_costmap()
 
     def update_costmap(self):
-        """Recalculate costmap and synchronize to planner grid_map."""
-        self.cartographer.update_costmap()
-        self.grid_map.costmap = self.cartographer.costmap
-        self.grid_map.dist_m = self.cartographer.dist_m
+        """Recalculate costmap directly on active OccupancyGridMap."""
+        self.grid_map.update_costmap()
 
 
     def process_clusters(self, ranges: List[float], pose_x: float, pose_y: float,

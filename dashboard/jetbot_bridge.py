@@ -1106,8 +1106,9 @@ async def bridge_loop(camera: CSICameraThread, lidar: D500LidarThread, yolo: Ten
 
                 async def safe_ws_send(data):
                     async with ws_send_lock:
-                        if getattr(ws, "open", True):
-                            await ws.send(data)
+                        if not getattr(ws, "open", True):
+                            raise ConnectionClosed(1006, "WebSocket already closed")
+                        await ws.send(data)
 
                 async def send_telemetry():
                     last_bat_read = 0.0
@@ -1380,6 +1381,8 @@ async def bridge_loop(camera: CSICameraThread, lidar: D500LidarThread, yolo: Ten
                 done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
                 for t in pending:
                     t.cancel()
+                if pending:
+                    await asyncio.gather(*pending, return_exceptions=True)
                 for t in done:
                     if not t.cancelled() and t.exception():
                         raise t.exception()
