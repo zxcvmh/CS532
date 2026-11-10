@@ -503,13 +503,9 @@ class TelemetryParser:
                 coord._last_map_x = ox
                 coord._last_map_y = oy
                 coord._last_map_th = oth
-                if hasattr(coord.motion, "to_dashboard_data"):
-                    m_dash = coord.motion.to_dashboard_data()
-                    coord.map_data = m_dash.get("data", m_dash) if isinstance(m_dash, dict) else m_dash
+                if hasattr(coord.motion, "to_dashboard_b64"):
                     coord.map_data_b64 = coord.motion.to_dashboard_b64()
-                elif hasattr(coord.motion, "grid_map") and hasattr(coord.motion.grid_map, "to_dashboard_data"):
-                    m_dash = coord.motion.grid_map.to_dashboard_data()
-                    coord.map_data = m_dash.get("data", m_dash) if isinstance(m_dash, dict) else m_dash
+                elif hasattr(coord.motion, "grid_map") and hasattr(coord.motion.grid_map, "to_dashboard_b64"):
                     coord.map_data_b64 = coord.motion.grid_map.to_dashboard_b64()
                 coord.map_version += 1
                 coord._last_map_update = now_map

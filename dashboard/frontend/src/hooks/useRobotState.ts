@@ -87,12 +87,10 @@ export function useRobotState() {
     const rMm = new Uint16Array(lastBinaryMessage, 50, 360);
     rangesMm.current = rMm;
 
-    // Fast coordinate projection for MapViewer canvas
+    // Fast coordinate projection for MapViewer canvas (LiDAR centered at robot origin)
     const pts: LidarPoint[] = [];
-    const cosTh = Math.cos(theta);
-    const sinTh = Math.sin(theta);
-    const lx = x + 0.08 * cosTh;
-    const ly = y + 0.08 * sinTh;
+    const lx = x;
+    const ly = y;
     const deg2rad = Math.PI / 180.0;
     for (let i = 0; i < 360; i++) {
       const dMm = rMm[i];
@@ -163,11 +161,11 @@ export function useRobotState() {
           try {
             const binaryStr = atob(lastMessage.data_b64);
             const len = binaryStr.length;
-            const u8 = new Uint8Array(len);
+            const bytes = new Int8Array(len);
             for (let i = 0; i < len; i++) {
-              u8[i] = binaryStr.charCodeAt(i);
+              bytes[i] = binaryStr.charCodeAt(i);
             }
-            gridData = new Int8Array(u8.buffer);
+            gridData = bytes;
           } catch (e) {
             console.error('Failed to decode base64 map data', e);
           }

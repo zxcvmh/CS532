@@ -67,6 +67,10 @@ class NavigationCoordinator:
         self._last_traj_time = self._last_map_update = self._last_odom_time = 0.0
         self._stop_start_time = self._last_replan_time = self._initial_goal_dist = 0.0
         self._replan_attempts, self._has_reset_real_map = 0, False
+        self._pending_binary_bytes: Optional[bytes] = None
+        self._is_binary_slam_running: bool = False
+        self._pending_real_data: Optional[Dict[str, Any]] = None
+        self._is_real_telemetry_running: bool = False
 
         # Module 07: Imitation Learning ONNX Navigation Policy
         self.il_runner = None
@@ -99,6 +103,11 @@ class NavigationCoordinator:
         self._last_map_x = None
         self._last_map_y = None
         self._last_map_th = None
+        self._min_clock_skew = None
+        self._pending_binary_bytes = None
+        self._pending_real_data = None
+        self._is_binary_slam_running = False
+        self._is_real_telemetry_running = False
         self.add_event("WARNING", "Physical JetBot disconnected. Falling back to simulation.")
 
     def add_event(self, level: str, message: str):
@@ -138,7 +147,8 @@ class NavigationCoordinator:
         """Reset SLAM grid map, trajectory, and odometry."""
         self.pose = RobotPose(x=0.0, y=0.0, theta=0.0)
         self.motion.reset()
-        self.map_data = self.motion.to_dashboard_data()
+        m_dash = self.motion.to_dashboard_data()
+        self.map_data = m_dash.get("data", m_dash) if isinstance(m_dash, dict) else m_dash
         self.map_data_b64 = self.motion.to_dashboard_b64()
         self.map_version += 1
 
@@ -152,9 +162,9 @@ class NavigationCoordinator:
         """Reset pose to origin (0,0,0)."""
         self.pose = RobotPose(x=0.0, y=0.0, theta=0.0)
         self.trajectory.clear()
-        self.motion.lidar_odometry.reset_pose(0.0, 0.0, 0.0)
-        self.motion.grid_map.clear_footprint(
-            0.0, 0.0, radius=Config.ROBOT_RADIUS, evict_clusters=False
+        self.motion.set_pose(0.0, 0.0, 0.0)
+        self.motion.clear_footprint(
+            0.0, 0.0, radius=Config.ROBOT_RADIUS
         )
         self.motion.controller.clear_path()
         self.map_version += 1
@@ -200,19 +210,54 @@ class NavigationCoordinator:
             self.add_event("WARNING", "Navigation cancelled by user")
 
     async def handle_real_telemetry(self, data: Dict[str, Any]):
-        """Ingest raw telemetry from physical JetBot."""
-        TelemetryParser.apply_telemetry(data, self)
+        """Ingest raw telemetry from physical JetBot with zero-blocking conflation."""
+        self._pending_real_data = data
+        if not self._is_real_telemetry_running:
+            self._is_real_telemetry_running = True
+            asyncio.create_task(self._real_telemetry_worker())
+
+    async def _real_telemetry_worker(self):
+        try:
+            while self._pending_real_data is not None:
+                latest = self._pending_real_data
+                self._pending_real_data = None
+                await asyncio.to_thread(TelemetryParser.apply_telemetry, latest, self)
+        except Exception as e:
+            logger.exception(f"Error in real telemetry worker: {e}")
+        finally:
+            self._is_real_telemetry_running = False
 
     async def handle_binary_telemetry(self, raw_bytes: bytes):
-        """Ingest ultra-fast 1,130-byte JB-Binary frame from physical JetBot."""
-        TelemetryParser.apply_binary_telemetry(raw_bytes, self)
+        """Ingest ultra-fast 1,130-byte JB-Binary frame with zero-blocking conflation."""
+        self._pending_binary_bytes = raw_bytes
+        if not self._is_binary_slam_running:
+            self._is_binary_slam_running = True
+            asyncio.create_task(self._binary_telemetry_worker())
+
+    async def _binary_telemetry_worker(self):
+        try:
+            while self._pending_binary_bytes is not None:
+                latest = self._pending_binary_bytes
+                self._pending_binary_bytes = None
+                await asyncio.to_thread(TelemetryParser.apply_binary_telemetry, latest, self)
+        except Exception as e:
+            logger.exception(f"Error in binary telemetry worker: {e}")
+        finally:
+            self._is_binary_slam_running = False
 
     async def handle_camera_frame(self, data: Dict[str, Any]):
         """Ingest asynchronous camera and detection frame from physical JetBot."""
+        now_t = time.time()
+        self.bridge.last_telemetry_time = now_t
+        self.bridge.is_connected = True
+        seq = data.get("scan_seq")
+        if isinstance(seq, int) and seq > self.latest_scan_seq:
+            self.latest_scan_seq = seq
+
         cam = TelemetryParser.parse_camera_frame(data)
         if cam:
             self.streamer.update_frame(cam)
-            self.bridge.last_camera_time = time.time()
+            self.bridge.last_camera_time = now_t
             self.bridge.camera_connected = True
         bat = TelemetryParser.parse_battery(data)
         if bat is not None:
@@ -221,7 +266,7 @@ class NavigationCoordinator:
         dets, yolo_act = TelemetryParser.parse_detections(data)
         if dets.objects or yolo_act:
             self.current_detections = dets
-            self.bridge.last_yolo_time = time.time()
+            self.bridge.last_yolo_time = now_t
             self.bridge.yolo_connected = True
             if raw_dets and isinstance(raw_dets, list):
                 self.motion.grid_map.update_social_bubbles_from_detections(
@@ -457,11 +502,11 @@ class NavigationCoordinator:
         self._last_health_log = now_t
 
         try:
-            raw = self.motion.grid_map.to_dashboard_bytes()
+            raw = self.motion.to_dashboard_bytes()
             total = len(raw) or 1
             unknown = 100.0 * raw.count(b"\xff") / total
             occupied = 100.0 * raw.count(b"\x64") / total
-            free = 100.0 - unknown - occupied
+            free = 100.0 * raw.count(b"\x00") / total
         except Exception:
             unknown = free = occupied = float("nan")
 
@@ -494,9 +539,32 @@ class NavigationCoordinator:
     async def get_battery(self) -> float: return self.battery
     async def get_mode(self) -> str: return self.mode.value
     async def get_map(self) -> MapData:
-        data_copy = self.map_data.copy() if self.map_data is not None else None
-        return MapData(resolution=Config.MAP_RESOLUTION, width=Config.MAP_WIDTH, height=Config.MAP_HEIGHT,
-                       origin_x=Config.MAP_ORIGIN_X, origin_y=Config.MAP_ORIGIN_Y, data=data_copy, data_b64=self.map_data_b64)
+        width = Config.MAP_WIDTH
+        height = Config.MAP_HEIGHT
+        resolution = Config.MAP_RESOLUTION
+        origin_x = Config.MAP_ORIGIN_X
+        origin_y = Config.MAP_ORIGIN_Y
+
+        if hasattr(self.motion, "grid_map") and self.motion.grid_map:
+            gm = self.motion.grid_map
+            width = getattr(gm, "width", width)
+            height = getattr(gm, "height", height)
+            resolution = getattr(gm, "resolution", resolution)
+            origin_x = getattr(gm, "origin_x", origin_x)
+            origin_y = getattr(gm, "origin_y", origin_y)
+
+        # Zero-copy Base64 binary stream directly from MotionAdapter
+        b64_data = self.map_data_b64 or (self.motion.to_dashboard_b64() if hasattr(self.motion, "to_dashboard_b64") else None)
+
+        return MapData(
+            resolution=resolution,
+            width=width,
+            height=height,
+            origin_x=origin_x,
+            origin_y=origin_y,
+            data=None,  # Zero Python list allocation!
+            data_b64=b64_data
+        )
     async def get_lidar_scan(self) -> LidarScan: return self.current_scan
     async def get_camera_frame(self) -> bytes: return self.streamer.get_frame()
     async def get_detections(self) -> DetectionList: return self.current_detections
