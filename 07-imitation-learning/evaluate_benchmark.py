@@ -228,10 +228,13 @@ def evaluate_single_episode(
     collision_reason = ""
     step_count = 0
 
-    # Reset runner internal rate-limiters
-    policy_runner.active_v = 0.0
-    policy_runner.active_w = 0.0
-    policy_runner.last_step_time = 0.0
+    # Reset runner internal rate-limiters and latches
+    if hasattr(policy_runner, "reset"):
+        policy_runner.reset()
+    else:
+        policy_runner.active_v = 0.0
+        policy_runner.active_w = 0.0
+        policy_runner.last_step_time = 0.0
 
     for step in range(episode.max_steps):
         step_count += 1

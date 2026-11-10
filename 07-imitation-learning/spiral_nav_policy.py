@@ -399,13 +399,11 @@ class SpiralNavPolicy(nn.Module):
 
     def export_onnx(self, filepath: str):
         """Exports SpiralNavPolicy directly to standardized ONNX format."""
+        import inspect
         self.eval()
         dummy_input = torch.zeros(1, OBSERVATION_DIM, dtype=torch.float32)
         os.makedirs(os.path.dirname(os.path.abspath(filepath)), exist_ok=True)
-        torch.onnx.export(
-            self,
-            dummy_input,
-            filepath,
+        export_kwargs = dict(
             export_params=True,
             opset_version=14,
             do_constant_folding=True,
@@ -416,4 +414,7 @@ class SpiralNavPolicy(nn.Module):
                 "action": {0: "batch_size"}
             }
         )
+        if "dynamo" in inspect.signature(torch.onnx.export).parameters:
+            export_kwargs["dynamo"] = False
+        torch.onnx.export(self, dummy_input, filepath, **export_kwargs)
         print(f"[ONNX] SpiralNavPolicy successfully exported to: {filepath}")

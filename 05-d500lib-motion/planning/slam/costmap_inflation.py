@@ -117,6 +117,19 @@ class CostmapInflation:
                     r_min, r_max, c_min, c_max, mask = region
                     occ_mask[r_min:r_max, c_min:c_max][mask] = 1
 
+        # Include short-TTL low obstacles (<16cm camera Floor IPM) into occ_mask BEFORE EDT
+        # so they receive full C-space robot_radius lethal inflation + exponential decay gradient
+        if self._low_obstacle_cells:
+            now_low = time.time()
+            expired_low = [i for i, exp in self._low_obstacle_cells.items() if exp <= now_low]
+            for idx in expired_low:
+                del self._low_obstacle_cells[idx]
+            if self._low_obstacle_cells:
+                active_low_idx = np.fromiter(
+                    self._low_obstacle_cells.keys(), dtype=np.intp, count=len(self._low_obstacle_cells)
+                )
+                occ_mask.ravel()[active_low_idx] = 1
+
         self.grid.costmap.fill(0)
 
         if np.any(occ_mask):

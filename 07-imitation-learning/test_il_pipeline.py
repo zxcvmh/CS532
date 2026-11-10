@@ -233,7 +233,18 @@ class TestImitationLearningPipeline(unittest.TestCase):
         if v_clear > 0.0:
             self.assertGreaterEqual(v_clear, MIN_DRIVE_SPEED, f"Commanded v must exceed minimum deadband threshold ({MIN_DRIVE_SPEED})")
 
-        print(f"  {CLR_GREEN}[PASS] Emergency Reflex Shield & Motor Deadband override verified!{CLR_RESET}")
+        # Case C: Sub-16cm low-lying obstacle fusion (camera Floor IPM -> virtual 360 scan)
+        runner.reset()
+        v_low, w_low, info_low = runner.compute_command(
+            lidar_ranges_360=[2.5] * 360,
+            goal_x=1.8, goal_y=0.0,
+            robot_x=0.0, robot_y=0.0, robot_theta=0.0,
+            low_obstacles=[[0.35, 0.03]]  # <16cm obstacle 35cm ahead, +3cm left
+        )
+        self.assertEqual(info_low["status"], "BYPASS_CURVE", "Low-lying <16cm obstacle must trigger C-space BYPASS_CURVE")
+        self.assertLess(w_low, 0.0, "Obstacle slightly on left (+3cm) must steer right (w < 0)")
+
+        print(f"  {CLR_GREEN}[PASS] Emergency Reflex Shield, Low-Obstacle Fusion & Motor Deadband override verified!{CLR_RESET}")
 
 
 def run_all_tests():

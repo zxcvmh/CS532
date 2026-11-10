@@ -142,19 +142,20 @@ class BayesianRaycaster:
             for idx in unique_occ:
                 self.dynamic_obstacle_cells[int(idx)] = now + self.dynamic_ttl
 
-        # Dynamic obstacle cell management
+        # Dynamic obstacle cell management (O(|D|) direct lookup on free_mask)
         if self.dynamic_obstacle_cells:
-            # Ray clearing: if laser ray penetrates through a dynamic cell, clear it immediately
-            free_indices = np.where(free_mask)[0]
-            for f_idx in free_indices:
-                if int(f_idx) in self.dynamic_obstacle_cells:
-                    del self.dynamic_obstacle_cells[int(f_idx)]
-                    flat[f_idx] = min(flat[f_idx], 0.0)
-
-            # Purge stale tracking keys after TTL without wiping un-penetrated physical obstacles
-            stale_keys = [idx for idx, expiry in self.dynamic_obstacle_cells.items() if now >= expiry + 1.5]
-            for idx in stale_keys:
-                del self.dynamic_obstacle_cells[idx]
+            to_delete = []
+            for d_idx, expiry in self.dynamic_obstacle_cells.items():
+                if free_mask[d_idx]:
+                    # Ray clearing: laser ray penetrated through dynamic cell -> clear immediately
+                    to_delete.append(d_idx)
+                    if flat[d_idx] > 0.0:
+                        flat[d_idx] = 0.0
+                elif now >= expiry + 1.5:
+                    # Purge stale tracking keys after TTL without wiping un-penetrated physical obstacles
+                    to_delete.append(d_idx)
+            for d_idx in to_delete:
+                del self.dynamic_obstacle_cells[d_idx]
 
         np.clip(flat, self.grid.l_min, self.grid.l_max, out=flat)
         return self.latest_hit_cells

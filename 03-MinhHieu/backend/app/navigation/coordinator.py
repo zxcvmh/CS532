@@ -168,6 +168,8 @@ class NavigationCoordinator:
         self._initial_goal_dist = math.hypot(x - self.pose.x, y - self.pose.y)
         self.nav_status.distance_remaining = self._initial_goal_dist
         self.nav_status.progress = 0.0
+        if self.il_runner is not None and hasattr(self.il_runner, "reset"):
+            self.il_runner.reset()
         await self.stop()
 
         # Generate visual path line for web dashboard
@@ -211,6 +213,16 @@ class NavigationCoordinator:
         bat = TelemetryParser.parse_battery(data)
         if bat is not None:
             self.battery = bat
+
+        # Ingest <16cm camera Floor-IPM low_obstacles in both JSON and JB-Binary modes
+        raw_low = data.get("low_obstacles")
+        if isinstance(raw_low, list):
+            self.low_obstacles = raw_low[:32]
+            if raw_low:
+                self.motion.grid_map.insert_low_obstacles(
+                    raw_low, self.pose.x, self.pose.y, self.pose.theta, defer_costmap=False
+                )
+
         raw_dets = data.get("detections")
         dets, yolo_act = TelemetryParser.parse_detections(data)
         if dets.objects or yolo_act:
@@ -303,39 +315,46 @@ class NavigationCoordinator:
 
         # ─── PRIMARY: IMITATION LEARNING ONNX POLICY RUNNER (Configurable via USE_IL_NAVIGATION) ───
         enable_il = os.environ.get("USE_IL_NAVIGATION", "1") == "1"
-        if enable_il and self.il_runner is not None:
-            ranges = self.latest_raw_ranges if (hasattr(self, "latest_raw_ranges") and self.latest_raw_ranges) else [3.0] * 360
+        raw_ranges = self.latest_raw_ranges if (hasattr(self, "latest_raw_ranges") and self.latest_raw_ranges) else [3.0] * 360
+        active_low = getattr(self, "low_obstacles", None)
 
-            # Local lookahead waypoint extraction along planned path
-            # For direct/room-scale goals (<= 2.0m), guide directly toward the real destination
-            # to prevent straight-line lookaheads from pinning goals inside obstacles
+        if enable_il and self.il_runner is not None:
+            # Local lookahead waypoint extraction along planned A* path
             tx, ty = gx, gy
-            if rem_dist > 2.0 and hasattr(self, "planned_path") and self.planned_path and self.planned_path.points and len(self.planned_path.points) >= 5:
-                for pt in self.planned_path.points:
+            if rem_dist > 1.35 and hasattr(self, "planned_path") and self.planned_path and self.planned_path.points and len(self.planned_path.points) >= 5:
+                # Find index of path point closest to current robot pose, then look ahead >= 0.60m
+                pts = self.planned_path.points
+                closest_idx = min(
+                    range(len(pts)),
+                    key=lambda idx: math.hypot(pts[idx].x - self.pose.x, pts[idx].y - self.pose.y)
+                )
+                for pt in pts[closest_idx:]:
                     d_pt = math.hypot(pt.x - self.pose.x, pt.y - self.pose.y)
                     if d_pt >= 0.60:
                         tx, ty = pt.x, pt.y
                         break
 
             v, w, info = self.il_runner.compute_command(
-                lidar_ranges_360=ranges,
+                lidar_ranges_360=raw_ranges,
                 goal_x=tx,
                 goal_y=ty,
                 robot_x=self.pose.x,
                 robot_y=self.pose.y,
                 robot_theta=self.pose.theta,
                 curr_v=self.linear_vel,
-                curr_w=self.angular_vel
+                curr_w=self.angular_vel,
+                low_obstacles=active_low,
             )
 
             status_str = info.get("status", "NAVIGATING")
             if status_str == "GOAL_REACHED":
-                await self.stop()
-                self.nav_status.status = NavigationStatusEnum.REACHED
-                self.nav_status.progress = 100.0
-                self.planned_path.points = []
-                self.add_event("SUCCESS", "🎯 [ONNX IL] Đã đến đích thành công!")
-                return
+                if math.hypot(gx - self.pose.x, gy - self.pose.y) <= 0.20:
+                    await self.stop()
+                    self.nav_status.status = NavigationStatusEnum.REACHED
+                    self.nav_status.progress = 100.0
+                    self.planned_path.points = []
+                    self.add_event("SUCCESS", "🎯 [ONNX IL] Đã đến đích thành công!")
+                    return
 
             self.linear_vel, self.angular_vel = v, w
             self.nav_status.velocity = v
@@ -348,10 +367,15 @@ class NavigationCoordinator:
             await self.bridge.send_cmd_vel(v, w, mode=self.mode.value)
             return
 
-        # ─── FALLBACK: Classical Motion Controller ───
+        # ─── FALLBACK: Classical Motion Controller (with <16cm Low-Obstacle Range Fusion) ───
+        fused_ranges = (
+            self.il_runner.fuse_low_obstacles_into_scan(raw_ranges, active_low)
+            if (self.il_runner is not None and active_low)
+            else raw_ranges
+        )
         v, w, info = self.motion.compute_command(
             self.pose.x, self.pose.y, self.pose.theta,
-            self.latest_raw_ranges, self.latest_clusters, auto_evade=True
+            fused_ranges, self.latest_clusters, auto_evade=True
         )
         status_str = info.get("status", "NAVIGATING")
 
