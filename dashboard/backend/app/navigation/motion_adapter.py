@@ -24,7 +24,8 @@ class MotionAdapter:
             width=Config.MAP_WIDTH,
             height=Config.MAP_HEIGHT,
             robot_radius=Config.ROBOT_RADIUS,
-            inflation_radius=getattr(Config, "INFLATION_RADIUS", 0.045)
+            inflation_radius=getattr(Config, "INFLATION_RADIUS", 0.045),
+            arena_bounds=getattr(Config, "ARENA_BOUNDS", None)
         )
 
         self.grid_map = OccupancyGridMap(
@@ -77,38 +78,125 @@ class MotionAdapter:
         )
         self.anchor_initialized: bool = False
         self.static_map_locked: bool = False
+        self._initial_scan_count: int = 0
 
     def reset(self):
         """Reset SLAM map, odometry, and path state."""
-        self.cartographer.reset()
         self.grid_map.reset()
         self.anchor_initialized = False
         self.static_map_locked = False
+        self._initial_scan_count = 0
         self.lidar_odometry.reset_pose(0.0, 0.0, 0.0)
         self.controller.clear_path()
+        if hasattr(self, "cartographer") and self.cartographer:
+            self.cartographer.reset()
 
     def set_pose(self, x: float, y: float, theta: float):
         """Sets odometry pose without resetting map or reference keyframes."""
-        self.cartographer.current_pose = (float(x), float(y), float(theta))
         if hasattr(self.lidar_odometry, "set_pose"):
             self.lidar_odometry.set_pose(x, y, theta)
+        if hasattr(self, "cartographer") and self.cartographer:
+            self.cartographer.current_pose = (float(x), float(y), float(theta))
 
     def update_odometry(self, ranges: List[float], dt: float,
                         v_cmd: float, w_cmd: float) -> Tuple[float, float, float, Dict[str, Any]]:
-        """Update 2D LiDAR scan matching odometry via Google Cartographer 2D Core."""
-        ox, oy, oth, info = self.cartographer.update_scan(ranges, dt=dt, v_cmd=v_cmd, w_cmd=w_cmd)
-        self.cartographer.update_costmap()
-        self.grid_map.costmap = self.cartographer.costmap
-        self.grid_map.dist_m = self.cartographer.dist_m
+        """Update 2D LiDAR scan matching odometry via Hector Scan-to-Map and Dual-Layer Anchor Locking."""
+        # 1. Update pose via Hector SLAM Scan-to-Map
+        ox, oy, oth, info = self.lidar_odometry.update(
+            ranges, dt=dt, v_cmd=v_cmd, w_cmd=w_cmd, grid_map=self.grid_map
+        )
+
+        # 2. Track scan count for initial pristine anchor locking
+        self._initial_scan_count = getattr(self, "_initial_scan_count", 0) + 1
+        if not self.anchor_initialized:
+            if self._initial_scan_count >= 5:
+                # Lock physical static walls from initial sweeps
+                locked = self.grid_map.set_anchor_from_scan(
+                    ranges=ranges,
+                    robot_x=ox,
+                    robot_y=oy,
+                    robot_theta=oth,
+                    max_range=min(6.0, Config.MAX_RANGE)
+                )
+                if locked:
+                    self.anchor_initialized = True
+                    self.static_map_locked = True
+
+        # 3. Update occupancy grid with current scan in stationary World Frame
+        self.grid_map.update_scan(
+            ox, oy, oth, ranges=ranges, max_valid_range=min(6.0, Config.MAX_RANGE), defer_costmap=False
+        )
+
+        # Sync pose to cartographer adapter for backward compatibility if needed
+        if hasattr(self, "cartographer") and self.cartographer:
+            self.cartographer.current_pose = (ox, oy, oth)
+
         return ox, oy, oth, info
 
     def to_dashboard_data(self) -> Dict[str, Any]:
-        """Produce JSON-compatible int8 occupancy grid map via Cartographer."""
-        return self.cartographer.to_dashboard_data()
+        """Produce JSON-compatible int8 occupancy grid map via OccupancyGridMap."""
+        m_data = self.grid_map.to_dashboard_data()
+        return {
+            "width": self.grid_map.width,
+            "height": self.grid_map.height,
+            "resolution": self.grid_map.resolution,
+            "origin_x": self.grid_map.origin_x,
+            "origin_y": self.grid_map.origin_y,
+            "originX": self.grid_map.origin_x,
+            "originY": self.grid_map.origin_y,
+            "data": m_data
+        }
 
     def to_dashboard_b64(self) -> str:
-        """Produce Base64-encoded int8 occupancy grid stream via Cartographer."""
-        return self.cartographer.to_dashboard_b64()
+        """Produce Base64-encoded int8 occupancy grid stream via OccupancyGridMap."""
+        return self.grid_map.to_dashboard_b64()
+
+    def to_dashboard_bytes(self) -> bytes:
+        """Produce raw int8 bytes via OccupancyGridMap."""
+        return self.grid_map.to_dashboard_bytes()
+
+    def clear_footprint(self, x: float, y: float, radius: float = 0.09, **kwargs):
+        """Clear footprint around robot center in GridMap."""
+        if hasattr(self.grid_map, "clear_footprint"):
+            self.grid_map.clear_footprint(x, y, radius=radius, defer_costmap=True)
+        if hasattr(self, "cartographer") and self.cartographer:
+            self.cartographer.clear_footprint(x, y, radius=radius)
+
+    def insert_obstacle_clusters(self, clusters: List[Any], robot_x: float, robot_y: float, robot_th: float, defer_costmap: bool = False):
+        """Ingest dynamic obstacle clusters into decoupled costmap layer."""
+        if hasattr(self.grid_map, "insert_obstacle_clusters"):
+            self.grid_map.insert_obstacle_clusters(clusters, robot_x=robot_x, robot_y=robot_y, robot_theta=robot_th, defer_costmap=defer_costmap)
+        if hasattr(self, "cartographer") and self.cartographer:
+            self.cartographer.insert_obstacle_clusters(clusters, robot_x, robot_y, robot_th, defer_costmap=defer_costmap)
+
+    def insert_low_obstacles(self, low_obstacles: List[Any], robot_x: float, robot_y: float, robot_th: float, defer_costmap: bool = False, ttl_sec: Optional[float] = None):
+        """Ingest floor IPM low obstacles into short-TTL costmap layer."""
+        if hasattr(self.grid_map, "insert_low_obstacles"):
+            self.grid_map.insert_low_obstacles(low_obstacles, robot_x=robot_x, robot_y=robot_y, robot_theta=robot_th, defer_costmap=defer_costmap, ttl_sec=ttl_sec)
+        if hasattr(self, "cartographer") and self.cartographer:
+            self.cartographer.insert_low_obstacles(low_obstacles, robot_x, robot_y, robot_th, defer_costmap=defer_costmap, ttl_sec=ttl_sec)
+
+    def add_social_bubble(self, center_x: float, center_y: float, radius_m: float = 0.40, core_radius_m: float = 0.20):
+        """Add Hall's Proxemics Social Safety Bubble into decoupled costmap layer."""
+        if hasattr(self.grid_map, "add_social_bubble"):
+            self.grid_map.add_social_bubble(center_x, center_y, radius_m=radius_m, core_radius_m=core_radius_m)
+        if hasattr(self, "cartographer") and self.cartographer:
+            self.cartographer.add_social_bubble(center_x, center_y, radius_m=radius_m, core_radius_m=core_radius_m)
+
+    def update_social_bubbles_from_detections(self, detections: list, robot_x: float, robot_y: float, robot_theta: float, bubble_radius_m: float = 0.40):
+        """Update person social safety bubbles from YOLO detections."""
+        if hasattr(self.grid_map, "update_social_bubbles_from_detections"):
+            self.grid_map.update_social_bubbles_from_detections(detections, robot_x, robot_y, robot_theta, bubble_radius_m=bubble_radius_m)
+        if hasattr(self, "cartographer") and self.cartographer:
+            self.cartographer.update_social_bubbles_from_detections(detections, robot_x, robot_y, robot_theta, bubble_radius_m=bubble_radius_m)
+        self.grid_map.costmap = self.cartographer.costmap
+        self.grid_map.dist_m = self.cartographer.dist_m
+
+    def update_costmap(self):
+        """Recalculate costmap and synchronize to planner grid_map."""
+        self.cartographer.update_costmap()
+        self.grid_map.costmap = self.cartographer.costmap
+        self.grid_map.dist_m = self.cartographer.dist_m
 
 
     def process_clusters(self, ranges: List[float], pose_x: float, pose_y: float,

@@ -70,7 +70,7 @@ class OccupancyGridMap:
 
         # 2. Decomposed Subsystems
         self.raycaster = BayesianRaycaster(
-            self.grid_core, lever_arm=0.08, dynamic_ttl=0.80
+            self.grid_core, lever_arm=0.0, dynamic_ttl=0.80
         )
         self.inflation = CostmapInflation(
             self.grid_core,
@@ -245,6 +245,26 @@ class OccupancyGridMap:
     @anchor_map_locked.setter
     def anchor_map_locked(self, val: bool):
         self.anchor.anchor_locked = bool(val)
+
+    @property
+    def anchor_locked(self) -> bool:
+        return self.anchor.anchor_locked
+
+    @anchor_locked.setter
+    def anchor_locked(self, val: bool):
+        self.anchor.anchor_locked = bool(val)
+
+    @property
+    def static_anchor_walls(self) -> Optional[np.ndarray]:
+        return self.anchor.anchor_mask if self.anchor.anchor_locked else None
+
+    @static_anchor_walls.setter
+    def static_anchor_walls(self, val: Optional[np.ndarray]):
+        if val is not None:
+            self.anchor.anchor_mask = val
+            self.anchor.anchor_locked = True
+        else:
+            self.anchor.anchor_locked = False
 
     @property
     def _anchor_log_odds(self) -> Optional[np.ndarray]:
