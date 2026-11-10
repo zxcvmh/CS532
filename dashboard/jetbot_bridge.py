@@ -130,6 +130,10 @@ except ImportError:
 
 try:
     import websockets
+    try:
+        from websockets.exceptions import ConnectionClosed
+    except ImportError:
+        ConnectionClosed = getattr(websockets, "ConnectionClosed", OSError)
 except ImportError:
     print("[ERROR] websockets not found! Run: pip3 install websockets")
     sys.exit(1)
@@ -173,7 +177,20 @@ except Exception:
         print(f"[INFO] Motor running in simulation log mode ({e}).")
 
 def read_ina219_battery():
-    """Reads 3S Li-ion battery voltage from INA219 sensor via I2C (Bus 1, Addr 0x41 or 0x40)."""
+    """Reads 3S Li-ion battery voltage from background json export or INA219 sensor via I2C."""
+    # 1. Prefer background service export (prevents I2C bus contention with battery.py)
+    try:
+        if os.path.exists("/tmp/jetbot_battery.json"):
+            with open("/tmp/jetbot_battery.json", "r") as f:
+                d = json.load(f)
+                pct = float(d.get("percentage", 0.0))
+                volt = float(d.get("voltage", 0.0))
+                if 8.5 <= volt <= 13.5:
+                    return round(pct, 1), round(volt, 2)
+    except Exception:
+        pass
+
+    # 2. Direct SMBus I2C query fallback
     for addr in (0x41, 0x40):
         try:
             from smbus2 import SMBus
@@ -254,11 +271,11 @@ ROBOT_DYNAMICS = {
 }
 
 for _p in (
-    "/home/jetbot/03-MinhHieu/test-hardware/robot_dynamics.json",
+    "/home/jetbot/dashboard/test-hardware/robot_dynamics.json",
     "/home/jetbot/setup/robot_dynamics.json",
     os.path.join(os.path.dirname(__file__), "test-hardware", "robot_dynamics.json"),
     os.path.join(os.path.dirname(__file__), "..", "setup", "robot_dynamics.json"),
-    "03-MinhHieu/test-hardware/robot_dynamics.json",
+    "dashboard/test-hardware/robot_dynamics.json",
     "setup/robot_dynamics.json"
 ):
     try:
@@ -460,6 +477,11 @@ class CSICameraThread(threading.Thread):
 
     def stop(self):
         self.running = False
+        if self.is_alive():
+            try:
+                self.join(timeout=1.5)
+            except Exception:
+                pass
         self._release_cap()
 
 
@@ -468,6 +490,7 @@ class CSICameraThread(threading.Thread):
 # ─────────────────────────────────────────────────────────────
 class MJPEGStreamHandler(BaseHTTPRequestHandler):
     camera_thread = None
+    yolo_thread = None
 
     def do_GET(self):
         if self.path in ('/api/stream/mjpeg', '/video_feed', '/stream', '/'):
@@ -498,6 +521,20 @@ class MJPEGStreamHandler(BaseHTTPRequestHandler):
                     return
             self.send_response(503)
             self.end_headers()
+        elif self.path in ('/api/detections', '/api/meta', '/status'):
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            dets = self.yolo_thread.latest_detections if self.yolo_thread else []
+            low_obs = getattr(self.yolo_thread, "latest_low_obstacles", []) if self.yolo_thread else []
+            resp_data = {
+                "timestamp": time.time(),
+                "detections": dets,
+                "low_obstacles": low_obs,
+            }
+            self.wfile.write(json.dumps(resp_data).encode("utf-8"))
+            return
         else:
             self.send_response(404)
             self.end_headers()
@@ -506,14 +543,15 @@ class MJPEGStreamHandler(BaseHTTPRequestHandler):
         pass  # Suppress continuous access logs in console
 
 
-def start_camera_http_server(camera_thread: CSICameraThread, port: int = 8080):
+def start_camera_http_server(camera_thread: CSICameraThread, yolo_thread: Optional[Any] = None, port: int = 8080):
     MJPEGStreamHandler.camera_thread = camera_thread
+    MJPEGStreamHandler.yolo_thread = yolo_thread
     class ThreadedHTTPServer(socketserver.ThreadingMixIn, HTTPServer):
         daemon_threads = True
         allow_reuse_address = True
     try:
         server = ThreadedHTTPServer(('0.0.0.0', port), MJPEGStreamHandler)
-        print(f"[OK] Native Camera MJPEG Stream active at http://0.0.0.0:{port}/api/stream/mjpeg (also /video_feed)")
+        print(f"[OK] Native Camera MJPEG Stream active at http://0.0.0.0:{port}/api/stream/mjpeg (also /video_feed, /api/detections)")
         t = threading.Thread(target=server.serve_forever, daemon=True)
         t.start()
     except Exception as e:
@@ -527,9 +565,15 @@ from d500_driver import D500OfficialDriver
 try:
     from disparity_extender import DisparityExtender
 except ImportError:
-    _dde_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../05-d500lib-motion/planning"))
-    if _dde_dir not in sys.path:
-        sys.path.insert(0, _dde_dir)
+    _dde_candidates = [
+        os.path.abspath(os.path.join(os.path.dirname(__file__), "../motion/planning")),
+        os.path.abspath(os.path.join(os.path.dirname(__file__), "../05-d500lib-motion/planning")),
+        os.path.abspath(os.path.join(os.path.dirname(__file__), "../navigation/planning")),
+        os.path.abspath(os.path.join(os.path.dirname(__file__), "../02-DuyHieu/planning")),
+    ]
+    for _dde_dir in _dde_candidates:
+        if os.path.isdir(_dde_dir) and _dde_dir not in sys.path:
+            sys.path.insert(0, _dde_dir)
     from disparity_extender import DisparityExtender
 
 class D500LidarThread:
@@ -1050,61 +1094,60 @@ async def bridge_loop(camera: CSICameraThread, lidar: D500LidarThread, yolo: Ten
         try:
             async with websockets.connect(
                 WS_URL,
-                ping_interval=3.0,
-                ping_timeout=3.0,
-                close_timeout=2.0,
+                ping_interval=15.0,
+                ping_timeout=20.0,
+                close_timeout=5.0,
                 max_size=10_000_000
             ) as ws:
                 print(f"[SUCCESS] Connected to Dashboard at {WS_URL}!")
 
                 packer = BinaryTelemetryPacker()
+                ws_send_lock = asyncio.Lock()
+
+                async def safe_ws_send(data):
+                    async with ws_send_lock:
+                        if getattr(ws, "open", True):
+                            await ws.send(data)
+
                 async def send_telemetry():
                     last_bat_read = 0.0
                     current_bat = None
-                    last_cam_send = 0.0
-                    last_json_meta_send = 0.0
                     last_sent_scan_seq = -1
                     last_telemetry_send = 0.0
+                    last_json_meta_send = 0.0
+                    loop = asyncio.get_event_loop()
                     while True:
                         now = time.time()
                         if now - last_bat_read >= 3.0:
-                            bpct, bv = read_ina219_battery()
-                            if bpct is not None:
-                                current_bat = bpct
+                            try:
+                                bpct, bv = await loop.run_in_executor(None, read_ina219_battery)
+                                if bpct is not None:
+                                    current_bat = bpct
+                            except Exception:
+                                pass
                             last_bat_read = now
 
                         scan_seq = getattr(lidar.driver, "scan_sweep_count", 0) if (lidar and hasattr(lidar, "driver")) else 0
                         scan_stamp = getattr(lidar.driver, "latest_timestamp", 0.0) if (lidar and hasattr(lidar, "driver")) else 0.0
 
-                        # Decoupled Camera: Camera frames are served independently via native HTTP (Port 8080)
-                        # to prevent TCP Head-of-Line blocking on 10Hz LiDAR packets.
-                        cam_b64 = None
-                        if STREAM_CAMERA_WS and camera and getattr(camera, "latest_frame", None) is not None and (now - last_cam_send >= 0.12):
-                            try:
-                                frame_small = cv2.resize(camera.latest_frame, (320, 240))
-                                ok, enc = cv2.imencode(".jpg", frame_small, [int(cv2.IMWRITE_JPEG_QUALITY), 42])
-                                if ok:
-                                    cam_b64 = base64.b64encode(enc.tobytes()).decode("ascii")
-                                    last_cam_send = now
-                            except Exception:
-                                pass
-
                         scan_ranges, scan_intensities = lidar.scan_snapshot if lidar else ([], [])
 
-                        # 1. High-rate Zero-Copy Binary Frame (1,130 Bytes) for LiDAR & Real-time Telemetry
+                        # Pure Zero-Copy Binary Frame (1,130 Bytes) for LiDAR & Real-time Telemetry
                         v_active = float(_active_cmd_v)
                         w_active = float(_active_cmd_w)
-                        is_moving = abs(v_active) > 0.005 or abs(w_active) > 0.01
                         has_fresh_scan = (scan_seq != last_sent_scan_seq) and (scan_seq > 0)
                         heartbeat_due = (now - last_telemetry_send >= 0.10)  # at least 10 Hz heartbeat
 
-                        if has_fresh_scan or is_moving or heartbeat_due:
+                        # Rate-limit to 10 Hz matching LiDAR physical revolutions (REP-103/REP-105 standard)
+                        # Eliminates 28Hz flood during movement that caused TCP bufferbloat & latency ramps
+                        if has_fresh_scan or heartbeat_due:
                             near_d = 0.0
                             if scan_ranges:
                                 valid_r = [r for r in scan_ranges if 0.05 < r < 12.0]
                                 if valid_r:
                                     near_d = min(valid_r)
 
+                            frame_stamp = scan_stamp if (has_fresh_scan and scan_stamp > 0 and (now - scan_stamp) < 0.5) else now
                             bin_frame = packer.pack(
                                 pose_x=0.0, pose_y=0.0, pose_theta=0.0,
                                 linear_vel=v_active, angular_vel=w_active,
@@ -1113,22 +1156,31 @@ async def bridge_loop(camera: CSICameraThread, lidar: D500LidarThread, yolo: Ten
                                 cpu_temp=43.5,
                                 ranges_m=scan_ranges,
                                 intensities=scan_intensities,
-                                timestamp=scan_stamp if (has_fresh_scan and scan_stamp > 0) else now,
+                                timestamp=frame_stamp,
                                 seq=scan_seq
                             )
                             try:
-                                await ws.send(bin_frame)
+                                await safe_ws_send(bin_frame)
                                 if has_fresh_scan:
                                     last_sent_scan_seq = scan_seq
                                 last_telemetry_send = now
+                            except (ConnectionClosed, ConnectionError, BrokenPipeError) as ecc:
+                                print(f"[INFO] Telemetry binary frame send failed (connection closed: {ecc}).", flush=True)
+                                raise
                             except Exception as es:
+                                err_str = str(es).lower()
+                                if "closed" in err_str or "1000" in err_str or "1012" in err_str or "broken pipe" in err_str:
+                                    print(f"[INFO] Telemetry socket closed ({es}).", flush=True)
+                                    raise
                                 print(f"[WARN] ws.send binary frame failed: {es}", flush=True)
+                                if not getattr(ws, "open", True):
+                                    raise
 
-                        # 2. AI detections & Metadata Frame (JSON, lightweight ~150B, decoupled from heavy video)
+                        # 2. AI detections & Metadata Frame (JSON, lightweight ~150B, decoupled from video stream)
                         has_yolo_updates = bool(yolo and getattr(yolo, "latest_detections", None))
-                        if cam_b64 is not None or (now - last_json_meta_send >= 0.5) or has_yolo_updates:
+                        if (now - last_json_meta_send >= 0.5) or has_yolo_updates:
                             meta_payload = {
-                                "type": "camera_frame" if cam_b64 is not None else "robot_meta",
+                                "type": "robot_meta",
                                 "timestamp": now,
                                 "scan_seq": scan_seq,
                                 "scan_stamp": scan_stamp,
@@ -1136,13 +1188,22 @@ async def bridge_loop(camera: CSICameraThread, lidar: D500LidarThread, yolo: Ten
                                 "lidar_diag": getattr(lidar, "diagnostics", {}) if lidar else {},
                                 "yolo_active": HAS_TRT and getattr(yolo, "engine", None) is not None
                             }
-                            if cam_b64 is not None:
-                                meta_payload["camera"] = cam_b64
                             if yolo:
                                 meta_payload["detections"] = yolo.latest_detections
                                 meta_payload["low_obstacles"] = getattr(yolo, "latest_low_obstacles", [])
-                            await ws.send(json.dumps(meta_payload))
-                            last_json_meta_send = now
+                            try:
+                                await safe_ws_send(json.dumps(meta_payload))
+                                last_json_meta_send = now
+                            except (ConnectionClosed, ConnectionError, BrokenPipeError) as ecc:
+                                print(f"[INFO] Metadata send failed (connection closed: {ecc}).", flush=True)
+                                raise
+                            except Exception as em:
+                                err_str = str(em).lower()
+                                if "closed" in err_str or "1000" in err_str or "1012" in err_str or "broken pipe" in err_str:
+                                    print(f"[INFO] Metadata socket closed ({em}).", flush=True)
+                                    raise
+                                if not getattr(ws, "open", True):
+                                    raise
 
                         await asyncio.sleep(0.035)  # ~28 FPS responsive rate
 
@@ -1280,7 +1341,7 @@ async def bridge_loop(camera: CSICameraThread, lidar: D500LidarThread, yolo: Ten
                                                 flush=True,
                                             )
                                             try:
-                                                await ws.send(json.dumps({
+                                                await safe_ws_send(json.dumps({
                                                     "type": "front_unverified",
                                                     "status": status,
                                                     "recommended_v_cap": round(crawl, 3),
@@ -1298,7 +1359,7 @@ async def bridge_loop(camera: CSICameraThread, lidar: D500LidarThread, yolo: Ten
                                             last_evade_report = now_l
                                         mux.reflex_stop()
                                         try:
-                                            await ws.send(json.dumps({
+                                            await safe_ws_send(json.dumps({
                                                 "type": "hardware_emergency_brake",
                                                 "reason": f"DDE Boxed in: Front obstacle at {front_d:.2f}m",
                                                 "timestamp": time.time()
@@ -1311,25 +1372,17 @@ async def bridge_loop(camera: CSICameraThread, lidar: D500LidarThread, yolo: Ten
                             except Exception as e:
                                 print(f"[ERROR in hardware_reflex_task] {e}", flush=True)
 
-                tasks = [
-                    asyncio.ensure_future(send_telemetry()),
-                    asyncio.ensure_future(receive_commands()),
-                    asyncio.ensure_future(watchdog_task()),
-                    asyncio.ensure_future(hardware_reflex_task()),
-                ]
-                try:
-                    done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-                    for t in pending:
-                        t.cancel()
-                    await asyncio.gather(*pending, return_exceptions=True)
-                    for t in done:
-                        if not t.cancelled() and t.exception():
-                            raise t.exception()
-                finally:
-                    for t in tasks:
-                        if not t.done():
-                            t.cancel()
-                    await asyncio.gather(*tasks, return_exceptions=True)
+                t_send = asyncio.ensure_future(send_telemetry())
+                t_recv = asyncio.ensure_future(receive_commands())
+                t_watch = asyncio.ensure_future(watchdog_task())
+                t_reflex = asyncio.ensure_future(hardware_reflex_task())
+                tasks = [t_send, t_recv, t_watch, t_reflex]
+                done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+                for t in pending:
+                    t.cancel()
+                for t in done:
+                    if not t.cancelled() and t.exception():
+                        raise t.exception()
 
         except Exception as e:
             print(f"[DISCONNECTED] Lost connection ({e}). Reconnecting in 2 seconds...")
@@ -1377,13 +1430,14 @@ def main():
 
     cam = CSICameraThread()
     cam.start()
-    start_camera_http_server(cam, port=8080)
 
     lidar = D500LidarThread(port=LIDAR_PORT, baudrate=LIDAR_BAUDRATE)
     lidar.start()
 
     yolo = TensorRTYOLOThread(camera_thread=cam, lidar_thread=lidar, engine_path=ENGINE_PATH)
     yolo.start()
+
+    start_camera_http_server(cam, yolo_thread=yolo, port=8080)
 
     try:
         loop = asyncio.get_event_loop()

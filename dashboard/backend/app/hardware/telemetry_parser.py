@@ -170,16 +170,21 @@ class TelemetryParser:
             raw_diff = now - scan_t
             # Adaptive Clock Skew Filter: tracks baseline offset between Jetson and Laptop clocks
             min_skew = getattr(coord, "_min_clock_skew", None)
-            if min_skew is None or raw_diff < min_skew:
-                coord._min_clock_skew = raw_diff
-                min_skew = raw_diff
-            elif (now - getattr(coord, "_last_skew_reset_time", now)) > 60.0:
-                # Slowly adapt baseline every 60s against clock drift
+            if min_skew is None:
                 coord._min_clock_skew = raw_diff
                 coord._last_skew_reset_time = now
                 min_skew = raw_diff
+            elif raw_diff < min_skew:
+                coord._min_clock_skew = raw_diff
+                min_skew = raw_diff
+            elif (now - getattr(coord, "_last_skew_reset_time", now)) > 30.0:
+                # Slowly track long-term crystal drift (at most 2ms per 30s) without jitter spikes
+                drift_step = min(0.002, max(-0.002, (raw_diff - min_skew) * 0.05))
+                coord._min_clock_skew = min_skew + drift_step
+                coord._last_skew_reset_time = now
+                min_skew = coord._min_clock_skew
 
-            true_lag_ms = max(0.0, (raw_diff - min_skew) * 1000.0)
+            true_lag_ms = max(0.0, min(999.0, (raw_diff - min_skew) * 1000.0))
             if abs(min_skew) > 0.05:
                 lag_str = f" | Độ trễ: {true_lag_ms:.0f}ms (lệch đồng hồ: {min_skew*1000.0:+.0f}ms)"
             else:
@@ -195,7 +200,11 @@ class TelemetryParser:
         """Applies parsed telemetry to the NavigationCoordinator instance."""
         if not coord._has_reset_real_map:
             coord.motion.reset()
-            coord.map_data = coord.motion.grid_map.to_dashboard_data()
+            if hasattr(coord.motion, "to_dashboard_data"):
+                m_dash = coord.motion.to_dashboard_data()
+            else:
+                m_dash = coord.motion.grid_map.to_dashboard_data()
+            coord.map_data = m_dash.get("data", m_dash) if isinstance(m_dash, dict) else m_dash
             coord.trajectory.clear()
             coord._has_reset_real_map = True
             coord.add_event("SUCCESS", "Switched to physical JetBot mapping.")
@@ -295,20 +304,55 @@ class TelemetryParser:
             if not coord.motion.anchor_initialized:
                 coord.motion.anchor_initialized = True
 
-            now_t = time.time()
-            coord._last_map_x = ox
-            coord._last_map_y = oy
-            coord._last_map_th = oth
+            # Clear footprint around robot center
+            if hasattr(coord.motion, "clear_footprint"):
+                coord.motion.clear_footprint(ox, oy, radius=Config.ROBOT_RADIUS)
+
+            # Ingest dynamic obstacle clusters into decoupled costmap layer
+            if hasattr(coord.motion, "insert_obstacle_clusters"):
+                coord.motion.insert_obstacle_clusters(valid_cls, ox, oy, oth, defer_costmap=True)
 
             # CV low-obstacle detections
             raw_low = data.get("low_obstacles")
             if isinstance(raw_low, list):
                 coord.low_obstacles = raw_low[:32]
+                if hasattr(coord.motion, "insert_low_obstacles"):
+                    coord.motion.insert_low_obstacles(raw_low, ox, oy, oth, defer_costmap=True)
 
-            coord.map_data = coord.motion.to_dashboard_data()
-            coord.map_data_b64 = coord.motion.to_dashboard_b64()
-            coord.map_version += 1
-            coord._last_map_update = now_t
+            if hasattr(coord.motion, "update_costmap"):
+                coord.motion.update_costmap()
+
+            now_t = time.time()
+            last_x = getattr(coord, "_last_map_x", None)
+            last_y = getattr(coord, "_last_map_y", None)
+            last_th = getattr(coord, "_last_map_th", None)
+            last_map_update = getattr(coord, "_last_map_update", 0.0)
+
+            should_update_map = False
+            if last_x is None or last_y is None or last_th is None:
+                should_update_map = True
+            else:
+                dist_moved = math.hypot(ox - last_x, oy - last_y)
+                dth_moved = abs((oth - last_th + math.pi) % (2.0 * math.pi) - math.pi)
+                is_moving = abs(coord.linear_vel) >= 0.005 or abs(coord.angular_vel) >= 0.01
+                # Responsive 6.7-10 Hz map update (max 0.15s interval, or any move/turn >= 2cm / 1.1 deg)
+                if dist_moved >= 0.02 or dth_moved >= 0.02 or is_moving or (now_t - last_map_update >= 0.15):
+                    should_update_map = True
+
+            if should_update_map:
+                coord._last_map_x = ox
+                coord._last_map_y = oy
+                coord._last_map_th = oth
+                if hasattr(coord.motion, "to_dashboard_data"):
+                    m_dash = coord.motion.to_dashboard_data()
+                    coord.map_data = m_dash.get("data", m_dash) if isinstance(m_dash, dict) else m_dash
+                    coord.map_data_b64 = coord.motion.to_dashboard_b64()
+                elif hasattr(coord.motion, "grid_map") and hasattr(coord.motion.grid_map, "to_dashboard_data"):
+                    m_dash = coord.motion.grid_map.to_dashboard_data()
+                    coord.map_data = m_dash.get("data", m_dash) if isinstance(m_dash, dict) else m_dash
+                    coord.map_data_b64 = coord.motion.grid_map.to_dashboard_b64()
+                coord.map_version += 1
+                coord._last_map_update = now_t
 
 
         raw_dets = data.get("detections")
@@ -335,7 +379,11 @@ class TelemetryParser:
         """Applies ultra-fast 1,130-byte JB-Binary telemetry directly to NavigationCoordinator."""
         if not coord._has_reset_real_map:
             coord.motion.reset()
-            coord.map_data = coord.motion.grid_map.to_dashboard_data()
+            if hasattr(coord.motion, "to_dashboard_data"):
+                m_dash = coord.motion.to_dashboard_data()
+            else:
+                m_dash = coord.motion.grid_map.to_dashboard_data()
+            coord.map_data = m_dash.get("data", m_dash) if isinstance(m_dash, dict) else m_dash
             coord.trajectory.clear()
             coord._has_reset_real_map = True
             coord.add_event("SUCCESS", "Switched to physical JetBot mapping (JB-Binary Ultra-Fast Stream).")
@@ -423,14 +471,48 @@ class TelemetryParser:
             if not coord.motion.anchor_initialized:
                 coord.motion.anchor_initialized = True
 
+            # Clear footprint around robot center
+            if hasattr(coord.motion, "clear_footprint"):
+                coord.motion.clear_footprint(ox, oy, radius=Config.ROBOT_RADIUS)
+
+            # Ingest dynamic obstacle clusters into decoupled costmap layer
+            if hasattr(coord.motion, "insert_obstacle_clusters"):
+                coord.motion.insert_obstacle_clusters(valid_cls, ox, oy, oth, defer_costmap=True)
+
+            if hasattr(coord.motion, "update_costmap"):
+                coord.motion.update_costmap()
+
             now_map = time.time()
-            coord._last_map_x = ox
-            coord._last_map_y = oy
-            coord._last_map_th = oth
-            coord.map_data = coord.motion.to_dashboard_data()
-            coord.map_data_b64 = coord.motion.to_dashboard_b64()
-            coord.map_version += 1
-            coord._last_map_update = now_map
+            last_x = getattr(coord, "_last_map_x", None)
+            last_y = getattr(coord, "_last_map_y", None)
+            last_th = getattr(coord, "_last_map_th", None)
+            last_map_update = getattr(coord, "_last_map_update", 0.0)
+
+            should_update_map = False
+            if last_x is None or last_y is None or last_th is None:
+                should_update_map = True
+            else:
+                dist_moved = math.hypot(ox - last_x, oy - last_y)
+                dth_moved = abs((oth - last_th + math.pi) % (2.0 * math.pi) - math.pi)
+                is_moving = abs(coord.linear_vel) >= 0.005 or abs(coord.angular_vel) >= 0.01
+                # Responsive 6.7-10 Hz map update (max 0.15s interval, or any move/turn >= 2cm / 1.1 deg)
+                if dist_moved >= 0.02 or dth_moved >= 0.02 or is_moving or (now_map - last_map_update >= 0.15):
+                    should_update_map = True
+
+            if should_update_map:
+                coord._last_map_x = ox
+                coord._last_map_y = oy
+                coord._last_map_th = oth
+                if hasattr(coord.motion, "to_dashboard_data"):
+                    m_dash = coord.motion.to_dashboard_data()
+                    coord.map_data = m_dash.get("data", m_dash) if isinstance(m_dash, dict) else m_dash
+                    coord.map_data_b64 = coord.motion.to_dashboard_b64()
+                elif hasattr(coord.motion, "grid_map") and hasattr(coord.motion.grid_map, "to_dashboard_data"):
+                    m_dash = coord.motion.grid_map.to_dashboard_data()
+                    coord.map_data = m_dash.get("data", m_dash) if isinstance(m_dash, dict) else m_dash
+                    coord.map_data_b64 = coord.motion.grid_map.to_dashboard_b64()
+                coord.map_version += 1
+                coord._last_map_update = now_map
 
 
         # Patch SLAM world pose into the binary packet for instant forward to dashboard
