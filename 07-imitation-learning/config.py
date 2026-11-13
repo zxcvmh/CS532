@@ -33,10 +33,10 @@ OBSERVATION_DIM = LIDAR_NUM_BEAMS + 1 + 2 + 2  # 41
 # Action dimensions: [v, w]
 ACTION_DIM = 2
 
-# Physical hardware bounds (calibrated to robot_dynamics.json)
+# Physical hardware bounds (calibrated to robot_dynamics.json & agile turning)
 MAX_LINEAR_SPEED = 0.16       # m/s (safe cruise on glossy ceramic tile)
-MIN_DRIVE_SPEED = 0.10        # m/s (motor deadband threshold to overcome gearbox stiction)
-MAX_ANGULAR_SPEED = 0.35      # rad/s (~20 deg/s, avoids wheel slip)
+MIN_DRIVE_SPEED = 0.08        # m/s (allow slower crawl during agile tight turns)
+MAX_ANGULAR_SPEED = 0.85      # rad/s (~50 deg/s: provides agile evasive authority for wide obstacles)
 ROBOT_RADIUS_M = 0.09         # m (JetBot physical chassis radius)
 
 

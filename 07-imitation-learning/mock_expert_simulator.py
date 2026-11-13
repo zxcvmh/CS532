@@ -117,40 +117,40 @@ class SimulationEnvironment:
 
         scenario_type = random.random()
 
-        if scenario_type < 0.35 and dist_g > 0.70:
-            # Scenario A: Wide Rectangular Box (Thung carton, width 0.25m - 0.50m) directly on path
-            fwd_d = random.uniform(0.35, min(0.75, dist_g - 0.25))
-            cx = self.x + fwd_d * ux + random.uniform(-0.03, 0.03)
-            cy = self.y + fwd_d * uy + random.uniform(-0.03, 0.03)
-            box_w = random.uniform(0.24, 0.48)
-            box_l = random.uniform(0.16, 0.30)
-            box_yaw = math.atan2(dy_g, dx_g) + random.uniform(-0.3, 0.3)
-            if 0.30 <= cx <= self.arena_w - 0.30 and (-half_h + 0.30) <= cy <= (half_h - 0.30):
+        if scenario_type < 0.40 and dist_g > 0.65:
+            # Scenario A: Wide Obstacles (Túi xách to, thùng carton lớn, width 0.35m - 0.70m)
+            fwd_d = random.uniform(0.30, min(0.85, dist_g - 0.20))
+            cx = self.x + fwd_d * ux + random.uniform(-0.04, 0.04)
+            cy = self.y + fwd_d * uy + random.uniform(-0.04, 0.04)
+            box_w = random.uniform(0.32, 0.68)
+            box_l = random.uniform(0.18, 0.38)
+            box_yaw = math.atan2(dy_g, dx_g) + random.uniform(-0.4, 0.4)
+            if 0.25 <= cx <= self.arena_w - 0.25 and (-half_h + 0.25) <= cy <= (half_h - 0.25):
                 self.obstacles.append(("box", cx, cy, box_l / 2.0, box_w / 2.0, box_yaw))
 
-        elif scenario_type < 0.60 and dist_g > 0.60:
-            # Scenario B: Small Cylinder (Ca nuoc / chai nuoc r ~ 0.035m - 0.05m)
-            fwd_d = random.uniform(0.35, min(0.70, dist_g - 0.20))
-            ox = self.x + fwd_d * ux + random.uniform(-0.02, 0.02)
-            oy = self.y + fwd_d * uy + random.uniform(-0.02, 0.02)
-            rad = random.uniform(0.035, 0.05)
-            if 0.25 <= ox <= self.arena_w - 0.25 and (-half_h + 0.25) <= oy <= (half_h - 0.25):
+        elif scenario_type < 0.70 and dist_g > 0.55:
+            # Scenario B: Cylindrical Obstacles (Ca nước, chai nước, cọc tiêu r ~ 0.035m - 0.14m)
+            fwd_d = random.uniform(0.28, min(0.75, dist_g - 0.15))
+            ox = self.x + fwd_d * ux + random.uniform(-0.03, 0.03)
+            oy = self.y + fwd_d * uy + random.uniform(-0.03, 0.03)
+            rad = random.uniform(0.035, 0.14)
+            if 0.22 <= ox <= self.arena_w - 0.22 and (-half_h + 0.22) <= oy <= (half_h - 0.22):
                 self.obstacles.append(("circle", ox, oy, rad))
 
-        elif scenario_type < 0.85 and dist_g > 1.0:
-            # Scenario C: Multi-obstacle Slalom (Combination of Box & Cylinder)
+        elif scenario_type < 0.90 and dist_g > 0.90:
+            # Scenario C: Multi-obstacle Slalom / Narrow Corridors
             num_obs = min(2, num_obstacles)
             for i in range(num_obs):
                 d_step = (dist_g * 0.35) * (i + 1)
                 side = 1.0 if (i % 2 == 0) else -1.0
-                lat = side * random.uniform(0.16, 0.24)
+                lat = side * random.uniform(0.16, 0.26)
                 ox = self.x + d_step * ux + lat * nx
                 oy = self.y + d_step * uy + lat * ny
                 if 0.25 <= ox <= self.arena_w - 0.25 and (-half_h + 0.25) <= oy <= (half_h - 0.25):
                     if i % 2 == 0:
-                        self.obstacles.append(("box", ox, oy, 0.10, 0.15, 0.0))
+                        self.obstacles.append(("box", ox, oy, 0.12, 0.20, 0.0))
                     else:
-                        self.obstacles.append(("circle", ox, oy, random.uniform(0.06, 0.09)))
+                        self.obstacles.append(("circle", ox, oy, random.uniform(0.05, 0.10)))
 
         else:
             # Scenario D: Open field navigation
@@ -399,12 +399,13 @@ class GeometricExpertPolicy:
                 self.bypass_ticks = 0
 
             self.bypass_ticks += 1
-            w_safe = ROBOT_RADIUS_M + 0.13  # ~0.22m safe buffer
+            w_safe = ROBOT_RADIUS_M + 0.15  # ~0.24m safe buffer
             y_tgt = (max_y + w_safe) if self.bypass_side == +1 else (min_y - w_safe)
-            eff_x = max(0.12, min_x)
-            kappa = (2.0 * y_tgt) / (eff_x * eff_x + y_tgt * y_tgt)
-            v_cmd = max(self.min_v, 0.15 / (1.0 + 1.2 * abs(kappa)))
-            w_cmd = max(-self.max_w, min(self.max_w, v_cmd * kappa))
+            eff_x = max(0.10, min_x)
+            # Direct agile heading towards lateral bypass target
+            target_heading = math.atan2(y_tgt, eff_x)
+            v_cmd = max(self.min_v, 0.14 * max(0.40, math.cos(target_heading)))
+            w_cmd = max(-self.max_w, min(self.max_w, 2.2 * target_heading))
 
         elif flank_active and self.bypass_ticks < 35:
             # Maintain longitudinal corridor past the obstacle
@@ -415,12 +416,8 @@ class GeometricExpertPolicy:
         else:
             # Clear corridor: goal orientation & proportional navigation
             self.reset_state()
-            if abs(alpha) > math.radians(50.0):
-                v_cmd = 0.0
-                w_cmd = math.copysign(self.max_w, alpha)
-            else:
-                w_cmd = max(-self.max_w, min(self.max_w, 1.8 * alpha))
-                v_cmd = max(self.min_v + 0.01, self.max_v * max(0.65, math.cos(alpha / 2.0) ** 2))
+            w_cmd = max(-self.max_w, min(self.max_w, 2.0 * alpha))
+            v_cmd = max(self.min_v + 0.01, self.max_v * max(0.60, math.cos(alpha / 2.0) ** 2))
 
         # DART Perturbation Injection
         if apply_dart_noise and DART_ENABLED and not front_pts and random.random() < DART_PROBABILITY:

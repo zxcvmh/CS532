@@ -1289,12 +1289,16 @@ async def bridge_loop(camera: CSICameraThread, lidar: D500LidarThread, yolo: Ten
                                             except Exception:
                                                 pass
 
-                                    # 1. Hãm phanh khẩn cấp CHỈ KHI bị chặn cứng phía trước VÀ robot đang tiến về phía vật cản (_active_cmd_v > 0.01)
-                                    # KHÔNG áp dụng khi robot đang lùi (_active_cmd_v < -0.01) hoặc quay tại chỗ để cho phép lùi/quay thoát kẹt!
-                                    if status == "EMERGENCY_STOP" and _active_cmd_v > 0.01:
-                                        front_d = dde_res.get("front_obstacle_dist", clearance)
+                                    # 1. Hãm phanh khẩn cấp phần cứng:
+                                    # CHỈ kích hoạt khi vật cản chạm sát cản trước (< 0.05m = 5cm) VÀ robot không chủ động bẻ lái né.
+                                    # KHÔNG chặn khi AI đang chủ động đánh lái (|w| >= 0.15) để cho phép bẻ góc lách qua vật cản!
+                                    front_d = dde_res.get("front_obstacle_dist", clearance)
+                                    is_turning_away = abs(_active_cmd_w) >= 0.15
+                                    is_touching_bumper = front_d <= 0.05
+
+                                    if (status == "EMERGENCY_STOP" and _active_cmd_v > 0.01 and is_touching_bumper and not is_turning_away):
                                         if now_l - last_evade_report > 1.0:
-                                            print(f"[FAIL-SAFE REFLEX] DDE Boxed in at {front_d:.2f}m with no escape gap! Emergency Dynamic Brake.", flush=True)
+                                            print(f"[FAIL-SAFE REFLEX] Imminent bumper contact at {front_d:.2f}m! Emergency Dynamic Brake.", flush=True)
                                             last_evade_report = now_l
                                         mux.reflex_stop()
                                         try:
@@ -1306,7 +1310,7 @@ async def bridge_loop(camera: CSICameraThread, lidar: D500LidarThread, yolo: Ten
                                         except Exception:
                                             pass
                                     else:
-                                        # When not actively driving forward into an obstacle (e.g. moving backward, turning in place, or obstacle cleared):
+                                        # When steering to evade or obstacle is not touching bumper:
                                         mux.clear_reflex_stop()
                             except Exception as e:
                                 print(f"[ERROR in hardware_reflex_task] {e}", flush=True)

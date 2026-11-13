@@ -127,7 +127,7 @@ def train_behavioral_cloning(
             loss_sym_w = nn.functional.mse_loss(pred_act[:, 1], -pred_mirror[:, 1])
             loss_sym = 0.5 * (loss_sym_v + loss_sym_w)
 
-            loss = W_LINEAR_LOSS * loss_v + W_ANGULAR_LOSS * loss_w + 1.0 * loss_sym
+            loss = W_LINEAR_LOSS * loss_v + W_ANGULAR_LOSS * loss_w + 3.0 * loss_sym
 
             optimizer.zero_grad()
             loss.backward()

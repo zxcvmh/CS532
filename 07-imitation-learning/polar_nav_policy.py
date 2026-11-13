@@ -178,7 +178,9 @@ class PolarNavPolicy(nn.Module):
         # Right sector: [-110 deg to -30 deg] -> beams [25, 26, 27, 28, 29, 30, 31, 32, 33]
         right_pool = x[:, :, 25:34].mean(dim=2)  # (B, 64)
 
-        sector_cat = torch.cat([global_pool, front_pool, left_pool, right_pool], dim=-1)  # (B, 256)
+        lat_sum = left_pool + right_pool    # Symmetric feature (total lateral space)
+        lat_diff = left_pool - right_pool  # Anti-symmetric feature (lateral imbalance: 0 on clear path)
+        sector_cat = torch.cat([global_pool, front_pool, lat_sum, lat_diff], dim=-1)  # (B, 256)
         lidar_feat = self.sector_proj(sector_cat)  # (B, 64)
 
         # 4. Goal State Encoding

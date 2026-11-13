@@ -3,6 +3,6 @@
   "circular_conv": true,
   "embed_dim": 64,
   "max_v": 0.16,
-  "max_w": 0.35,
+  "max_w": 0.85,
   "total_parameters": 67458
 }
