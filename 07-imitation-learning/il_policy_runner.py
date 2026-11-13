@@ -257,6 +257,12 @@ class ILPolicyRunner:
         raw_v, raw_w = self.runner.forward(obs)
         self.last_status = "NAVIGATING_IL"
 
+        # Coupled turning velocity attenuation:
+        # Dynamically scales forward drive speed when turning sharply to prevent understeer collisions
+        if abs(raw_w) > 0.15:
+            turn_ratio = min(1.0, abs(raw_w) / MAX_ANGULAR_SPEED)
+            raw_v = raw_v * max(0.20, math.cos(turn_ratio * (math.pi / 2.2)))
+
         # 4. Bumper Proximity Hardware Guard ONLY:
         # Halts linear velocity only if an obstacle physically touches chassis (< 0.06m)
         bumper_hits = [

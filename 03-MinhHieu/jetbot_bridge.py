@@ -278,7 +278,7 @@ TURN_SPEED = float(ROBOT_DYNAMICS.get("turn_speed", 0.14))
 TURN_TIME_90_SEC = 0.50  # 90 deg in 0.50s = 3.1416 rad/s
 SOFT_START_RAMP_SEC = float(ROBOT_DYNAMICS.get("soft_start_ramp_sec", 0.4))
 MAX_SAFE_SPEED_MPS = float(ROBOT_DYNAMICS.get("max_safe_speed_mps", 0.14))
-MAX_ANGULAR_SPEED_RADS = 3.1416  # EXACT physical angular speed (90 deg in 0.50s)
+MAX_ANGULAR_SPEED_RADS = float(ROBOT_DYNAMICS.get("max_angular_speed_rads", 0.85))
 ACTUAL_SPEED_MPS = float(ROBOT_DYNAMICS.get("actual_speed_mps", 0.244))
 MOTOR_LEFT_POLARITY = int(ROBOT_DYNAMICS.get("motor_left_polarity", -1))
 MOTOR_RIGHT_POLARITY = int(ROBOT_DYNAMICS.get("motor_right_polarity", -1))
@@ -974,28 +974,32 @@ def set_motor_speeds(linear: float, angular: float):
     else:
         _current_spin_pwm = 0.0
 
-    # 3. Linear drive (Forward or Backward) with True Differential Drive Kinematics
-    # Axle track width L = 0.115m (from physical JetBot dimensions)
-    half_track = 0.0575
-    vl = v - (w * half_track)
-    vr = v + (w * half_track)
+    # 3. Dynamic Differential Drive Kinematics (Forward, Backward, and Curving/Spinning Turns)
+    v_norm = v / max(0.05, MAX_SAFE_SPEED_MPS)
+    w_norm = w / max(0.20, MAX_ANGULAR_SPEED_RADS)
 
-    v_base = max(0.05, MAX_SAFE_SPEED_MPS)  # 0.14 m/s
-    delta_v_max = MAX_ANGULAR_SPEED_RADS * half_track  # ~0.020 m/s
-    span_v = 2.0 * delta_v_max  # 0.040 m/s
+    # Arcade steering mixing:
+    # Steering CCW (w > 0, Turn Left): Left wheel slows down/reverses, Right wheel accelerates forward
+    # Steering CW  (w < 0, Turn Right): Left wheel accelerates forward, Right wheel slows down/reverses
+    raw_l = v_norm - w_norm
+    raw_r = v_norm + w_norm
 
-    def velocity_to_pwm(wheel_v: float) -> float:
-        if abs(wheel_v) < 0.005:
+    # Normalize if magnitude exceeds 1.0 to preserve curvature heading ratio
+    max_mag = max(abs(raw_l), abs(raw_r), 1.0)
+    norm_l = raw_l / max_mag
+    norm_r = raw_r / max_mag
+
+    def norm_to_pwm(val: float) -> float:
+        if abs(val) < 0.04:
             return 0.0
-        sign = 1.0 if wheel_v >= 0 else -1.0
-        # Map wheel velocity range [v_base - delta_v_max, v_base + delta_v_max]
-        # strictly into calibrated PWM range [MIN_DRIVE_SPEED, CRUISE_SPEED] ([0.12, 0.17])
-        ratio = (abs(wheel_v) - (v_base - delta_v_max)) / span_v
-        pwm = MIN_DRIVE_SPEED + (CRUISE_SPEED - MIN_DRIVE_SPEED) * ratio
-        return sign * max(MIN_DRIVE_SPEED, min(CRUISE_SPEED, pwm))
+        sign = 1.0 if val >= 0 else -1.0
+        mag = abs(val)
+        # Interpolate smoothly between MIN_DRIVE_SPEED (0.12) and CRUISE_SPEED (0.17)
+        pwm = MIN_DRIVE_SPEED + (CRUISE_SPEED - MIN_DRIVE_SPEED) * mag
+        return sign * min(0.25, pwm)
 
-    target_l = max(-1.0, min(1.0, velocity_to_pwm(vl)))
-    target_r = max(-1.0, min(1.0, velocity_to_pwm(vr)))
+    target_l = max(-1.0, min(1.0, norm_to_pwm(norm_l)))
+    target_r = max(-1.0, min(1.0, norm_to_pwm(norm_r)))
 
     set_raw_motor_speeds(target_l, target_r)
 
