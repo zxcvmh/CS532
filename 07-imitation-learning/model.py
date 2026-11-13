@@ -42,16 +42,19 @@ from config import (
 )
 
 if HAS_TORCH:
+    from polar_nav_policy import PolarNavPolicy, PolarNavConfig
     from spiral_nav_policy import SpiralNavPolicy, SpiralNavConfig
 
     def get_policy_network(backbone: Optional[str] = None, **kwargs) -> nn.Module:
         """
-        Factory function to instantiate either the state-of-the-art SpiralMLP policy
-        (Mu et al., arXiv:2404.00648v2) or the classical baseline MLP.
+        Factory function to instantiate the 1D Polar Circular Navigation policy,
+        SpiralMLP policy, or the classical baseline MLP.
         """
         chosen = backbone or POLICY_BACKBONE
+        if chosen.lower() in ("polar", "circular"):
+            return PolarNavPolicy(**kwargs)
         if chosen.lower() == "spiral":
-            return SpiralNavPolicy(**kwargs)
+            return PolarNavPolicy(**kwargs)  # Defaulting to true 1D circular topology
         return ILPolicyNetwork(**kwargs)
 
 

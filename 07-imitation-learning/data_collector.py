@@ -38,8 +38,8 @@ from mock_expert_simulator import (
 
 
 def collect_simulation_demonstrations(
-    num_episodes: int = 30,
-    max_steps_per_episode: int = 250,
+    num_episodes: int = 40,
+    max_steps_per_episode: int = 350,
     enable_dart: bool = True,
     output_path: str = "data/expert_demonstrations.npz"
 ) -> Tuple[np.ndarray, np.ndarray, Dict[str, Any]]:

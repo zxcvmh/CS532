@@ -251,123 +251,27 @@ class ILPolicyRunner:
             curr_w=0.0
         )
 
-        # 3. Critical Emergency Shield (< 0.20m directly ahead)
-        critical_ranges = [
+        # 3. Pure End-to-End Neural Network Policy
+        # Every control signal (v, w) is computed directly by the Neural Network
+        # from the 36 LiDAR ranges and the Goal vector via Imitation Learning!
+        raw_v, raw_w = self.runner.forward(obs)
+        self.last_status = "NAVIGATING_IL"
+
+        # 4. Bumper Proximity Hardware Guard ONLY:
+        # Halts linear velocity only if an obstacle physically touches chassis (< 0.06m)
+        bumper_hits = [
             lidar_ranges_360[d % 360]
-            for d in range(-30, 31)
-            if 0.05 <= lidar_ranges_360[d % 360] <= 0.20
+            for d in range(-20, 21)
+            if 0.04 <= lidar_ranges_360[d % 360] <= 0.06
         ]
+        if bumper_hits:
+            raw_v = 0.0
+            self.last_status = "BUMPER_GUARD"
 
-        if critical_ranges:
-            self.yield_steps += 1
-            if self.yield_steps <= self.max_yield_steps:
-                # Sudden moving obstacle (e.g. human crossing, hand/foot wave):
-                raw_v = 0.0
-                raw_w = 0.0
-                self.last_status = "DYNAMIC_YIELD"
-            else:
-                # Obstacle is persistent / stationary: gently pivot away without wheel slip
-                left_clear = float(np.mean([lidar_ranges_360[d] for d in range(25, 75)]))
-                right_clear = float(np.mean([lidar_ranges_360[(360 - d) % 360] for d in range(25, 75)]))
-                escape_dir = self.bypass_latch if self.bypass_latch != 0 else (+1 if left_clear >= right_clear else -1)
-                raw_v = 0.0
-                raw_w = float(escape_dir) * 0.35
-                self.last_status = "REFLEX_EVADE"
-        else:
-            self.yield_steps = 0
-
-            # 4. Terminal Approach Zone (< 0.35m from Goal)
-            # Ignores objects behind the goal so robot never swerves away near arrival
-            if dist_goal <= 0.35:
-                term_horizon = min(0.35, max(0.08, dist_goal - 0.05))
-                term_front = [
-                    lidar_ranges_360[d % 360]
-                    for d in range(-25, 26)
-                    if 0.05 <= lidar_ranges_360[d % 360] <= term_horizon
-                ]
-                if not term_front:
-                    self.bypass_latch = 0
-                    raw_w = float(np.clip(1.2 * alpha_goal, -self.max_w, self.max_w))
-                    raw_v = max(MIN_DRIVE_SPEED, min(self.max_v, 0.13 * (dist_goal / 0.35)))
-                    self.last_status = "TERMINAL_APPROACH"
-                else:
-                    raw_v = MIN_DRIVE_SPEED
-                    raw_w = math.copysign(0.35, alpha_goal) if abs(alpha_goal) > 0.1 else 0.35
-                    self.last_status = "TERMINAL_BYPASS"
-
-            else:
-                # 5. Generalized Dynamic Obstacle Clearance (> 0.35m)
-                obs_horizon = min(0.75, max(0.25, dist_goal - 0.05))
-                geom = extract_frontal_obstacle_geometry(
-                    lidar_ranges_360,
-                    max_lookahead_m=obs_horizon,
-                    corridor_half_width_m=0.28
-                )
-
-                left_clear = float(np.mean([lidar_ranges_360[d] for d in range(25, 75)]))
-                right_clear = float(np.mean([lidar_ranges_360[(360 - d) % 360] for d in range(25, 75)]))
-
-                has_front_threat = (geom is not None and geom["x_min"] <= 0.65)
-
-                # Check if obstacle is STILL alongside robot on the bypass flank (x > -0.05)
-                flank_active = False
-                if self.bypass_latch != 0:
-                    flank_deg = range(35, 95) if self.bypass_latch == -1 else range(265, 325)
-                    flank_pts_x = [
-                        lidar_ranges_360[d % 360] * math.cos(math.radians(d))
-                        for d in flank_deg
-                        if 0.08 <= lidar_ranges_360[d % 360] <= 0.45
-                    ]
-                    flank_active = any(x > -0.05 for x in flank_pts_x)
-
-                if has_front_threat:
-                    # Obstacle ahead: latch side and compute dynamic curvature
-                    if self.bypass_latch == 0:
-                        if alpha_goal > 0.05 and left_clear >= right_clear:
-                            self.bypass_latch = +1
-                        elif alpha_goal < -0.05 and right_clear >= left_clear:
-                            self.bypass_latch = -1
-                        else:
-                            self.bypass_latch = +1 if left_clear >= right_clear else -1
-
-                    side = self.bypass_latch
-                    w_safe = ROBOT_RADIUS_M + 0.13  # ~0.22m safe buffer
-                    y_tgt = (geom["y_max"] + w_safe) if side == +1 else (geom["y_min"] - w_safe)
-
-                    kappa = (2.0 * y_tgt) / (max(0.18, geom["x_min"]) ** 2 + y_tgt ** 2)
-                    raw_v = max(MIN_DRIVE_SPEED, 0.14 / (1.0 + 1.2 * abs(kappa)))
-                    raw_w = max(-self.max_w, min(self.max_w, raw_v * kappa))
-                    self.last_status = "BYPASS_CURVE"
-
-                elif flank_active:
-                    # Maintain longitudinal corridor past the obstacle without turning back prematurely
-                    raw_v = 0.14
-                    raw_w = 0.0
-                    self.last_status = "BYPASS_ALONGSIDE"
-
-                else:
-                    # Obstacle completely cleared behind chassis: normal goal navigation!
-                    self.bypass_latch = 0
-                    if abs(alpha_goal) > math.radians(50.0):
-                        raw_v = 0.0
-                        raw_w = math.copysign(0.35, alpha_goal)
-                        self.last_status = "PIVOT_ALIGN"
-                    else:
-                        raw_v, raw_w = self.runner.forward(obs)
-                        self.last_status = "NAVIGATING"
-
-        # 6. Slew-rate smooth acceleration limiting (prevents wheel slip on smooth tile)
-        if self.last_status in ("DYNAMIC_YIELD", "GOAL_REACHED"):
+        # 5. Slew-rate smooth acceleration limiting (prevents wheel slip on smooth tile)
+        if self.last_status in ("GOAL_REACHED", "BUMPER_GUARD"):
             self.active_v = 0.0
             self.active_w = 0.0
-        elif self.last_status == "REFLEX_EVADE":
-            self.active_v = 0.0
-            max_step_w = (MAX_ANGULAR_SPEED / 0.25) * dt
-            diff_w = raw_w - self.active_w
-            if abs(diff_w) <= max_step_w:
-                self.active_w = raw_w
-            else:
-                self.active_w += math.copysign(max_step_w, diff_w)
         else:
             max_step_v = (MAX_LINEAR_SPEED / 0.40) * dt
             diff_v = raw_v - self.active_v

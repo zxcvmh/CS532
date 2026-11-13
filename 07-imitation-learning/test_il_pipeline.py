@@ -197,31 +197,26 @@ class TestImitationLearningPipeline(unittest.TestCase):
         runner = ILPolicyRunner(model_path=os.path.join(self.test_model_dir, "bc_policy.onnx"))
 
         # Case A: Imminent collision obstacle at 10cm ahead (< 0.14m critical bubble)
-        crit_ranges = [1.5] * 360
-        crit_ranges[0] = 0.10  # 10cm in front
-        crit_ranges[5] = 0.11
-        crit_ranges[355] = 0.11
+        # Case A: Imminent bumper proximity (< 0.06m) triggers hardware guard
+        bumper_ranges = [1.5] * 360
+        bumper_ranges[0] = 0.05  # 5cm in front (bumper breach)
 
-        # Step 1: Initial sudden obstacle triggers Dynamic Yield (halt)
-        v_yield, w_yield, info_yield = runner.compute_command(
-            lidar_ranges_360=crit_ranges,
+        v_guard, w_guard, info_guard = runner.compute_command(
+            lidar_ranges_360=bumper_ranges,
             goal_x=1.8, goal_y=0.0,
             robot_x=0.0, robot_y=0.0, robot_theta=0.0
         )
-        self.assertEqual(v_yield, 0.0, "Linear velocity must halt on sudden obstacle")
-        self.assertEqual(info_yield["status"], "DYNAMIC_YIELD", "Sudden obstacle must trigger DYNAMIC_YIELD")
+        self.assertEqual(v_guard, 0.0, "Linear velocity must halt on physical bumper breach")
+        self.assertEqual(info_guard["status"], "BUMPER_GUARD", "Physical bumper breach must trigger BUMPER_GUARD")
 
-        # Step 2: Persistent obstruction after yield period triggers Active Reflex Evade
-        for _ in range(runner.max_yield_steps + 1):
-            v, w, info = runner.compute_command(
-                lidar_ranges_360=crit_ranges,
-                goal_x=1.8, goal_y=0.0,
-                robot_x=0.0, robot_y=0.0, robot_theta=0.0
-            )
-
-        self.assertEqual(v, 0.0, "Linear velocity must be zeroed on critical obstacle breach")
-        self.assertEqual(info["status"], "REFLEX_EVADE", "Persistent obstacle must trigger REFLEX_EVADE")
-        self.assertNotEqual(w, 0.0, "Angular velocity must pivot to escape")
+        # Case B: End-to-End Neural Network Navigation mode
+        nav_ranges = [1.5] * 360
+        v_nav, w_nav, info_nav = runner.compute_command(
+            lidar_ranges_360=nav_ranges,
+            goal_x=1.8, goal_y=0.0,
+            robot_x=0.0, robot_y=0.0, robot_theta=0.0
+        )
+        self.assertEqual(info_nav["status"], "NAVIGATING_IL", "Normal driving must be driven purely by Neural Network")
 
         # Case B: Deadband enforcement: commanded linear speed must never be in (0, MIN_DRIVE_SPEED)
         clear_ranges = [2.5] * 360

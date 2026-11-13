@@ -1,9 +1,8 @@
 {
-  "backbone": "SpiralMLP",
-  "paper": "Mu et al., arXiv:2404.00648v2 (Sep 2024)",
-  "embed_dim": 32,
-  "depth": 2,
+  "backbone": "PolarNavPolicy",
+  "circular_conv": true,
+  "embed_dim": 64,
   "max_v": 0.16,
   "max_w": 0.35,
-  "total_parameters": 25682
+  "total_parameters": 67458
 }

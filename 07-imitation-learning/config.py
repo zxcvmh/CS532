@@ -43,7 +43,7 @@ ROBOT_RADIUS_M = 0.09         # m (JetBot physical chassis radius)
 # =============================================================================
 # 2. NEURAL NETWORK ARCHITECTURE (SpiralMLP - Mu et al. arXiv:2404.00648v2)
 # =============================================================================
-POLICY_BACKBONE = "spiral"    # "spiral" (SpiralMLP with Spiral FC) or "mlp" (baseline)
+POLICY_BACKBONE = "polar"    # "polar" (1D Circular PolarNavPolicy) or "spiral"
 SPIRAL_EMBED_DIM = 32         # Channel dimension C for spatial tokens
 SPIRAL_DEPTH = 2              # Number of stacked SpiralBlocks
 SPIRAL_MLP_RATIO = 2.0        # Expansion ratio in Channel Mixing MLP

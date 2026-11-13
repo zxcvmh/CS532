@@ -401,15 +401,10 @@ class GeometricExpertPolicy:
             self.bypass_ticks += 1
             w_safe = ROBOT_RADIUS_M + 0.13  # ~0.22m safe buffer
             y_tgt = (max_y + w_safe) if self.bypass_side == +1 else (min_y - w_safe)
-
-            if min_x < 0.20:
-                # Danger close: halt linear velocity and pivot away
-                v_cmd = 0.0
-                w_cmd = float(self.bypass_side) * self.max_w
-            else:
-                kappa = (2.0 * y_tgt) / (min_x * min_x + y_tgt * y_tgt)
-                v_cmd = max(self.min_v, 0.15 / (1.0 + 1.2 * abs(kappa)))
-                w_cmd = max(-self.max_w, min(self.max_w, v_cmd * kappa))
+            eff_x = max(0.12, min_x)
+            kappa = (2.0 * y_tgt) / (eff_x * eff_x + y_tgt * y_tgt)
+            v_cmd = max(self.min_v, 0.15 / (1.0 + 1.2 * abs(kappa)))
+            w_cmd = max(-self.max_w, min(self.max_w, v_cmd * kappa))
 
         elif flank_active and self.bypass_ticks < 35:
             # Maintain longitudinal corridor past the obstacle

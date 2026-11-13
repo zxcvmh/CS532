@@ -42,10 +42,11 @@ def get_il_policy_runner():
         from il_policy_runner import ILPolicyRunner
 
         candidate_models = [
-            os.path.join(il_dir, "test_artifacts", "models", "dagger_policy.onnx"),
-            os.path.join(il_dir, "models", "dagger_policy.onnx"),
-            os.path.join(il_dir, "test_artifacts", "models", "bc_policy.onnx"),
+            os.path.abspath(os.path.join(il_dir, "../models/bc_policy.onnx")),
             os.path.join(il_dir, "models", "bc_policy.onnx"),
+            os.path.join(il_dir, "test_artifacts", "models", "bc_policy.onnx"),
+            os.path.join(il_dir, "models", "dagger_policy.onnx"),
+            os.path.join(il_dir, "test_artifacts", "models", "dagger_policy.onnx"),
         ]
 
         resolved_model = None

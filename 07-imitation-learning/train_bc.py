@@ -41,6 +41,15 @@ from dataset import ImitationLearningDataset
 from model import get_policy_network
 
 
+def mirror_batch_obs(batch_obs: torch.Tensor) -> torch.Tensor:
+    """Mirrors a batch of 41D observations across robot centerline."""
+    mirrored = batch_obs.clone()
+    idx_mirror = [(36 - i) % 36 for i in range(36)]
+    mirrored[:, :36] = batch_obs[:, idx_mirror]
+    mirrored[:, 37] = -batch_obs[:, 37]  # sin(-alpha) = -sin(alpha)
+    return mirrored
+
+
 def train_behavioral_cloning(
     data_path: str = "data/expert_demonstrations.npz",
     model_save_dir: str = "models",
@@ -110,7 +119,15 @@ def train_behavioral_cloning(
             # Weighted MSE Loss: w_v * (v - v*)^2 + w_w * (w - w*)^2
             loss_v = nn.functional.mse_loss(pred_act[:, 0], batch_act[:, 0])
             loss_w = nn.functional.mse_loss(pred_act[:, 1], batch_act[:, 1])
-            loss = W_LINEAR_LOSS * loss_v + W_ANGULAR_LOSS * loss_w
+
+            # Bilateral Anti-Symmetry Loss (forces strict zero left/right bias)
+            mirror_obs = mirror_batch_obs(batch_obs)
+            pred_mirror = model(mirror_obs)
+            loss_sym_v = nn.functional.mse_loss(pred_act[:, 0], pred_mirror[:, 0])
+            loss_sym_w = nn.functional.mse_loss(pred_act[:, 1], -pred_mirror[:, 1])
+            loss_sym = 0.5 * (loss_sym_v + loss_sym_w)
+
+            loss = W_LINEAR_LOSS * loss_v + W_ANGULAR_LOSS * loss_w + 1.0 * loss_sym
 
             optimizer.zero_grad()
             loss.backward()
@@ -183,7 +200,7 @@ if __name__ == "__main__":
     parser.add_argument("--save-dir", type=str, default="models", help="Directory to save models")
     parser.add_argument("--epochs", type=int, default=NUM_EPOCHS, help="Number of training epochs")
     parser.add_argument("--batch-size", type=int, default=BATCH_SIZE, help="Batch size")
-    parser.add_argument("--backbone", type=str, default=POLICY_BACKBONE, choices=["spiral", "mlp"], help="Backbone architecture")
+    parser.add_argument("--backbone", type=str, default=POLICY_BACKBONE, choices=["polar", "spiral", "mlp"], help="Backbone architecture")
     args = parser.parse_args()
 
     train_behavioral_cloning(
