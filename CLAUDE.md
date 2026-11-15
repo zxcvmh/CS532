@@ -3,6 +3,8 @@
 Robot: Jetson Nano + LDROBOT D500 LiDAR + CSI camera + GA25-370 diff drive. Goal: reach a goal while
 avoiding people and static obstacles. Talk to the human in Vietnamese.
 
+Supervisor operating manual (reasoning, routing, critical path, current snapshot): @.claude/supervisor.md
+
 ## Team split (decided 2026-11-15)
 - **Claude main session = Supervisor.** Plans, writes tickets and locked acceptance tests, commits,
   and is the ONLY agent allowed to touch hardware (SSH to Jetson, deploy, run motors) — always
@@ -36,5 +38,6 @@ avoiding people and static obstacles. Talk to the human in Vietnamese.
 5. **Close** — only on auditor `PASS`: commit (one ticket per commit, `git add <explicit paths>` —
    never `git add -u`/`-A`, Antigravity may have uncommitted work), mark ticket `DONE`, append to
    STATE.md. On `REJECT`: append the ledger entry, send the auditor's findings back as a new attempt.
-6. **Research** — the human finds papers; `/researcher` summarizes; the auditor opens every cited
+6. **Research** — `/researcher` finds and reads sources itself (the human is not a strong searcher and
+   only spot-checks the 3 facts it lists); the auditor opens every cited
    locator before a finding can drive a design decision.

@@ -368,7 +368,8 @@ ideal scan @5.24 rad/s 0.0°/1.6 cm ✅ · distorted scan −22.8°/8.5 cm ❌ �
 
 ### TK-SLAM-09: Track heading with a LiDAR-only wide-window correlative scan matcher (method change)
 - Role: slam
-- Status: READY (locked test failing for the right reason, 2026-11-15)
+- Status: READY — attempt 2 (2026-11-16). Locked test tightened after attempt 1: 13 tests, attempt 1's working tree
+  fails 3 of them (11-13) for the reasons below; the other 10 pass on it.
 - Why the method changes (human decision, 2026-11-15): TK-SLAM-04/07/08 all guessed the heading during a turn
   (dead-reckon from the key, then hold the pose). Field result: map turns with the robot, rays rotate while the
   icon stands still. The robot has no encoder or IMU; the D500 at 10 Hz sees ~30° of rotation per sweep at the
@@ -403,8 +404,22 @@ ideal scan @5.24 rad/s 0.0°/1.6 cm ✅ · distorted scan −22.8°/8.5 cm ❌ �
 - Forbidden: `tests/`, `setup/robot_dynamics.json`, `dashboard/jetbot_bridge.py`, `cartographer/` (read/import
   only), everything else. No timers keyed to the button, no use of w_cmd in the pose.
 - Acceptance command: `.venv/bin/python tests/acceptance/test_slam_csm_turns.py -v`
-- Threshold: 6/6 — still heading max ≤ 5.0°, p90 ≤ 4.0°; moving heading worst ≤ 20°, p90 ≤ 10°; position error vs
-  LiDAR truth ≤ 3 cm at each still segment; occupied ≤ 1.25 × oracle; median update ≤ 15 ms.
+- Threshold: 13/13 — still heading max ≤ 5.0°, p90 ≤ 4.0°; moving heading worst ≤ 20°, p90 ≤ 10°; position error vs
+  LiDAR truth ≤ 3 cm at each still segment; occupied between 0.60 and 1.25 × oracle; median update ≤ 15 ms; the same 6 checks under 4 more
+  command variants (forward `v_cmd` while turning / on every sweep: the pose must not care); pose x, y, theta are plain
+  Python `float`; `set_pose` re-anchors (below).
+- Attempt 2 requirements (Supervisor, from the audit findings of attempt 1; tests `test_11..13` in the locked file):
+  (a) `update_odometry` returns `theta` as `numpy.float32` (the CSM tracker returns numpy values) — x, y, theta must be
+  plain `float`, also right after `set_pose`. (b) `MotionAdapter.set_pose(x, y, th)` mid-recording must re-anchor the
+  world frame: attempt 1 snaps (7 cm / 7 deg right after `set_pose(0,0,0)` at truth heading 150 deg) and tracks worse
+  afterwards (moving worst 30.6 deg with a non-zero anchor) because the CSM submap stays in the old frame.
+  Supervisor-verified reference (in memory, not in the repo): keep the submap AND the internal pose, store a rigid
+  offset (rotation + translation) between the internal and the published frame in `CSMTracker.set_pose`, apply it to
+  every output -> right after 0 cm / 0.1 deg, later still 2.3 deg, moving 11.9 deg. Clearing the submap instead fails
+  the later-moving bound (21.8 / 39.4 deg) — do not do that. New guards that attempt 1 already passes: `v_turn` /
+  `v_always` variants, occupancy floor 0.60 (attempt 1 measures 0.82 / 0.86).
+- `test_slam_pose_hold.py` is TK-SLAM-08's gate: its envelope tolerance was aligned 10 -> 20 deg by the Supervisor
+  (ledgered 2026-11-16, matches the 20 deg moving bound here); writes-at-wrong-heading stay 0. Coders must not edit it.
 - Regression commands (all green, paste RAW output of every one): `test_slam_field_turns.py` (6/6),
   `test_slam_pose_hold.py` (3/3), `test_slam_pivot_then_arc.py` (7/7), `test_slam_stop_turn_go.py` (2/2),
   `test_slam_inplace_turn.py` (2/2), `tests/test_hector_anchor_slam.py`;
@@ -483,17 +498,43 @@ ideal scan @5.24 rad/s 0.0°/1.6 cm ✅ · distorted scan −22.8°/8.5 cm ❌ �
 
 ### TK-IL-04: IL sim must use the field dynamics and a stop-turn-go action set
 - Role: il-policy
-- Status: DRAFT — Supervisor writes `tests/acceptance/test_il_sim_dynamics.py` based on `docs/plans/2026-11-15-il-roadmap.md`.
-- Problem: `imitation_learning/config.py` hardcodes MIN_DRIVE_SPEED 0.10 / MAX_ANGULAR_SPEED 0.35;
-  `mock_expert_simulator.py:231` deadband uses it. Real robot runs at `actual_speed_mps = 0.294` m/s
-  (mức ga 0.19 đã chạy khá nhanh, xe không có cấp số bò 0.14 m/s) và xoay 90° mất 0.3 s
-  → real robot is stop-turn-go only: {0: STOP, 1: FORWARD (0.294 m/s), 2: PIVOT_L, 3: PIVOT_R}.
+- Status: READY (2026-11-16) — locked test `tests/acceptance/test_il_sim_dynamics.py` FAILS 14/14 on HEAD for the
+  ticket's reasons (forward 0.152 m/s vs field 0.294 after deadband + 5 % slip, v = 0.02 -> 0 m/s, w steers a moving
+  robot, pivot turns at the commanded 0.5 rad/s instead of the field rate, no ACTION_* / step_action) and PASSES 7/7
+  on a Supervisor prototype (scratchpad, not in repo) for both the real file and a synthetic one (0.41 m/s, 0.54 s).
+- Problem: `imitation_learning/config.py` hardcodes MIN_DRIVE_SPEED 0.10 / MAX_LINEAR_SPEED 0.16 / MAX_ANGULAR_SPEED
+  0.35; `mock_expert_simulator.py` `step()` has a 0.10 deadband, a 5 % slip on top of a field speed that already
+  includes slip, and lets |w| steer while moving. The real robot (dashboard/jetbot_bridge.py `set_motor_speeds`,
+  TK-INT-09) has ONE forward speed (`actual_speed_mps`), ONE pivot rate ((pi/2)/`turn_time_90_deg_sec`) and no arc
+  steering -> a sim success rate says nothing about the robot.
+- Contract (the test enforces it): `config.py` reads the dynamics file from env var `ROBOT_DYNAMICS_FILE` if set, else
+  `<repo>/setup/robot_dynamics.json`; `ACTION_STOP/FORWARD/PIVOT_LEFT/PIVOT_RIGHT` = 0/1/2/3;
+  `MAX_LINEAR_SPEED` = `actual_speed_mps`; `MAX_ANGULAR_SPEED` = (pi/2)/`turn_time_90_deg_sec`;
+  `MIN_DRIVE_SPEED` = `min_drive_speed` (names stay importable — model.py, il_policy_runner.py etc. import them);
+  `SimulationEnvironment.step(cmd_v, cmd_w, dt)` mirrors the bridge: |v| < 0.01 and |w| < 0.02 -> stop;
+  |v| < 0.01 -> pivot at +-MAX_ANGULAR_SPEED by the sign of w, no translation; |v| >= 0.01 -> forward at
+  MAX_LINEAR_SPEED, w ignored; new `step_action(action, dt)` maps the 4 actions onto `step`.
+  Do not add slip on top of `actual_speed_mps`. Python 3.6 compatible syntax (this config may reach the Jetson).
 - Allowed files: `imitation_learning/config.py`, `imitation_learning/mock_expert_simulator.py`
+- Forbidden: `tests/`, `setup/robot_dynamics.json`, `imitation_learning/test_il_pipeline.py`, the policy / model / runner
+  files, everything else. No dynamics number literal (0.294, 0.3, 5.236, 0.19, ...) in the two files.
 - Acceptance command: `.venv/bin/python tests/acceptance/test_il_sim_dynamics.py -v`
-- Threshold: FORWARD 1 s travels `actual_speed_mps` × 1 s ±10 %; PIVOT 90° takes `turn_time_90_deg_sec` ±10 %
-  (both read from the file at test time — turn values are about to change);
-  no dynamics number literal hardcoded in the two files (read from `setup/robot_dynamics.json`).
-- Regression: `test_sim_physics_matches_field_dynamics` passes.
+- Threshold: 7/7 tests x 2 dynamics files (real, synthetic): forward speed = `actual_speed_mps` +-3 % (also for
+  v = 0.02 / 0.05 / 0.10 / 0.30, +-3 %); heading change while driving <= 2 deg/s with w = +-1; pivot rate =
+  +-(pi/2)/`turn_time_90_deg_sec` +-3 % for |w| = 0.5 and 3.0 and for the two pivot actions; pivot translation <= 5 cm
+  over 2 s; stop creep <= 1 cm and <= 1 deg.
+- Regression: `tests/acceptance/test_il_sim_success.py::test_sim_physics_matches_field_dynamics` passes (Supervisor
+  removed its `MAX_LINEAR_SPEED <= max_safe_speed_mps` line, which contradicted the field speed);
+  `.venv/bin/python imitation_learning/test_il_pipeline.py`: tests 1-4 and 6 stay green.
+  **Accepted consequence (decided by the Supervisor, 2026-11-16):** `test_05_dagger_session_execution` goes RED
+  (DAgger final success 0.0 %, measured on the prototype; expert 16.7 % vs ~50 % before) because the old continuous
+  expert cannot drive stop-turn-go. That is the IL-03 guard doing its job. Do NOT edit that test or its assert to
+  make it green; TK-IL-05 (new expert) and TK-IL-06 (retrain) turn it green. State it in the REPORT.
+  `test_il_sim_success.py` (TK-IL-01) is PAUSED, its other numbers are not a regression gate until TK-IL-06.
+- Decided by the human (2026-11-16): the sim follows `actual_speed_mps` (what the robot physically does, measured at
+  cruise_speed 0.2) and IGNORES `max_safe_speed_mps` (0.14). The human re-measured at the chassis instead of the
+  camera nose: 0.294 -> 0.286 m/s; pivot at turn_speed 0.14: 90 deg in 0.53 s, 180 deg 1.06 s (human to apply to the file; the test reads
+  the file, so no code or test change is needed when it is).
 - Depends on: —
 
 ### TK-IL-05: Privileged expert ≥ 95 % on the new sim
