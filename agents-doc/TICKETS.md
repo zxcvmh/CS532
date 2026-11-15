@@ -41,7 +41,8 @@ Old v1 tickets: `agents-doc/archive/agents-v1/TICKETS-v1.md` (paths there are de
 
 ### TK-IL-01: Runtime policy must pass the crossing-pedestrian acceptance test
 - Role: il-policy
-- Status: READY
+- Status: PAUSED 2026-11-15 — sim dynamics are wrong (see TK-IL-04); re-run as regression after TK-IL-06.
+  Plan: `docs/plans/2026-11-15-il-roadmap.md`
 - Locked test: `tests/acceptance/test_il_sim_success.py` (evaluates exactly what
   `il_onnx_bridge.get_il_policy_runner()` loads, 100 seeds, 1 crossing pedestrian + 0-2 statics).
 - Baseline 2026-11-15 (Supervisor run):
@@ -62,7 +63,7 @@ Old v1 tickets: `agents-doc/archive/agents-v1/TICKETS-v1.md` (paths there are de
 
 ### TK-IL-02: IL action caps hardcoded instead of read from robot_dynamics.json
 - Role: il-policy
-- Status: DRAFT
+- Status: SUPERSEDED by TK-IL-04 (2026-11-15)
 - Problem: `imitation_learning/config.py` hardcodes `MAX_LINEAR_SPEED=0.16`, `MIN_DRIVE_SPEED=0.10`,
   `MAX_ANGULAR_SPEED=0.35`; field file says `min_drive_speed=0.19`, `max_safe_speed_mps=0.14`,
   `turn_time_90_deg_sec=0.3`. The sim deadband therefore does not match the real robot.
@@ -73,7 +74,11 @@ Old v1 tickets: `agents-doc/archive/agents-v1/TICKETS-v1.md` (paths there are de
 
 ### TK-IL-03: `test_il_pipeline.py` fakes PASS and overwrites the runtime model
 - Role: il-policy
-- Status: READY
+- Status: DONE 2026-11-16 (human approved closing after audit 1: code PASS, scope REJECT on docs only — the coder
+  edited TICKETS.md + created docs/plans/2026-11-15-il-roadmap.md; Supervisor corrected and owns them now).
+  Evidence: `Ran 6 tests ... OK`, `test_artifacts/` sha256 unchanged, `git status imitation_learning/` clean of
+  artifacts; IL sim regression 89.0 % / 2.0 % unchanged. Follow-up: DAgger success is unseeded
+  (16.7 % vs 66.7 % on two runs) → the new `> 0` assert can flake.
 - Problem: `imitation_learning/test_il_pipeline.py` exits 0 and prints
   `[PASS] DAgger aggregation verified!` while printing `Final Success Rate: 0.0%`. It writes into
   `imitation_learning/test_artifacts/models/`, which is the FIRST path
@@ -475,3 +480,42 @@ ideal scan @5.24 rad/s 0.0°/1.6 cm ✅ · distorted scan −22.8°/8.5 cm ❌ �
 - Status: DRAFT — waiting for a captured bridge log with `[MOTOR RAW]` lines after TK-INT-05
 - Candidates (unverified): reflex-task exception every loop (fixed in TK-INT-05),
   0 → min_drive_speed=0.19 PWM jump at start, backend velocity latch (TK-INT-04).
+
+### TK-IL-04: IL sim must use the field dynamics and a stop-turn-go action set
+- Role: il-policy
+- Status: DRAFT — Supervisor writes `tests/acceptance/test_il_sim_dynamics.py` based on `docs/plans/2026-11-15-il-roadmap.md`.
+- Problem: `imitation_learning/config.py` hardcodes MIN_DRIVE_SPEED 0.10 / MAX_ANGULAR_SPEED 0.35;
+  `mock_expert_simulator.py:231` deadband uses it. Real robot runs at `actual_speed_mps = 0.294` m/s
+  (mức ga 0.19 đã chạy khá nhanh, xe không có cấp số bò 0.14 m/s) và xoay 90° mất 0.3 s
+  → real robot is stop-turn-go only: {0: STOP, 1: FORWARD (0.294 m/s), 2: PIVOT_L, 3: PIVOT_R}.
+- Allowed files: `imitation_learning/config.py`, `imitation_learning/mock_expert_simulator.py`
+- Acceptance command: `.venv/bin/python tests/acceptance/test_il_sim_dynamics.py -v`
+- Threshold: FORWARD 1 s travels `actual_speed_mps` × 1 s ±10 %; PIVOT 90° takes `turn_time_90_deg_sec` ±10 %
+  (both read from the file at test time — turn values are about to change);
+  no dynamics number literal hardcoded in the two files (read from `setup/robot_dynamics.json`).
+- Regression: `test_sim_physics_matches_field_dynamics` passes.
+- Depends on: —
+
+### TK-IL-05: Privileged expert ≥ 95 % on the new sim
+- Role: il-policy
+- Status: DRAFT — locked `tests/acceptance/test_il_expert.py` written after TK-IL-04 is DONE.
+- Problem: teacher success 48 %, collision 40 % on the locked seeds.
+- Idea: expert may read the pedestrian's true pose and velocity (privileged teacher); student sees LiDAR only.
+- Allowed files: `imitation_learning/mock_expert_simulator.py` (expert class only)
+- Threshold: expert success ≥ 95 %, collision ≤ 1 % on the 100 locked seeds.
+- Depends on: TK-IL-04
+
+### TK-IL-06: Retrain BC → DAgger as a discrete classifier, NN drives ≥ 90 %
+- Role: il-policy
+- Status: DRAFT — Supervisor raises MIN_NN_SHARE_PCT to 90 in `test_il_sim_success.py` first.
+- Allowed files: `imitation_learning/{model.py,train_bc.py,dagger_session.py,il_policy_runner.py}`
+  (split into two attempts if > 150 changed lines)
+- Acceptance command: `.venv/bin/python tests/acceptance/test_il_sim_success.py -v`
+- Threshold: success ≥ 90 %, collision ≤ 2 %, NN-driven steps ≥ 90 %; only an emergency-stop rule may override.
+- Depends on: TK-IL-05, TK-IL-03
+
+### TK-IL-07: Sim-to-real (LiDAR noise from real recordings, Jetson latency)
+- Role: il-policy + supervisor (hardware)
+- Status: DRAFT
+- Threshold: Jetson loop ≤ 50 ms, RAM ≤ 1.5 GB; real robot 10/10 goals, no contact.
+- Depends on: TK-IL-06, TK-SLAM-09

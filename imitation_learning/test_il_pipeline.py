@@ -14,9 +14,12 @@ Verifies 100% of the Pipeline:
 """
 
 import os
+os.environ["CUDA_VISIBLE_DEVICES"] = ""  # Force CPU for test pipeline to prevent ONNX device mismatch
 import sys
 import time
 import math
+import shutil
+import tempfile
 import unittest
 import numpy as np
 import torch
@@ -57,11 +60,15 @@ class TestImitationLearningPipeline(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.test_dir = os.path.join(os.path.dirname(__file__), "test_artifacts")
-        os.makedirs(cls.test_dir, exist_ok=True)
+        cls.test_dir = tempfile.mkdtemp(prefix="il_test_")
         cls.test_data_path = os.path.join(cls.test_dir, "test_demos.npz")
         cls.test_model_dir = os.path.join(cls.test_dir, "models")
         os.makedirs(cls.test_model_dir, exist_ok=True)
+
+    @classmethod
+    def tearDownClass(cls):
+        if hasattr(cls, "test_dir") and os.path.exists(cls.test_dir):
+            shutil.rmtree(cls.test_dir, ignore_errors=True)
 
     def test_01_observation_and_symmetry_invariance(self):
         """[TEST 1] Verifies observation extraction and bilateral symmetry."""
@@ -189,7 +196,13 @@ class TestImitationLearningPipeline(unittest.TestCase):
 
         self.assertEqual(len(history["iteration"]), 2)
         self.assertGreater(history["dataset_size"][-1], history["dataset_size"][0], "Dataset must grow with DAgger")
-        print(f"  {CLR_GREEN}[PASS] DAgger aggregation verified! Dataset grew to {history['dataset_size'][-1]} transitions!{CLR_RESET}")
+        final_success = history["success_rate"][-1]
+        self.assertGreater(
+            final_success,
+            0.0,
+            f"DAgger final success rate is 0.0% — stage cannot pass with zero success"
+        )
+        print(f"  {CLR_GREEN}[PASS] DAgger aggregation verified! Dataset grew to {history['dataset_size'][-1]} transitions (Final Success Rate: {final_success:.1f}%)!{CLR_RESET}")
 
     def test_06_safety_reflex_and_deadband_override(self):
         """[TEST 6] Tests hardware safety shield and motor deadband override."""
