@@ -90,11 +90,12 @@ class TestBug2PathFollowingAndSteering(unittest.TestCase):
         hw_pwm_r = int(round(abs(pwm_r) * 255))
         hw_diff = hw_pwm_r - hw_pwm_l
 
-        # Saturated left turn: inner wheel at min_drive_speed*trim, outer wheel at cruise_speed.
-        exp_l = int(round(DYN["min_drive_speed"] * DYN["trim_factor"] * 255))
-        exp_r = int(round(DYN["cruise_speed"] * 255))
-        self.assertEqual(hw_pwm_l, exp_l, f"Inner wheel should be min_drive_speed*trim ({exp_l} PWM), got {hw_pwm_l}")
-        self.assertEqual(hw_pwm_r, exp_r, f"Outer wheel should be cruise_speed ({exp_r} PWM), got {hw_pwm_r}")
+        # Saturated left turn: inner (left) wheel at min_drive_speed, outer (right) wheel at
+        # cruise_speed*trim — trim scales the RIGHT wheel, as in setup/calibrate_motors.py.
+        exp_l = int(round(DYN["min_drive_speed"] * 255))
+        exp_r = int(round(DYN["cruise_speed"] * DYN["trim_factor"] * 255))
+        self.assertEqual(hw_pwm_l, exp_l, f"Inner wheel should be min_drive_speed ({exp_l} PWM), got {hw_pwm_l}")
+        self.assertEqual(hw_pwm_r, exp_r, f"Outer wheel should be cruise_speed*trim ({exp_r} PWM), got {hw_pwm_r}")
         # ponytail: steering-while-driving authority depends on the measured [min_drive, cruise] band.
         # Operator chose stop-turn-go (2026-11-15), so a narrow band is reported, not failed.
         if hw_diff < 10:
@@ -103,8 +104,8 @@ class TestBug2PathFollowingAndSteering(unittest.TestCase):
 
     def test_inplace_pivot_breakout_torque(self):
         """
-        In-place pivot turn (v=0, w!=0) must output exactly turn_speed (x trim on the left wheel)
-        from setup/robot_dynamics.json.
+        In-place pivot turn (v=0, w!=0) must output exactly turn_speed (x trim on the RIGHT wheel,
+        matching setup/calibrate_motors.py) from setup/robot_dynamics.json.
         """
         v = 0.0
         w = self.motor_dyn.max_angular_speed  # In-place spin left at max calibrated angular rate
@@ -114,10 +115,10 @@ class TestBug2PathFollowingAndSteering(unittest.TestCase):
         hw_pwm_l = int(round(abs(pwm_l) * 255))
         hw_pwm_r = int(round(abs(pwm_r) * 255))
 
-        exp_r = int(round(DYN["turn_speed"] * 255))
-        exp_l = int(round(DYN["turn_speed"] * DYN["trim_factor"] * 255))
-        self.assertEqual(hw_pwm_r, exp_r, f"Right wheel spin PWM must match turn_speed ({exp_r} PWM), got {hw_pwm_r}")
-        self.assertEqual(hw_pwm_l, exp_l, f"Left wheel spin PWM must match turn_speed*trim ({exp_l} PWM), got {hw_pwm_l}")
+        exp_r = int(round(DYN["turn_speed"] * DYN["trim_factor"] * 255))
+        exp_l = int(round(DYN["turn_speed"] * 255))
+        self.assertEqual(hw_pwm_r, exp_r, f"Right wheel spin PWM must match turn_speed*trim ({exp_r} PWM), got {hw_pwm_r}")
+        self.assertEqual(hw_pwm_l, exp_l, f"Left wheel spin PWM must match turn_speed ({exp_l} PWM), got {hw_pwm_l}")
         self.assertLess(pwm_l, 0, "Left wheel must drive backward for CCW spin")
         self.assertGreater(pwm_r, 0, "Right wheel must drive forward for CCW spin")
 

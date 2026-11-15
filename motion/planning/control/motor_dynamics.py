@@ -88,8 +88,9 @@ class MotorDynamics:
             raw_pwm_r = to_pwm(v_right)
 
         # 3. Mechanical Trim Balancing (compensate gear motor variance)
-        raw_pwm_l = max(-1.0, min(1.0, raw_pwm_l * self.trim_factor))
-        raw_pwm_r = max(-1.0, min(1.0, raw_pwm_r))
+        # Trim scales the RIGHT wheel, matching setup/calibrate_motors.py (r_spd = base_spd * trim).
+        raw_pwm_l = max(-1.0, min(1.0, raw_pwm_l))
+        raw_pwm_r = max(-1.0, min(1.0, raw_pwm_r * self.trim_factor))
 
         # 4. Slew-Rate Acceleration Limiter
         ramp_time = max(0.1, self.soft_start_ramp_sec)

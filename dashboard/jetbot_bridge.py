@@ -898,9 +898,10 @@ def set_raw_motor_speeds(target_l: float, target_r: float):
         return
 
     # Apply trim balancing and polarity correction
-    # Left motor is scaled by TRIM_FACTOR (calibrated 1.0145555 / 1.024)
-    hw_left = _current_pwm_l * TRIM_FACTOR * MOTOR_LEFT_POLARITY
-    hw_right = _current_pwm_r * MOTOR_RIGHT_POLARITY
+    # RIGHT motor is scaled by TRIM_FACTOR — same convention as setup/calibrate_motors.py
+    # (r_spd = base_spd * trim), which is how the operator measured trim_factor.
+    hw_left = _current_pwm_l * MOTOR_LEFT_POLARITY
+    hw_right = _current_pwm_r * TRIM_FACTOR * MOTOR_RIGHT_POLARITY
 
     # Clamp duty cycles
     hw_left = max(-1.0, min(1.0, hw_left))
