@@ -204,3 +204,9 @@ Hệ thống rút gọn tối đa còn **4 Core Agents**, tuân thủ phong các
 
 - **2026-11-15 TK-SLAM-03 CLOSED** — auditor PASS; committed by Supervisor. Acceptance `test_slam_inplace_turn.py` 4/4 (1.6 cm / 0.0° / 0 ghost), hector 4 OK, backend boots. Antigravity had already started TK-SLAM-04 in the same file before this commit; its WIP was split out to `docs/plans/tk-slam-04-attempt1-wip.patch` so SLAM-03 is committed alone.
 - **2026-11-15 TK-SLAM-04 DONE** (attempt 2) — auditor PASS. Stop-turn-go 2/2 (0.0 cm / 0.0° / 0 ghost, map writes spin=0 stop=4), inplace 2/2, hector OK, path_following 7 OK 1 skip, backend boots, py3.6 syntax OK. Attempt 1 rejected (|w_cmd| used as spin rate → 78°/180° heading error under the hardened test). Not yet field-tested.
+- **2026-11-15 Field test after TK-SLAM-04:** map still rotates with the robot. Supervisor recorded 120 s of backend telemetry; real turns +60/+28/+97/+32° vs SLAM +110..+152° (button time × 5.24 rad/s; motor starts late, coasts). → TK-SLAM-07 READY with a locked replay test on the real sweeps.
+
+### HALLUCINATION LEDGER (append)
+| Thời điểm | Tác nhân | Loại vi phạm | Bằng chứng | Khắc phục |
+|---|---|---|---|---|
+| 2026-11-15 | Supervisor (Claude) | **Sign misread → false diagnosis** | Reported "LiDAR sees the robot turn the opposite way" from a circular-shift estimator whose sign convention was never checked; the human said motor and LiDAR were correct. A synthetic CCW +60° turn returns k = −61 → the robot did turn left. | Every estimator used as ground truth is calibrated on a synthetic case with a known answer before its output is reported. |

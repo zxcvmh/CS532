@@ -264,6 +264,42 @@ ideal scan @5.24 rad/s 0.0°/1.6 cm ✅ · distorted scan −22.8°/8.5 cm ❌ �
   so telemetry velocities are never applied; w_cmd is the planner's command (`coordinator.py:391,422`),
   which `stop()` resets to 0.
 
+### TK-SLAM-07: Heading after a turn must come from the LiDAR, not from how long the button was held
+- Role: slam
+- Status: READY (locked test on REAL field data, failing for the right reason, 2026-11-15)
+- Field evidence (backend telemetry recorded by the Supervisor, 4 manual left turns, robot + LiDAR correct):
+  real turns +60 / +28 / +97 / +32 deg (LiDAR sweep alignment); SLAM after each stop +110 / +95 /
+  +152 / +116 deg, then drifts a further 30–50 deg while standing still → map rotates with the robot.
+  Cause: TK-SLAM-04 dead-reckons 5.24 rad/s × (time w_cmd != 0). The motor starts late and coasts, so
+  command time ≠ motion; the error (50–85 deg) is far outside Hector's capture range.
+- Required behaviour (human, 2026-11-15: "map phải nhờ vào LiDAR, không nhờ vào tôi nhấn"):
+  1. Decide "robot is still" from the LiDAR (consecutive sweeps agree), not only from w_cmd. Never write
+     a sweep to the map unless the robot is still by that test.
+  2. After motion, re-anchor heading by a FULL-CIRCLE (±180°) rotational search of the first still sweep
+     against the last still keyframe, then refine with the existing Hector match. w_cmd may be used as a
+     hint (sign) but the answer must not depend on its timing or magnitude.
+  3. Must stay fast: median update ≤ 15 ms on the laptop (Jetson loop ≤ 50 ms) — use an O(N log N)
+     circular correlation (FFT over the 360 bins) or equivalent, not a Python loop over 360 shifts.
+- Supervisor feasibility check (prototype in scratchpad, NOT in the repo): scan-to-scan stillness test +
+  full-circle re-anchor reached max 3.0° / p90 2.2° and 382–453 occupied cells (oracle 466) on all 6
+  cases; it was too slow (Python loop), so speed is the coder's real work.
+- Locked test: `tests/acceptance/test_slam_field_turns.py` + `tests/acceptance/data/field_turns_2026-11-15.npz`
+  (replay of the real sweeps; 3 command timings: recorded / widened ±3 sweeps / leads by 3 sweeps; anchor
+  ON and production).
+- Baseline 2026-11-15 (HEAD 869509b): FAILED 6/6 — heading error max 136–162°, median 48–72°;
+  occupied 1.97–2.47 × oracle; median 3.8 ms.
+- Allowed files: `motion/planning/lidar_odometry.py`; `dashboard/backend/app/navigation/motion_adapter.py`
+  (map-write gate only, ≤ 15 changed lines).
+- Forbidden: `tests/`, `setup/robot_dynamics.json`, `dashboard/jetbot_bridge.py`, everything else.
+- Acceptance command: `.venv/bin/python tests/acceptance/test_slam_field_turns.py -v`
+- Threshold: 6/6 pass — max heading error ≤ 4.0° and p90 ≤ 3.0° at still sweeps; occupied cells ≤ 1.25 ×
+  oracle; median update ≤ 15 ms.
+- Regression commands: `.venv/bin/python tests/acceptance/test_slam_stop_turn_go.py -v` (2/2);
+  `.venv/bin/python tests/acceptance/test_slam_inplace_turn.py -v` (2/2);
+  `.venv/bin/python tests/test_hector_anchor_slam.py`; `cd dashboard/backend && ../../.venv/bin/python -c "import app.main"`;
+  Python 3.6 syntax (`ast.parse(..., feature_version=(3,6))`) on both files.
+- Depends on: TK-SLAM-04 (DONE 0ce172e).
+
 ### TK-SLAM-05: Production runs anchor OFF while the test runs it ON; test cannot see heading error
 - Role: slam
 - Status: DRAFT
