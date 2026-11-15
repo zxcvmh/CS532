@@ -13,6 +13,8 @@ Academic Standard (2024-2026 IEEE Robotics & Autonomous Systems):
 =============================================================================
 """
 
+import os
+import json
 import time
 import math
 from typing import List, Tuple, Optional, Any, Dict
@@ -37,6 +39,22 @@ from .slam import (
 )
 
 
+def _load_robot_dynamics() -> Dict[str, Any]:
+    search_paths = [
+        os.path.join(os.path.dirname(__file__), "..", "..", "setup", "robot_dynamics.json"),
+        os.path.join(os.path.dirname(__file__), "..", "setup", "robot_dynamics.json"),
+        os.path.join(os.path.dirname(__file__), "setup", "robot_dynamics.json"),
+        os.path.join(os.path.dirname(__file__), "robot_dynamics.json"),
+        os.path.expanduser("~/setup/robot_dynamics.json"),
+        os.path.expanduser("~/CS532-main/setup/robot_dynamics.json"),
+    ]
+    for p in search_paths:
+        if os.path.isfile(p):
+            with open(p, "r", encoding="utf-8") as f:
+                return json.load(f)
+    raise FileNotFoundError("setup/robot_dynamics.json not found for OccupancyGridMap")
+
+
 class OccupancyGridMap:
     """
     Unified High-Level Facade for 2D Grid SLAM, C-Space Costmap, and Scan Matching.
@@ -51,7 +69,16 @@ class OccupancyGridMap:
         origin_x: float = -5.0,
         origin_y: float = -5.0,
         arena_bounds: Optional[Tuple[float, float, float, float]] = None,
+        lever_arm: Optional[float] = None,
     ):
+        if lever_arm is None:
+            dyn = _load_robot_dynamics()
+            if "lidar_lever_arm_m" not in dyn:
+                raise KeyError("Missing required key 'lidar_lever_arm_m' in setup/robot_dynamics.json")
+            self.lever_arm = float(dyn["lidar_lever_arm_m"])
+        else:
+            self.lever_arm = float(lever_arm)
+
         # 1. Core Grid Geometry & Storage
         self.grid_core = GridCore(
             width=width,
@@ -70,7 +97,7 @@ class OccupancyGridMap:
 
         # 2. Decomposed Subsystems
         self.raycaster = BayesianRaycaster(
-            self.grid_core, lever_arm=0.0, dynamic_ttl=0.80
+            self.grid_core, lever_arm=self.lever_arm, dynamic_ttl=0.80
         )
         self.inflation = CostmapInflation(
             self.grid_core,
@@ -483,14 +510,17 @@ class OccupancyGridMap:
         robot_y: float,
         robot_theta: float,
         max_range: float = 6.0,
+        lever_arm: Optional[float] = None,
     ) -> bool:
         """Initializes pristine static anchor walls from initial 360-ray sweep."""
+        la = self.lever_arm if lever_arm is None else float(lever_arm)
         success = self.anchor.set_anchor_from_scan(
             ranges=ranges,
             robot_x=robot_x,
             robot_y=robot_y,
             robot_theta=robot_theta,
             max_range=max_range,
+            lever_arm=la,
         )
         if success:
             self.hector.invalidate_cache()

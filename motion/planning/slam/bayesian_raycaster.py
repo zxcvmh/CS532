@@ -2,11 +2,33 @@
 BayesianRaycaster: Vectorized 2D Log-Odds Raycasting and Space Evaporation.
 CS532 Advanced AI Robotics — Module motion / slam
 """
+import os
+import json
 import time
 import math
 from typing import List, Tuple, Dict, Optional, Any
 import numpy as np
 from .grid_core import GridCore
+
+
+def _load_lidar_lever_arm() -> float:
+    search_paths = [
+        os.path.join(os.path.dirname(__file__), "..", "..", "..", "setup", "robot_dynamics.json"),
+        os.path.join(os.path.dirname(__file__), "..", "..", "setup", "robot_dynamics.json"),
+        os.path.join(os.path.dirname(__file__), "..", "setup", "robot_dynamics.json"),
+        os.path.join(os.path.dirname(__file__), "setup", "robot_dynamics.json"),
+        os.path.join(os.path.dirname(__file__), "robot_dynamics.json"),
+        os.path.expanduser("~/setup/robot_dynamics.json"),
+        os.path.expanduser("~/CS532-main/setup/robot_dynamics.json"),
+    ]
+    for p in search_paths:
+        if os.path.isfile(p):
+            with open(p, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+            if "lidar_lever_arm_m" not in cfg:
+                raise KeyError(f"Missing required key 'lidar_lever_arm_m' in {p}")
+            return float(cfg["lidar_lever_arm_m"])
+    raise FileNotFoundError("setup/robot_dynamics.json not found for LiDAR lever arm")
 
 
 class BayesianRaycaster:
@@ -15,11 +37,14 @@ class BayesianRaycaster:
     def __init__(
         self,
         grid_core: GridCore,
-        lever_arm: float = 0.08,
+        lever_arm: Optional[float] = None,
         dynamic_ttl: float = 0.80,
     ):
         self.grid = grid_core
-        self.lever_arm = float(lever_arm)
+        if lever_arm is None:
+            self.lever_arm = _load_lidar_lever_arm()
+        else:
+            self.lever_arm = float(lever_arm)
         self.dynamic_ttl = float(dynamic_ttl)
         self.latest_hit_cells: np.ndarray = np.empty(0, dtype=np.int32)
         # Tracking buffer for short-TTL dynamic obstacles outside locked anchor walls
@@ -38,7 +63,7 @@ class BayesianRaycaster:
     ) -> np.ndarray:
         """
         Updates 2D Occupancy Grid log-odds from LiDAR range array.
-        - Lever-arm sensor offset compensation (+0.08m from axle).
+        - Lever-arm sensor offset compensation from axle (robot_dynamics.json).
         - Integer Bresenham line raycasting with Liang-Barsky clipping.
         - Confirmed wall protection (flat >= 1.5) preventing ray clearing erosion.
         - Dynamic footprint TTL decay when anchor map is locked.

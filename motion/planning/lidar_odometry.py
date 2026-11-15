@@ -63,10 +63,7 @@ class Lidar2DOdometry:
         self.max_physical_speed = float(max_physical_speed_mps)
         self.max_physical_yaw_rate = float(max_physical_yaw_rate_rads)
 
-        # Calibrated pivot turn rate (bounded to <= 0.35 rad/s for stable scan matching)
-        self.turn_time_90_deg_sec: float = 4.5
-        self.calibrated_pivot_yaw_rate: float = 0.35
-        self.lever_arm_x: float = 0.08  # Distance from differential axle to LiDAR center (~8cm)
+        # Load physical dynamics (lever_arm_x, turn_time_90_deg_sec, etc.) from setup/robot_dynamics.json
         self.load_dynamics_config()
 
         # Integrated Global Pose (x, y, theta)
@@ -110,19 +107,25 @@ class Lidar2DOdometry:
                 if os.path.isfile(p):
                     config_path = p
                     break
-        if config_path and os.path.isfile(config_path):
-            try:
-                with open(config_path, "r", encoding="utf-8") as f:
-                    cfg = json.load(f)
-                self.turn_time_90_deg_sec = 0.50  # 90 deg in 0.50s
-                self.calibrated_pivot_yaw_rate = 3.1416  # 3.1416 rad/s
-                self.max_physical_yaw_rate = 5.0
-                if "actual_speed_mps" in cfg:
-                    self.max_physical_speed = max(0.35, float(cfg["actual_speed_mps"]) * 1.5)
-                elif "max_safe_speed_mps" in cfg:
-                    self.max_physical_speed = max(0.35, float(cfg["max_safe_speed_mps"]) * 1.5)
-            except Exception:
-                pass
+        if not config_path or not os.path.isfile(config_path):
+            raise FileNotFoundError(f"setup/robot_dynamics.json not found in search paths")
+
+        with open(config_path, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+
+        if "lidar_lever_arm_m" not in cfg:
+            raise KeyError(f"Missing required key 'lidar_lever_arm_m' in {config_path}")
+        if "turn_time_90_deg_sec" not in cfg:
+            raise KeyError(f"Missing required key 'turn_time_90_deg_sec' in {config_path}")
+
+        self.lever_arm_x = float(cfg["lidar_lever_arm_m"])
+        self.turn_time_90_deg_sec = float(cfg["turn_time_90_deg_sec"])
+        self.calibrated_pivot_yaw_rate = (math.pi / 2.0) / self.turn_time_90_deg_sec
+        self.max_physical_yaw_rate = self.calibrated_pivot_yaw_rate * 1.25
+        if "actual_speed_mps" in cfg:
+            self.max_physical_speed = max(0.35, float(cfg["actual_speed_mps"]) * 1.5)
+        elif "max_safe_speed_mps" in cfg:
+            self.max_physical_speed = max(0.35, float(cfg["max_safe_speed_mps"]) * 1.5)
 
     def reset_pose(self, x: float = 0.0, y: float = 0.0, theta: float = 0.0):
         """Reset integrated odometry pose."""
@@ -600,7 +603,7 @@ class Lidar2DOdometry:
             dy_res = prior_dy
             dth_res = prior_dtheta
             is_reliable = False
-            lever_arm = getattr(self, "lever_arm_x", 0.08)  # Distance from differential axle to LiDAR center (~8cm)
+            lever_arm = self.lever_arm_x
 
             if has_map_geometry and len(curr_cloud) >= 15:
                 gn_x, gn_y, gn_th, gn_reliable, gn_info = self.match_scan_to_map(
@@ -610,7 +613,7 @@ class Lidar2DOdometry:
                 delta_th = abs((gn_th - self.theta + math.pi) % (2.0 * math.pi) - math.pi)
                 
                 # Hard constraint: During rotation (v_cmd ~ 0), translation is constrained by LiDAR lever-arm displacement
-                lever_arm = 0.08  # Distance from differential drive axle center to LiDAR center (~8cm)
+                lever_arm = self.lever_arm_x
                 if is_pivot or abs(v_cmd) < 0.02:
                     max_allowed_p = max(0.06, lever_arm * max(0.05, delta_th) * 1.5)
                 else:

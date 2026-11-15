@@ -3,10 +3,32 @@ AnchorLayer: Static Anchor Map layer for fixed environmental boundaries.
 Locks wall cells and protects them from raycasting erosion.
 CS532 Advanced AI Robotics — Module motion / slam
 """
+import os
+import json
 import math
 import numpy as np
 from typing import List, Tuple, Optional
 from .grid_core import GridCore
+
+
+def _load_lidar_lever_arm() -> float:
+    search_paths = [
+        os.path.join(os.path.dirname(__file__), "..", "..", "..", "setup", "robot_dynamics.json"),
+        os.path.join(os.path.dirname(__file__), "..", "..", "setup", "robot_dynamics.json"),
+        os.path.join(os.path.dirname(__file__), "..", "setup", "robot_dynamics.json"),
+        os.path.join(os.path.dirname(__file__), "setup", "robot_dynamics.json"),
+        os.path.join(os.path.dirname(__file__), "robot_dynamics.json"),
+        os.path.expanduser("~/setup/robot_dynamics.json"),
+        os.path.expanduser("~/CS532-main/setup/robot_dynamics.json"),
+    ]
+    for p in search_paths:
+        if os.path.isfile(p):
+            with open(p, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+            if "lidar_lever_arm_m" not in cfg:
+                raise KeyError(f"Missing required key 'lidar_lever_arm_m' in {p}")
+            return float(cfg["lidar_lever_arm_m"])
+    raise FileNotFoundError("setup/robot_dynamics.json not found for LiDAR lever arm")
 
 
 class AnchorLayer:
@@ -41,7 +63,7 @@ class AnchorLayer:
         robot_theta: float,
         max_range: float = 6.0,
         min_hits: int = 15,
-        lever_arm: float = 0.08,
+        lever_arm: Optional[float] = None,
     ) -> bool:
         """
         Initializes the Pristine Anchor Map from an initial reference 360-ray sweep.
@@ -49,6 +71,11 @@ class AnchorLayer:
         """
         if not ranges or len(ranges) < 180:
             return False
+
+        if lever_arm is None:
+            lever_arm = _load_lidar_lever_arm()
+        else:
+            lever_arm = float(lever_arm)
 
         lx = robot_x + lever_arm * math.cos(robot_theta)
         ly = robot_y + lever_arm * math.sin(robot_theta)
