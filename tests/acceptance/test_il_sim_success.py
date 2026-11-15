@@ -184,8 +184,9 @@ class TestILSimAcceptance(unittest.TestCase):
             dyn = json.load(f)
         self.assertAlmostEqual(il_config.MIN_DRIVE_SPEED, dyn["min_drive_speed"], places=3,
                                msg="IL deadband (config.MIN_DRIVE_SPEED) != field min_drive_speed")
-        self.assertLessEqual(il_config.MAX_LINEAR_SPEED, dyn["max_safe_speed_mps"] + 1e-6,
-                             msg="IL MAX_LINEAR_SPEED exceeds field max_safe_speed_mps")
+        # TK-IL-04 (2026-11-16): the old `MAX_LINEAR_SPEED <= max_safe_speed_mps` line is gone — the robot
+        # physically drives at actual_speed_mps (0.294 > max_safe 0.14); speed/pivot physics are now locked
+        # by tests/acceptance/test_il_sim_dynamics.py.
 
 
 if __name__ == "__main__":
