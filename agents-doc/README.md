@@ -23,8 +23,15 @@ Supervisor viết ticket + locked test (tests/acceptance/)  →  READY
    → PASS: commit + DONE      REJECT: ghi ledger, trả lại
 ```
 
+## Bạn điều khiển thế nào
+
+Đọc [`PLAYBOOK.md`](PLAYBOOK.md): vòng đời ticket, bảng "việc mới → giao ai", prompt mẫu copy–paste.
+Lệnh gõ cho Claude: `/triage <vấn đề>` · `/ticket <TK-ID>` · `/audit <TK-ID> + REPORT` · `/close <TK-ID>`
+(định nghĩa trong [`.claude/commands/`](../.claude/commands/)).
+
 ## File
 
+- [`PLAYBOOK.md`](PLAYBOOK.md) — cách bạn tự điều hành các agent.
 - [`TICKETS.md`](TICKETS.md) — việc đang làm, template ticket.
 - [`STATE.md`](STATE.md) — trạng thái + HALLUCINATION LEDGER (chỉ ghi thêm).
 - [`LOCKED_PATHS.txt`](LOCKED_PATHS.txt) — đường dẫn agent không được đụng (auditor kiểm bằng `grep -Ef`).
