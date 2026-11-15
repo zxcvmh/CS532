@@ -1003,14 +1003,10 @@ def set_motor_speeds(linear: float, angular: float):
         # Negative = Turn Right (CW: left motor forward, right motor backward)
         target_spin_signed = spin_mag if w > 0 else -spin_mag
 
-        # Slew-Rate Limiting for Signed Spin PWM
-        spin_slew_rate = 0.80
-        max_spin_step = spin_slew_rate * dt
-        diff_spin = target_spin_signed - _current_spin_pwm
-        if abs(diff_spin) <= max_spin_step:
-            _current_spin_pwm = target_spin_signed
-        else:
-            _current_spin_pwm += math.copysign(max_spin_step, diff_spin)
+        # Step, no ramp (TK-INT-07): turn_time_90_deg_sec was measured by setup/calibrate_motors.py
+        # with a PWM step (drive_raw). turn_speed == min_drive_speed, so a ramp below it is dead
+        # time the SLAM pivot model (90 deg / turn_time_90_deg_sec) cannot see.
+        _current_spin_pwm = target_spin_signed
 
         # Dispatch differential spin:
         set_raw_motor_speeds(-_current_spin_pwm, _current_spin_pwm)
