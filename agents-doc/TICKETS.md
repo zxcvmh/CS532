@@ -266,7 +266,19 @@ ideal scan @5.24 rad/s 0.0°/1.6 cm ✅ · distorted scan −22.8°/8.5 cm ❌ �
 
 ### TK-SLAM-07: Heading after a turn must come from the LiDAR, not from how long the button was held
 - Role: slam
-- Status: READY (locked test on REAL field data, failing for the right reason, 2026-11-15)
+- Status: READY — attempt 2 (attempt 1 REJECTED by quality-auditor, 2026-11-15)
+- Attempt 1 rejection (reproduced by the Supervisor; HEAD 3f6870a vs attempt 1, pivot ×0.9 then an
+  arc with no still sweep between):
+  * The pivot exit only cleared when the robot was still, or translating with inter-sweep rotation ≤ 5°.
+    In an arc the robot really turns > 5°/sweep (w = 1.0 rad/s at 10 Hz = 5.7°), so every arc sweep stayed
+    in the pivot branch: heading dead-reckoned at copysign(5.24 rad/s, w_cmd), dx = dy = 0, no map write.
+    v=0.14 w=1.0/1.5/2.0 → 10–11 cm, 157–180° during the arc, 0/8 map writes; v=0.294 w=1.0 → 23 cm, 179°.
+    HEAD: ≤ 2.4 cm, ≤ 5.6°, 8/8 writes. MANUAL mode allows this (v ≤ 0.14, |w| up to 5.24 rad/s).
+  * Even w = 0.5 (2.9°/sweep, below the 5° rule) gives 35.9° heading error on the first arc sweep.
+  * Fix direction: the first sweep with forward command after a pivot ENDS the pivot: re-anchor once
+    (full-circle search vs the last still keyframe), then hand back to Hector. Remove the ≤ 5° step-rotation
+    condition. Never apply the 5.24 rad/s pivot rate to a sweep with |v_cmd| ≥ 0.02 (the bridge already
+    leaves the spin branch as soon as v > 0.01). Name the magic numbers (5.0°, 0.05/6.0 m, 200, 360).
 - Field evidence (backend telemetry recorded by the Supervisor, 4 manual left turns, robot + LiDAR correct):
   real turns +60 / +28 / +97 / +32 deg (LiDAR sweep alignment); SLAM after each stop +110 / +95 /
   +152 / +116 deg, then drifts a further 30–50 deg while standing still → map rotates with the robot.
@@ -291,9 +303,13 @@ ideal scan @5.24 rad/s 0.0°/1.6 cm ✅ · distorted scan −22.8°/8.5 cm ❌ �
 - Allowed files: `motion/planning/lidar_odometry.py`; `dashboard/backend/app/navigation/motion_adapter.py`
   (map-write gate only, ≤ 15 changed lines).
 - Forbidden: `tests/`, `setup/robot_dynamics.json`, `dashboard/jetbot_bridge.py`, everything else.
-- Acceptance command: `.venv/bin/python tests/acceptance/test_slam_field_turns.py -v`
-- Threshold: 6/6 pass — max heading error ≤ 4.0° and p90 ≤ 3.0° at still sweeps; occupied cells ≤ 1.25 ×
-  oracle; median update ≤ 15 ms.
+- Acceptance commands (BOTH required):
+  `.venv/bin/python tests/acceptance/test_slam_field_turns.py -v`
+  `.venv/bin/python tests/acceptance/test_slam_pivot_then_arc.py -v`  (added attempt 2; HEAD 7/7, attempt 1 0/7)
+- Threshold: field_turns 6/6 — max heading error ≤ 4.0° and p90 ≤ 3.0° at still sweeps; occupied cells ≤
+  1.25 × oracle; median update ≤ 15 ms. pivot_then_arc 7/7 — during the arc pos ≤ 5 cm, heading ≤ 8°, map
+  written at least once; after the stop pos ≤ 5 cm, heading ≤ 3°.
+- Report must paste the RAW output of every acceptance and regression command (attempt 1 omitted it).
 - Regression commands: `.venv/bin/python tests/acceptance/test_slam_stop_turn_go.py -v` (2/2);
   `.venv/bin/python tests/acceptance/test_slam_inplace_turn.py -v` (2/2);
   `.venv/bin/python tests/test_hector_anchor_slam.py`; `cd dashboard/backend && ../../.venv/bin/python -c "import app.main"`;
