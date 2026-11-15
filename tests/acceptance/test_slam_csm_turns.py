@@ -15,6 +15,8 @@ Command variants (the pose must not care):
   recorded : w_cmd as the bridge reported it
   none     : w_cmd = 0 for every sweep
   inverted : w_cmd with the wrong sign
+  v_turn   : recorded w_cmd, plus a forward command (cruise_speed from the field file) while the pivot button is held
+  v_always : recorded w_cmd, plus a forward command on EVERY sweep (robot is not actually translating: stuck / coasting)
 
 Ground truth (independent of the code under test):
   heading  — exhaustive 1-deg circular alignment of each sweep against the first one. At MOVING sweeps the
@@ -28,7 +30,8 @@ Asserted per (recording, variant), MotionAdapter in production mode:
   still sweeps (no motor in the previous 1.5 s / next 0.3 s): heading max <= 5.0 deg, p90 <= 4.0 deg
   moving sweeps (motor within -0.3 s .. +0.8 s): heading worst <= 20 deg, p90 <= 10 deg  (= tracked, not held)
   position: |SLAM displacement - truth displacement| <= 3 cm at every still-segment middle sweep
-  occupied cells <= 1.25 x oracle map (still sweeps written at the true heading)
+  occupied cells <= 1.25 x oracle map (smeared) AND >= 0.60 x oracle map (a map that lost its walls is not a pass;
+    supervisor prototype and the first coder attempt measure 0.79-0.86)
   median MotionAdapter.update_odometry <= 15 ms on the laptop
 
 Supervisor feasibility prototype (scratchpad, not in the repo): vectorised coarse-to-fine CSM (45 deg window,
@@ -39,8 +42,15 @@ with LiDAR-still sweeps only and only when the pose changed (> 1.5 cm / 1 deg) o
 Baseline (HEAD 7383775 + TK-SLAM-07/08 working tree): 6/6 FAIL — moving worst 62-179 deg, w_cmd=0 gives
 24.5 deg still error and 10 cm position error.
 
+Also asserted (2026-11-16, after the first coder attempt was audited):
+  set_pose  : MotionAdapter.set_pose(x, y, th) mid-recording re-anchors the world frame. The robot is still, so the
+              next sweeps must publish ~(x, y, th) (<= 3 cm, <= 5 deg), and later headings must follow the truth
+              RELATIVE to that anchor — not snap back to the old frame. Tried with (0, 0, 0) and a non-zero pose.
+  pose type : x, y, theta returned by update_odometry (and right after set_pose) are plain Python float, never numpy.
+
 Run:  .venv/bin/python tests/acceptance/test_slam_csm_turns.py -v
 """
+import json
 import logging
 import math
 import os
@@ -68,6 +78,7 @@ MAX_STILL_DEG, P90_STILL_DEG = 5.0, 4.0
 MAX_MOVING_DEG, P90_MOVING_DEG = 20.0, 10.0
 MAX_POS_ERR_M = 0.03
 MAX_OCC_RATIO = 1.25
+MIN_OCC_RATIO = 0.60
 MAX_MEDIAN_MS = 15.0
 
 
@@ -126,6 +137,8 @@ def _load(name):
 
 
 REC = {k: _load(k) for k in RECORDINGS}
+with open(os.path.join(ROOT, "setup", "robot_dynamics.json"), encoding="utf-8") as _f:
+    CMD_V = float(json.load(_f)["cruise_speed"])  # any plausible forward command; read, not typed
 
 
 def _occupied(adapter):
@@ -147,15 +160,28 @@ def _wrap(a):
     return (a + 180.0) % 360.0 - 180.0
 
 
+def _commands(rec, variant):
+    w, zero = rec["w"], np.zeros_like(rec["w"])
+    if variant == "none":
+        return zero, zero
+    if variant == "inverted":
+        return -w, zero
+    if variant == "v_turn":
+        return w, np.where(np.abs(w) > 0.02, CMD_V, 0.0)
+    if variant == "v_always":
+        return w, np.full_like(w, CMD_V)
+    return w, zero  # "recorded"
+
+
 def _replay(rec, variant):
     ad = MotionAdapter()
     ad.anchor_initialized = True  # production path (telemetry_parser.py)
-    w = {"recorded": rec["w"], "none": np.zeros_like(rec["w"]), "inverted": -rec["w"]}[variant]
+    w, v = _commands(rec, variant)
     heading, pos, times = [], [], []
     for i in range(len(rec["ranges"])):
         dt = float(rec["stamp"][i] - rec["stamp"][i - 1]) if i else 0.1
         t0 = time.perf_counter()
-        x, y, th, _ = ad.update_odometry(rec["ranges"][i].tolist(), max(0.02, min(0.3, dt)), 0.0, float(w[i]))
+        x, y, th, _ = ad.update_odometry(rec["ranges"][i].tolist(), max(0.02, min(0.3, dt)), float(v[i]), float(w[i]))
         times.append((time.perf_counter() - t0) * 1000.0)
         heading.append(math.degrees(th))
         pos.append((x, y))
@@ -179,6 +205,7 @@ class TestSlamCsmTurns(unittest.TestCase):
         self.assertLessEqual(np.percentile(e_mov, 90), P90_MOVING_DEG, f"{tag}: moving heading p90")
         self.assertLessEqual(drift, MAX_POS_ERR_M, f"{tag}: position error {100 * drift:.1f} cm vs LiDAR truth")
         self.assertLessEqual(occ, MAX_OCC_RATIO * ORACLE[name], f"{tag}: smeared map")
+        self.assertGreaterEqual(occ, MIN_OCC_RATIO * ORACLE[name], f"{tag}: map lost its structure")
         self.assertLessEqual(med, MAX_MEDIAN_MS, f"{tag}: median update {med:.1f} ms")
 
     def test_01_field_recorded(self):
@@ -198,6 +225,78 @@ class TestSlamCsmTurns(unittest.TestCase):
 
     def test_06_big_inverted_command(self):
         self._check("big", "inverted")
+
+    def test_07_field_forward_command_while_turning(self):
+        self._check("field", "v_turn")
+
+    def test_08_field_forward_command_always(self):
+        self._check("field", "v_always")
+
+    def test_09_big_forward_command_while_turning(self):
+        self._check("big", "v_turn")
+
+    def test_10_big_forward_command_always(self):
+        self._check("big", "v_always")
+
+    def test_11_pose_is_plain_float(self):
+        rec = REC["field"]
+        ad = MotionAdapter()
+        ad.anchor_initialized = True
+        bad = set()
+        for i in range(len(rec["ranges"])):
+            dt = float(rec["stamp"][i] - rec["stamp"][i - 1]) if i else 0.1
+            out = ad.update_odometry(rec["ranges"][i].tolist(), max(0.02, min(0.3, dt)), 0.0, float(rec["w"][i]))
+            bad.update((n, type(val).__name__) for n, val in zip("xyth", out[:3]) if type(val) is not float)
+        self.assertEqual(sorted(bad), [], f"pose components must be plain float, got {sorted(bad)}")
+        ad.set_pose(0.0, 0.0, 0.0)
+        out = ad.update_odometry(rec["ranges"][-1].tolist(), 0.1, 0.0, 0.0)
+        self.assertEqual([type(val).__name__ for val in out[:3]], ["float"] * 3, "pose type after set_pose")
+
+    def _set_pose_case(self, anchor):
+        rec = REC["big"]
+        segs = np.split(np.array(rec["still"]), np.flatnonzero(np.diff(rec["still"]) > 1) + 1)
+        seg = [sg for sg in segs if len(sg) >= 12][1]          # a long still stretch after the first turn
+        i_a = int(seg[len(seg) // 2])
+        ax, ay, ath = anchor
+        ad = MotionAdapter()
+        ad.anchor_initialized = True
+        n = len(rec["ranges"])
+
+        def feed(i):
+            dt = float(rec["stamp"][i] - rec["stamp"][i - 1]) if i else 0.1
+            x, y, th, _ = ad.update_odometry(rec["ranges"][i].tolist(), max(0.02, min(0.3, dt)), 0.0, float(rec["w"][i]))
+            return x, y, math.degrees(th)
+
+        for i in range(i_a + 1):
+            feed(i)
+        ad.set_pose(ax, ay, ath)
+        right_after = []
+        for i in range(i_a + 1, i_a + 4):                       # still robot: the pose must stay at the anchor
+            x, y, th = feed(i)
+            right_after.append((math.hypot(x - ax, y - ay), abs(_wrap(th - math.degrees(ath)))))
+        still_err, moving_err = [], []
+        still_set, moving_set = set(rec["still"]), set(rec["moving"])
+        for i in range(i_a + 4, n):                             # truth heading RELATIVE to the anchor
+            x, y, th = feed(i)
+            err = abs(_wrap(th - math.degrees(ath) - (rec["truth"][i] - rec["truth"][i_a])))
+            if i in still_set:
+                still_err.append(err)
+            if i in moving_set:
+                moving_err.append(err)
+        tag = f"set_pose{anchor} at sweep {i_a} (truth heading {rec['truth'][i_a]:.0f} deg)"
+        print(f"\n[METRIC] {tag}: right after: pos {100 * max(a for a, _ in right_after):.1f} cm, "
+              f"heading {max(b for _, b in right_after):.1f} deg | later still max {max(still_err):.1f} deg, "
+              f"moving worst {max(moving_err):.1f} deg", flush=True)
+        self.assertLessEqual(max(a for a, _ in right_after), MAX_POS_ERR_M, f"{tag}: position snapped away from the anchor")
+        self.assertLessEqual(max(b for _, b in right_after), MAX_STILL_DEG, f"{tag}: heading snapped away from the anchor")
+        self.assertLessEqual(max(still_err), MAX_STILL_DEG, f"{tag}: later still heading vs truth relative to the anchor")
+        self.assertLessEqual(max(moving_err), MAX_MOVING_DEG, f"{tag}: later moving heading vs truth relative to the anchor")
+
+    def test_12_set_pose_origin_reanchors(self):
+        self._set_pose_case((0.0, 0.0, 0.0))
+
+    def test_13_set_pose_nonzero_reanchors(self):
+        self._set_pose_case((1.0, -0.5, 0.7))
 
 
 if __name__ == "__main__":

@@ -39,8 +39,10 @@ import test_slam_field_turns as F  # noqa: E402  (data, truth estimator, command
 from app.navigation.motion_adapter import MotionAdapter  # noqa: E402
 
 # --- Locked evaluation constants -----------------------------------------------------------
-TOL_DEG = 10.0       # envelope tolerance: 3 deg still error + 1 deg truth bins + up to ~half of the
-                     # in-sweep smear at a MOVING sweep (pivot turns ~30 deg per sweep). Failures are > 100 deg.
+TOL_DEG = 20.0       # envelope tolerance: 3 deg still error + 1 deg truth bins + up to ~half of the
+                     # in-sweep smear at a MOVING sweep (recordings pivot ~30 deg per sweep -> 15 deg) = ~19 deg.
+                     # 2026-11-16: was 10.0, which contradicted its own derivation and the 20 deg moving-heading bound
+                     # of test_slam_csm_turns.py (TK-SLAM-09). The failures this gate exists for are > 100 deg.
 BAD_DEG = 5.0        # a sweep whose published heading is further than this from truth is "wrong"
 
 TRUTH_ALL = np.array([F._rotation_deg(F.RANGES[0], F.RANGES[i]) for i in range(len(F.RANGES))])
