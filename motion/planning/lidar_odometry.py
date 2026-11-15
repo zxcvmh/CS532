@@ -537,9 +537,21 @@ class Lidar2DOdometry:
         # Check if in pivot turn mode: negligible linear speed, active angular command
         is_pivot = (abs(v_cmd) < 0.02 and abs(w_cmd) > 0.05)
         if is_pivot:
-            eff_w = math.copysign(min(abs(w_cmd), self.calibrated_pivot_yaw_rate), w_cmd)
-        else:
-            eff_w = max(-self.max_physical_yaw_rate, min(self.max_physical_yaw_rate, w_cmd))
+            eff_w = math.copysign(self.calibrated_pivot_yaw_rate, w_cmd)
+            dth_res = (eff_w * dt + math.pi) % (2.0 * math.pi) - math.pi
+            self.theta = (self.theta + dth_res + math.pi) % (2.0 * math.pi) - math.pi
+            self.last_status = "PIVOT_DEAD_RECKONING"
+            self.last_computation_time_ms = (time.time() - t0) * 1000.0
+            return self.x, self.y, self.theta, {
+                "status": self.last_status,
+                "latency_ms": round(self.last_computation_time_ms, 2),
+                "is_reliable": False,
+                "dx": 0.0,
+                "dy": 0.0,
+                "dtheta": dth_res,
+            }
+
+        eff_w = max(-self.max_physical_yaw_rate, min(self.max_physical_yaw_rate, w_cmd))
 
         prior_dx = v_cmd * dt * math.cos(0.5 * eff_w * dt)
         prior_dy = v_cmd * dt * math.sin(0.5 * eff_w * dt)

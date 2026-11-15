@@ -205,7 +205,15 @@ ideal scan @5.24 rad/s 0.0°/1.6 cm ✅ · distorted scan −22.8°/8.5 cm ❌ �
 
 ### TK-SLAM-04: Stop-then-scan — never map smeared sweeps, re-anchor pose after each turn (direction C)
 - Role: slam
-- Status: READY — ATTEMPT 2 (2026-11-15). TK-SLAM-03 committed (fc02870).
+- Status: DONE (attempt 2, auditor PASS 2026-11-15) — needs field check on the real robot.
+  Accepted deviation: motion_adapter.py is +8/−5 (13 changed lines) vs "≤ 10"; the minimum required
+  behaviour (re-indent update_scan, move the scan counter) already needs ~12. Supervisor accepts.
+  Non-blocking follow-ups (→ TK-SLAM-06 cleanup): pivot branch returns early, so its diag uses `dtheta`
+  not `dtheta_rad` and lacks match_info/inliers (no consumer today: telemetry_parser reads only
+  status/is_reliable); match_count not incremented; keyframe not initialised if the robot spins before
+  the first scan; thresholds 0.05/0.02 duplicated in lidar_odometry.py and motion_adapter.py.
+  `test_slam_inplace_turn.py` 0.35 rad/s cases removed (impossible on the robot; passed by 15x coincidence).
+- History: READY — ATTEMPT 2 (2026-11-15). TK-SLAM-03 committed (fc02870).
   Attempt 1 (WIP saved in `docs/plans/tk-slam-04-attempt1-wip.patch`, removed from the tree) passed the
   first test version but is REJECTED:
   (a) heading prediction used the MAGNITUDE of w_cmd (`eff_w = copysign(min(|w_cmd|, pivot_rate), w_cmd)`).

@@ -106,9 +106,11 @@ class MotionAdapter:
             ranges, dt=dt, v_cmd=v_cmd, w_cmd=w_cmd, grid_map=self.grid_map
         )
 
+        is_spinning = (abs(w_cmd) > 0.05 and abs(v_cmd) < 0.02)
+
         # 2. Track scan count for initial pristine anchor locking
-        self._initial_scan_count = getattr(self, "_initial_scan_count", 0) + 1
-        if not self.anchor_initialized:
+        if not is_spinning and not self.anchor_initialized:
+            self._initial_scan_count = getattr(self, "_initial_scan_count", 0) + 1
             if self._initial_scan_count >= 5:
                 # Lock physical static walls from initial sweeps
                 locked = self.grid_map.set_anchor_from_scan(
@@ -123,9 +125,10 @@ class MotionAdapter:
                     self.static_map_locked = True
 
         # 3. Update occupancy grid with current scan in stationary World Frame
-        self.grid_map.update_scan(
-            ox, oy, oth, ranges=ranges, max_valid_range=min(6.0, Config.MAX_RANGE), defer_costmap=False
-        )
+        if not is_spinning:
+            self.grid_map.update_scan(
+                ox, oy, oth, ranges=ranges, max_valid_range=min(6.0, Config.MAX_RANGE), defer_costmap=False
+            )
 
         # Sync pose to cartographer adapter for backward compatibility if needed
         if hasattr(self, "cartographer") and self.cartographer:
