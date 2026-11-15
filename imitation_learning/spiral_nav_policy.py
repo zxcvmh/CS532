@@ -1,7 +1,7 @@
 """
 SpiralMLP Navigation Policy Architecture for Autonomous JetBot
 ==============================================================
-CS532 Autonomous JetBot — Module 07-imitation-learning
+CS532 Autonomous JetBot — Module imitation_learning
 Based on:
   1. Paper: "SpiralMLP: A Lightweight Vision MLP Architecture" (Mu et al., arXiv:2404.00648v2, Sep 2024)
   2. Codebase: Kookree SpiralMLP (classification/model.py & spiral_fc_kernel.cu)

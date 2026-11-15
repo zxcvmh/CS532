@@ -1,7 +1,7 @@
 """
 Bridge Adapter for Seamless Integration with JetBot WebSocket Backend
 ======================================================================
-CS532 Autonomous JetBot — Module 07-imitation-learning
+CS532 Autonomous JetBot — Module imitation_learning
 Based on UIT ITCourses RL-101 (Bài 10: Học bắt chước - Imitation Learning)
 
 Usage:
@@ -39,7 +39,7 @@ class BridgeILAdapter:
     """
     def __init__(
         self,
-        model_path: str = "07-imitation-learning/test_artifacts/models/dagger_policy.onnx",
+        model_path: str = "imitation_learning/test_artifacts/models/dagger_policy.onnx",
         server_host: str = DEFAULT_BRIDGE_HOST,
         server_port: int = DEFAULT_BRIDGE_PORT
     ):
@@ -147,7 +147,7 @@ if __name__ == "__main__":
     parser.add_argument("--port", type=int, default=DEFAULT_BRIDGE_PORT, help="Server port")
     parser.add_argument("--goal-x", type=float, default=1.80, help="Initial goal x")
     parser.add_argument("--goal-y", type=float, default=0.00, help="Initial goal y")
-    parser.add_argument("--model", "--weights", type=str, default="07-imitation-learning/test_artifacts/models/dagger_policy.onnx", help="Path to ONNX policy (.onnx)")
+    parser.add_argument("--model", "--weights", type=str, default="imitation_learning/test_artifacts/models/dagger_policy.onnx", help="Path to ONNX policy (.onnx)")
     args = parser.parse_args()
 
     adapter = BridgeILAdapter(model_path=args.model, server_host=args.host, server_port=args.port)

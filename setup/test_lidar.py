@@ -66,7 +66,7 @@ class LidarD500Reader:
         self.intensities = [0] * 360
         self.lock = threading.Lock()
         self.packet_count = 0
-        # Chính sách Phase 1 (giống 03-MinhHieu/d500_driver.py)
+        # Chính sách Phase 1 (giống dashboard/d500_driver.py)
         self.min_intensity = int(min_intensity)
         self.min_intensity_near = int(min_intensity_near)
         self.near_field_m = float(near_field_m)

@@ -1,7 +1,7 @@
 """
 DashboardRasterizer: High-Contrast Visual Rasterization and Zero-Overhead Serialization.
 Restores the solid, thick, crisp visual aesthetic of the proven baseline map (anh_lidar.png).
-CS532 Advanced AI Robotics — Module 05-d500lib-motion / slam
+CS532 Advanced AI Robotics — Module motion / slam
 """
 import base64
 import math

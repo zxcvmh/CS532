@@ -1,7 +1,7 @@
 """
 Live JetBot Flight Recorder & Comprehensive Evaluation Benchmark
 ================================================================
-CS532 Autonomous JetBot — Module 07-imitation-learning
+CS532 Autonomous JetBot — Module imitation_learning
 Evaluates live physical/simulated performance of Imitation Learning Navigation:
 
 Metrics Measured:
@@ -251,7 +251,7 @@ async def run_live_closed_loop_test(
         return
 
     runner = ILPolicyRunner(weights_path=weights_path)
-    recorder = LiveFlightRecorder(log_dir="07-imitation-learning/logs")
+    recorder = LiveFlightRecorder(log_dir="imitation_learning/logs")
     ws_url = f"ws://{server_host}:{server_port}/ws"
 
     print(f"\n[EVALUATOR] Connecting to JetBot WebSocket Hub at: {ws_url}...")
@@ -371,7 +371,7 @@ if __name__ == "__main__":
     parser.add_argument("--port", type=int, default=DEFAULT_BRIDGE_PORT, help="Server port (default: 8000)")
     parser.add_argument("--goal-x", type=float, default=1.80, help="Target Goal X in meters")
     parser.add_argument("--goal-y", type=float, default=0.00, help="Target Goal Y in meters")
-    parser.add_argument("--model", "--weights", type=str, default="07-imitation-learning/test_artifacts/models/dagger_policy.onnx", help="Path to standard ONNX policy (.onnx)")
+    parser.add_argument("--model", "--weights", type=str, default="imitation_learning/test_artifacts/models/dagger_policy.onnx", help="Path to standard ONNX policy (.onnx)")
     parser.add_argument("--timeout", type=float, default=30.0, help="Maximum test duration in seconds")
     args = parser.parse_args()
 

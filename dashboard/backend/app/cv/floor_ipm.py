@@ -1,5 +1,5 @@
 """
-Floor IPM proxy module pointing to single source in 03-MinhHieu/floor_ipm.py.
+Floor IPM proxy module pointing to single source in dashboard/floor_ipm.py.
 """
 import sys
 import os

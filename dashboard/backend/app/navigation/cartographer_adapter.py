@@ -38,7 +38,9 @@ class CartographerAdapter:
         angular_search_window_deg: float = 35.0,
         linear_search_window_m: float = 0.15,
         robot_radius: float = 0.09,
-        inflation_radius: float = 0.045
+        inflation_radius: float = 0.045,
+        arena_bounds: Optional[Tuple[float, float, float, float]] = None,
+        **kwargs
     ):
         self.resolution = float(resolution)
         self.width = int(width)
@@ -47,6 +49,7 @@ class CartographerAdapter:
         self.origin_y = -0.5 * self.height * self.resolution
         self.robot_radius = float(robot_radius)
         self.inflation_radius = float(inflation_radius)
+        self.arena_bounds = arena_bounds
 
         # 1. Global Combined Probability Grid
         self.global_grid = ProbabilityGrid2D(

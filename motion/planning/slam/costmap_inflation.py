@@ -1,6 +1,6 @@
 """
 CostmapInflation: Euclidean Distance Field (EDT), C-Space Inflation, and Dynamic Obstacle Ingestion.
-CS532 Advanced AI Robotics — Module 05-d500lib-motion / slam
+CS532 Advanced AI Robotics — Module motion / slam
 """
 import time
 import math

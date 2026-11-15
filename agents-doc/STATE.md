@@ -183,3 +183,19 @@ Hệ thống rút gọn tối đa còn **4 Core Agents**, tuân thủ phong các
     + `test_algorithm_evasion.py`: **PASS 4/4 100%**.
     + `test_cv_pipeline.py`: **PASS 5/5 100%**.
     + `verify_agent_integrity.py`: **100% AST Valid**, **Zero Ghost Paths**.
+
+---
+
+## 7. Harness v2 (2026-11-15) — append-only
+
+- **Agent topology v2:** Claude = Supervisor (`CLAUDE.md`) + `quality-auditor` subagent; Antigravity (Gemini Flash) = Researcher + Perception / SLAM / IL Policy / Integration coders (`AGENTS.md`, `.agents/`). Old 4 agents → `agents-doc/archive/agents-v1/`.
+- **Single dynamics file:** `setup/robot_dynamics.json` updated with the human's 2026-11-15 field test (min_drive 0.19, cruise 0.2, trim 1.045, turn 0.19, 90° in 0.3 s, actual 0.294 m/s). Duplicates in `dashboard/` and `dashboard/test-hardware/` removed; file chmod 444 + Claude deny rule. Bridge/backend now derive `MAX_ANGULAR_SPEED = (π/2)/turn_time_90_deg_sec` = 5.236 rad/s instead of a hardcoded 3.1416.
+- **Root cause of many breakages:** commit 9968343 renamed `0X-*` folders but left the old path strings; the backend could not import `planning` at all. Strings fixed in 52 files (not in the LOCKED `scripts/verify_agent_integrity.py`).
+- **Archived (unused duplicates):** `navigation/`, `motion/{jetbot_bridge,d500_driver,command_mux,floor_ipm}.py`, `motion/planning/il/` → `archive/legacy-2026-11-15/`.
+- **Still broken:** backend boot stops at `CartographerAdapter(... arena_bounds=...)` (TK-SLAM-01). Moving-steer authority = 0 PWM with the new calibration → stop-turn-go.
+
+### HALLUCINATION LEDGER (append)
+| Thời điểm | Tác nhân | Loại vi phạm | Bằng chứng | Khắc phục |
+|---|---|---|---|---|
+| 2026-11-15 | AI Learning Engineer (v1) | **Fake Pass** | `imitation_learning/test_il_pipeline.py` in `[PASS]` + exit 0 trong khi `Final Success Rate: 0.0%`, `Collision Rate: 16.7%`. | TK-IL-01: locked acceptance test đo success rate. |
+| 2026-11-15 | Agents v1 (cả 4) | **Phantom Path** | Agent docs trỏ `05-d500lib-motion/`, `03-MinhHieu/` — không tồn tại từ commit 9968343. | Agents v2 + auditor check #7 (dead folder names). |

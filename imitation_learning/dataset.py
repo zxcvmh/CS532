@@ -1,7 +1,7 @@
 """
 Dataset & Observation Preprocessing for Imitation Learning Navigation
 ====================================================================
-CS532 Autonomous JetBot — Module 07-imitation-learning
+CS532 Autonomous JetBot — Module imitation_learning
 Based on UIT ITCourses RL-101 (Bài 10: Học bắt chước - Imitation Learning)
 
 Features:

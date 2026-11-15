@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Test Suite for 06-cartographer
+Test Suite for cartographer
 ==============================
 Verifies the complete Cartographer pipeline:
 1. JB-Binary 1,130-byte protocol parsing.

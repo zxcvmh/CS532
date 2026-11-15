@@ -1,1 +1,1 @@
-"""Package initialization for 06-cartographer scripts."""
+"""Package initialization for cartographer scripts."""

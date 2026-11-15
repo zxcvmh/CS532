@@ -23,7 +23,7 @@ _DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 
 def _default_log_dir() -> str:
-    """<repo>/logs, i.e. 03-MinhHieu/logs next to the frontend and the bridge."""
+    """<repo>/logs, i.e. dashboard/logs next to the frontend and the bridge."""
     backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     repo_dir = os.path.dirname(backend_dir)
     return os.path.join(repo_dir, "logs")

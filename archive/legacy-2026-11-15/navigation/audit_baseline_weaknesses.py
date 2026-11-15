@@ -3,7 +3,7 @@
 """
 =============================================================================
 CS532 — BỘ ĐO ĐẠC & KIỂM CHỨNG KHOA HỌC 5 ĐIỂM YẾU CỦA BASELINE THUẬT TOÁN
-Mã nguồn: 02-DuyHieu (Nguồn gốc từ 04-hieu-MotionControl)
+Mã nguồn: navigation (Nguồn gốc từ 04-hieu-MotionControl)
 =============================================================================
 Mục đích:
   Kiểm chứng thực nghiệm (Empirical Proof) 100% bằng số liệu toán học và dữ liệu
@@ -177,11 +177,11 @@ def test_exp3_layer_conflict_and_costmap_violation():
 
 # =============================================================================
 # THỰC NGHIỆM 4: ĐỐI CHIẾU MÔ HÌNH ĐỘNG HỌC & ĐO ĐẠC VÙNG CHẾT PWM (DEADBAND)
-# Căn cứ mã nguồn: 03-MinhHieu/jetbot_bridge.py dòng 513-518 & robot_dynamics.json
+# Căn cứ mã nguồn: dashboard/jetbot_bridge.py dòng 513-518 & robot_dynamics.json
 # =============================================================================
 def test_exp4_kinematic_mapping_and_deadband():
     banner("[THỰC NGHIỆM 4] LỆCH PHA ĐỘNG HỌC PHẦN CỨNG: VÙNG CHẾT PWM & KHÔNG CÓ BÙ TRƯỢT")
-    print(f"[*] Căn cứ code: {CLR_YELLOW}03-MinhHieu/jetbot_bridge.py (dòng 510-518: set_motor_speeds, SPEED_FACTOR=0.38){CLR_RESET}")
+    print(f"[*] Căn cứ code: {CLR_YELLOW}dashboard/jetbot_bridge.py (dòng 510-518: set_motor_speeds, SPEED_FACTOR=0.38){CLR_RESET}")
     print(f"[*] Chuẩn thực nghiệm vàng ({CLR_BOLD}robot_dynamics.json{CLR_RESET}):")
     print(f"    - min_drive_speed: 0.20 (Deadband ma sát hộp số)")
     print(f"    - cruise_speed: 0.24 (tương ứng thực tế 0.333 m/s)")

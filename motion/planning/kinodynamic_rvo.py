@@ -25,7 +25,7 @@ Key Mathematical & Algorithmic Principles:
    - Tactical Yielding: Decelerate to creep (0.05 m/s) or stop at 0.3m if human continues close approach.
 
 4. Decoupled Modular Architecture:
-   - Cleanly separated in 03-MinhHieu/backend/app/planning/kinodynamic_rvo.py.
+   - Cleanly separated in dashboard/backend/app/planning/kinodynamic_rvo.py.
    - Ready for activation in 5m x 5m seminar room via Config.ENVIRONMENT_MODE = "SEMINAR_5X5".
    - Seamlessly bypassed in 2m x 1m arena mode (ARENA_2X1) to strictly avoid boundary wall collisions.
 =============================================================================

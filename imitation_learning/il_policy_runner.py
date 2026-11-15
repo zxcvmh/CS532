@@ -1,7 +1,7 @@
 """
 Real-Time Policy Runner for JetBot Edge Deployment (v2)
 =======================================================
-CS532 Autonomous JetBot — Module 07-imitation-learning
+CS532 Autonomous JetBot — Module imitation_learning
 Based on UIT ITCourses RL-101 (Bài 10: Học bắt chước - Imitation Learning)
 
 Features (v2):
@@ -56,8 +56,8 @@ class ILPolicyRunner:
             "models/dagger_policy.onnx",
             "models/bc_policy_numpy.json",
             "models/dagger_policy_numpy.json",
-            "07-imitation-learning/test_artifacts/models/bc_policy.onnx",
-            "07-imitation-learning/test_artifacts/models/dagger_policy.onnx",
+            "imitation_learning/test_artifacts/models/bc_policy.onnx",
+            "imitation_learning/test_artifacts/models/dagger_policy.onnx",
         ]
 
         resolved_path = None

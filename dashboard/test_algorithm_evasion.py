@@ -8,9 +8,9 @@ import os
 import math
 import time
 
-sys.path.insert(0, os.path.abspath("05-d500lib-motion/planning"))
-sys.path.insert(0, os.path.abspath("03-MinhHieu/backend"))
-sys.path.insert(0, os.path.abspath("03-MinhHieu"))
+sys.path.insert(0, os.path.abspath("motion/planning"))
+sys.path.insert(0, os.path.abspath("dashboard/backend"))
+sys.path.insert(0, os.path.abspath("dashboard"))
 
 from disparity_extender import DisparityExtender
 from obstacle_clustering import DynamicObstacleTracker, ObstacleCluster

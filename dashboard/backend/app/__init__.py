@@ -1,8 +1,8 @@
 import sys
 import os
 
-# Single Source of Truth for Motion Planning: 05-d500lib-motion/planning
-_motion_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../05-d500lib-motion"))
+# Single Source of Truth for Motion Planning: motion/planning
+_motion_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../motion"))
 if _motion_dir not in sys.path and os.path.exists(_motion_dir):
     sys.path.insert(0, _motion_dir)
 

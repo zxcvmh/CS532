@@ -1,6 +1,6 @@
 """
 Multi-Layer Decoupled SLAM Architecture.
-CS532 Advanced AI Robotics — Module 05-d500lib-motion / slam
+CS532 Advanced AI Robotics — Module motion / slam
 
 Exports clean, modular SLAM building blocks:
 - GridCore: 2D geometry, arrays, and coordinate transforms.

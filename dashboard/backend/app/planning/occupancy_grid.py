@@ -1,6 +1,6 @@
 """
 OccupancyGridMap compatibility shim.
-Forwards to planning.occupancy_grid in 05-d500lib-motion.
+Forwards to planning.occupancy_grid in motion.
 """
 from planning.occupancy_grid import OccupancyGridMap
 

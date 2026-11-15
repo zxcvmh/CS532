@@ -18,7 +18,7 @@ import numpy as np
 
 # Set path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "backend")))
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "05-d500lib-motion")))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "motion")))
 
 from app.config import Config
 from app.navigation.coordinator import NavigationCoordinator

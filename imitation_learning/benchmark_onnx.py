@@ -1,7 +1,7 @@
 """
 ONNX Model Validator & High-Precision Benchmark Utility
 =======================================================
-CS532 Autonomous JetBot — Module 07-imitation-learning
+CS532 Autonomous JetBot — Module imitation_learning
 Verifies ONNX model compliance, inspects tensor graph, and benchmarks inference latency.
 """
 
@@ -138,7 +138,7 @@ def validate_and_benchmark_onnx(onnx_path: str, num_runs: int = 5000):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="ONNX Benchmark and Validation Tool")
-    parser.add_argument("--model", type=str, default="07-imitation-learning/test_artifacts/models/dagger_policy.onnx", help="Path to ONNX file")
+    parser.add_argument("--model", type=str, default="imitation_learning/test_artifacts/models/dagger_policy.onnx", help="Path to ONNX file")
     parser.add_argument("--runs", type=int, default=5000, help="Benchmark iterations")
     args = parser.parse_args()
 

@@ -114,10 +114,10 @@ class MotorDynamics:
         """Loads physical motor dynamics parameters from robot_dynamics.json."""
         if config_path is None:
             candidates = [
-                os.path.join(os.path.dirname(__file__), "..", "..", "..", "03-MinhHieu", "test-hardware", "robot_dynamics.json"),
+                os.path.join(os.path.dirname(__file__), "..", "..", "..", "dashboard", "test-hardware", "robot_dynamics.json"),
                 os.path.join(os.path.dirname(__file__), "..", "..", "..", "setup", "robot_dynamics.json"),
                 os.path.join(os.path.dirname(__file__), "..", "..", "setup", "robot_dynamics.json"),
-                "/home/zxcvmh/Projects/CS532/03-MinhHieu/test-hardware/robot_dynamics.json",
+                "/home/zxcvmh/Projects/CS532/dashboard/test-hardware/robot_dynamics.json",
                 "/home/zxcvmh/Projects/CS532/setup/robot_dynamics.json",
             ]
             for c in candidates:

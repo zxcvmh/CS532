@@ -1,89 +1,84 @@
-# HỆ THỐNG PHIẾU CÔNG VIỆC (AI AGENT WORK TICKETS) — CS532
+# TICKETS — CS532 JetBot (v2, from 2026-11-15)
 
-*Tài liệu này quản lý các Ticket công việc vi mô (Micro-sprints) của từng Agent. Mỗi ticket bắt buộc có Tiêu chuẩn Nghiệm thu (Definition of Done) rõ ràng để kiểm chứng độc lập theo nguyên lý `harness-engineering`.*
+Status flow: `DRAFT` (Supervisor still writing the locked test) → `READY` (Antigravity may start) →
+`IN REVIEW` (report submitted, auditor running) → `DONE` (auditor PASS + committed) | `REJECTED`.
+Old v1 tickets: `agents-doc/archive/agents-v1/TICKETS-v1.md` (paths there are dead).
 
----
+## Template (copy for every new ticket)
 
-## 📌 SPRINT HIỆN TẠI: TRIỂN KHAI GOAL-CONDITIONED DAGGER IMITATION LEARNING (RL-10)
-
----
-
-### Ticket TK-AI-01: [RESEARCH] Chốt Kiến Trúc Goal-Conditioned DAgger & RVO Expert (RL-10)
-- **Agent gán trách nhiệm:** `ai-robotics-researcher-agent`
-- **Mức độ ưu tiên:** 🟢 **P0 — Critical (HOÀN THÀNH 100%)**
-- **Kết quả nghiệm thu:**
-  - [x] Khảo sát kiến trúc học máy chuẩn khóa học RL-10 (Imitation Learning: DAgger vs BC).
-  - [x] Giảm thiểu tối đa sự phụ thuộc vào A*: A* chỉ làm nhiệm vụ gợi ý hướng đi hoặc Subgoal vĩ mô; toàn bộ việc lách né vật cản động/tĩnh giao cho DAgger Policy.
-  - [x] Chọn `KinodynamicRVOPlanner` làm Expert Oracle tự động sinh nhãn $u^* = (v^*, \omega^*)$.
-  - [x] Chốt cấu trúc State Vector 77 chiều: 72 tia LiDAR $[0, 1] + \rho_{\text{subgoal}} + \sin(\phi) + \cos(\phi) + v_{\text{prev}} + \omega_{\text{prev}}$.
-
----
-
-### Ticket TK-AI-02: [SIM & DATA] Xây dựng Môi trường Sim 2D & Pipeline Tự Thu Thập Trajectory
-- **Agent gán trách nhiệm:** `ai-learning-engineer-agent`
-- **Mức độ ưu tiên:** 🟢 **P0 — Critical (HOÀN THÀNH 100%)**
-- **Kết quả nghiệm thu:**
-  - [x] Xây dựng `05-d500lib-motion/planning/il/sim_env.py`: Môi trường 2D mô phỏng động học unicycle vi sai, vật cản tĩnh và người đi bộ cắt ngang.
-  - [x] Thuật toán raycasting 72 sectors LiDAR với tốc độ $> 10,000$ steps/s.
-  - [x] Tích hợp `05-d500lib-motion/planning/il/expert_oracle.py`: Wrapper Expert Oracle từ `KinodynamicRVOPlanner`.
-  - [x] Thu thập thành công 11,827 mẫu dữ liệu trạng thái — hành động chuẩn hóa.
+```
+### TK-<AREA>-<NN>: <title>
+- Role: researcher | perception | slam | il-policy | integration | supervisor
+- Status: DRAFT | READY | IN REVIEW | DONE | REJECTED
+- Problem (with evidence, file:line or command output):
+- Allowed files:
+- Forbidden files: everything else + agents-doc/LOCKED_PATHS.txt
+- Acceptance command:
+- Threshold (numbers):
+- Regression commands:
+- Depends on:
+```
 
 ---
 
-### Ticket TK-AI-03: [IL POLICY] Huấn luyện Mạng Goal-Conditioned DAgger & Xuất ONNX
-- **Agent gán trách nhiệm:** `ai-learning-engineer-agent`
-- **Mức độ ưu tiên:** 🟢 **P1 — High (HOÀN THÀNH 100%)**
-- **Kết quả nghiệm thu:**
-  - [x] Xây dựng mạng nơ-ron `NavPolicyMLP` trong `05-d500lib-motion/planning/il/dagger_policy.py`: Linear(77, 128) -> LayerNorm -> ReLU -> Linear(128, 64) -> ReLU -> Linear(64, 2) -> Tanh.
-  - [x] Chạy vòng lặp DAgger 4 iterations với cơ chế $\beta$-decay ($1.0 \to 0.6 \to 0.36 \to 0.22$) giảm triệt để lỗi Covariate Shift.
-  - [x] Lưu checkpoint weights tại `05-d500lib-motion/planning/il/checkpoints/dagger_policy.pth`.
-  - [x] Xuất mô hình ONNX tại `05-d500lib-motion/planning/il/checkpoints/dagger_policy.onnx`.
-  - [x] Đo đạc thời gian suy luận: **0.082 ms** (nhanh gấp 12 lần mục tiêu < 1.0 ms).
+### TK-SLAM-01: Backend cannot start — `arena_bounds` interface mismatch
+- Role: slam
+- Status: READY
+- Problem: `cd dashboard/backend && ../../.venv/bin/python -c "import app.main"` →
+  `TypeError: CartographerAdapter.__init__() got an unexpected keyword argument 'arena_bounds'`.
+  Caller: `dashboard/backend/app/navigation/motion_adapter.py:22-29`.
+  Callee: `dashboard/backend/app/navigation/cartographer_adapter.py:32-42`.
+  Introduced by the unfinished Hector/anchor refactor (commits 5719eba, a5879cf).
+- Allowed files: `dashboard/backend/app/navigation/cartographer_adapter.py`
+- Acceptance command: `cd dashboard/backend && ../../.venv/bin/python -c "import app.main"`
+- Threshold: no `arena_bounds` TypeError. Report the NEXT error verbatim if one appears (do not fix it).
+- Regression commands: `.venv/bin/python tests/test_hector_anchor_slam.py`;
+  `cd dashboard && PYTHONPATH=../motion:backend ../.venv/bin/python test_path_following_and_modular_architecture.py`
+  (baseline 2026-11-15: 7 ok, 1 skipped)
+- Depends on: —
 
----
+### TK-IL-01: IL test reports PASS with 0 % success, and overwrites the deployed model
+- Role: il-policy
+- Status: DRAFT (Supervisor writes `tests/acceptance/test_il_sim_success.py` first)
+- Problem: `imitation_learning/test_il_pipeline.py` exits 0 and prints
+  `[PASS] DAgger aggregation verified!` while printing `Final Success Rate: 0.0%`,
+  `Final Collision Rate: 16.7%`. It writes into `imitation_learning/test_artifacts/models/`, which
+  is exactly where `il_onnx_bridge.py:45` loads the runtime model from.
+- Allowed files: decided when READY.
+- Threshold: 100 episodes, fixed seeds, crossing pedestrians: success ≥ 90 %, collision ≤ 2 %;
+  expert success reported alongside.
+- Depends on: —
 
-### Ticket TK-AI-04: [INTEGRATION] Tích hợp Controller "dagger_il" vào Motion Adapter
-- **Agent gán trách nhiệm:** `ai-learning-engineer-agent`
-- **Mức độ ưu tiên:** 🟢 **P0 — Critical (HOÀN THÀNH 100%)**
-- **Kết quả nghiệm thu:**
-  - [x] Cập nhật `03-MinhHieu/backend/app/navigation/motion_adapter.py` hỗ trợ mode `"dagger_il"`.
-  - [x] Tự động trích xuất Subgoal dọc theo lộ trình hoặc đích đến cách xe 1.0m (`_extract_subgoal`).
-  - [x] Tích hợp bộ lọc an toàn phân tích **CBF-QP Safety Shield** (`CBFSafetyFilter`): Ép vận tốc $v \to 0$ khi gặp vật cản $< 0.16\text{m}$, kích hoạt Pivot Clearance thoát góc kẹt.
-  - [x] Giới hạn vận tốc an toàn tuân thủ `setup/robot_dynamics.json`: $v \le 0.12\text{ m/s}$, $|\omega| \le 0.35\text{ rad/s}$ trên sàn gạch men.
+### TK-IL-02: IL action caps hardcoded instead of read from robot_dynamics.json
+- Role: il-policy
+- Status: DRAFT
+- Problem: `imitation_learning/config.py` hardcodes `MAX_LINEAR_SPEED=0.16`, `MIN_DRIVE_SPEED=0.10`,
+  `MAX_ANGULAR_SPEED=0.35`; field file says `min_drive_speed=0.19`, `max_safe_speed_mps=0.14`,
+  `turn_time_90_deg_sec=0.3`. Changing caps requires retraining.
+- Depends on: TK-IL-01
 
----
+### TK-CV-01: Two diverged floor IPM implementations
+- Role: perception
+- Status: DRAFT
+- Problem: `perception/core/floor_ipm.py` ≠ `dashboard/floor_ipm.py` (bridge imports the latter).
+- Depends on: —
 
-### Ticket TK-AI-05: [EDGE & HARDWARE DEPLOY] Nạp ONNX / TensorRT Lên Jetson Nano & Test Cảm Biến Thật
-- **Agent gán trách nhiệm:** `quality-auditor-debugger-agent`
-- **Mức độ ưu tiên:** 🔴 **P0 — Next Immediate Step**
-- **Mô tả công việc:**
-  Biên dịch `dagger_policy.onnx` thành TensorRT FP16 engine trên Jetson Nano. Kết nối với luồng LiDAR D500 thời gian thực (UART 230400) và camera CSI IMX219 (YOLO26n).
-- **Tiêu chuẩn Hoàn thành (Definition of Done):**
-  - [ ] Nạp file `.onnx` lên Jetson Nano và build `dagger_policy.engine`.
-  - [ ] Đo đạc FPS suy luận trên Jetson Nano đạt $\ge 50\text{ FPS}$ (Latency $\le 20\text{ms}$).
-  - [ ] Kiểm tra RAM chiếm dụng trên Jetson Nano $\le 450\text{MB}$.
-  - [ ] Chạy `scripts/verify_agent_integrity.py` đạt **100% PASS**.
+### TK-CV-02: Camera detections never reach navigation
+- Role: perception (+ interface note to integration)
+- Status: DRAFT
+- Problem: `dashboard/backend/app/navigation/coordinator.py:266-270` only uses detections to set
+  `yolo_connected`; people are not added to any costmap layer or IL observation.
+- Depends on: TK-SLAM-01
 
----
+### TK-INT-01: Deploy the single dynamics file to the Jetson
+- Role: supervisor (hardware)
+- Status: READY — needs Jetson host/user from the human
+- Problem: bridge now reads only `<repo>/setup/robot_dynamics.json` or
+  `/home/jetbot/setup/robot_dynamics.json`; the old `dashboard/test-hardware/` copy is no longer read.
+- Acceptance: bridge log line `[BRIDGE] Loaded robot dynamics from .../setup/robot_dynamics.json`.
 
-### Ticket TK-AI-06: [DASHBOARD] Trực Quan Hóa Quỹ Đạo AI DAgger & Trạng Thái CBF Shield
-- **Agent gán trách nhiệm:** `quality-auditor-debugger-agent`
-- **Mức độ ưu tiên:** 🟢 **P2 — Medium**
-- **Mô tả công việc:**
-  Nâng cấp Web Dashboard React 19 để hiển thị vector vận tốc dự đoán $[v, \omega]$ của DAgger policy và trạng thái can thiệp của CBF Safety Shield lên Canvas 2D.
-- **Tiêu chuẩn Hoàn thành (Definition of Done):**
-  - [ ] Vẽ mũi tên vận tốc $[v, \omega]$ do AI đề xuất trực tiếp trên Canvas 2D.
-  - [ ] Hiển thị badge trạng thái: `AI Policy: NOMINAL` hoặc `Safety Shield: OVERRIDE`.
-  - [ ] Duy trì tần số cập nhật WebSocket 10Hz mượt mà.
-
----
-
-### Ticket TK-AI-07: [SUPERVISOR] Nghiệm Thu Thực Nghiệm Xe Thật Né Người Di Chuyển
-- **Agent gán trách nhiệm:** `lead-supervisor-agent`
-- **Mức độ ưu tiên:** 🔴 **P0 — Master Gatekeeper**
-- **Mô tả công việc:**
-  Tổ chức thực nghiệm trên xe JetBot thật: Chạy xe trên sàn gạch men, người đi bộ cắt ngang đường. Đo đạc các chỉ số an toàn, tránh va chạm tuyệt đối và kiểm tra hiện tượng trượt bánh.
-- **Tiêu chuẩn Hoàn thành (Definition of Done):**
-  - [ ] Tỉ lệ né cản và người đi bộ thành công $\ge 95\%$.
-  - [ ] Không có hiện tượng va chạm vật lý phần cứng.
-  - [ ] Video demo và ghi nhận kết quả vào `agents-doc/STATE.md`.
+### TK-INT-02: Legacy tests still point at dead `04-hieu-MotionControl` paths
+- Role: integration
+- Status: DRAFT
+- Problem: `motion/test_*.py` reference `04-hieu-MotionControl/` (no such folder).
+- Depends on: TK-SLAM-01

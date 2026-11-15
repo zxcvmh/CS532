@@ -1,0 +1,8 @@
+^setup/robot_dynamics\.json$
+^scripts/verify_agent_integrity\.py$
+^tests/acceptance/
+^AGENTS\.md$
+^\.agents/
+^CLAUDE\.md$
+^\.claude/
+^agents-doc/LOCKED_PATHS\.txt$

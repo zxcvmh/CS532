@@ -47,7 +47,7 @@ async def startup_event():
         candidates = [
             os.path.abspath(os.path.join(os.path.dirname(__file__), "../../jetbot_bridge.py")),
             os.path.abspath(os.path.join(os.path.dirname(__file__), "../jetbot_bridge.py")),
-            "/home/jetbot/03-MinhHieu/jetbot_bridge.py",
+            "/home/jetbot/dashboard/jetbot_bridge.py",
             "/home/jetbot/mhieu/jetbot_bridge.py",
         ]
         for b_path in candidates:

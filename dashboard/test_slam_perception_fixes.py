@@ -24,8 +24,8 @@ import math
 import unittest
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-BACKEND = os.path.join(PROJECT_ROOT, "03-MinhHieu", "backend")
-MOTION = os.path.join(PROJECT_ROOT, "05-d500lib-motion")
+BACKEND = os.path.join(PROJECT_ROOT, "dashboard", "backend")
+MOTION = os.path.join(PROJECT_ROOT, "motion")
 sys.path.insert(0, BACKEND)
 sys.path.insert(0, MOTION)
 
@@ -37,13 +37,13 @@ from planning.lidar_odometry import Lidar2DOdometry
 from planning.occupancy_grid import OccupancyGridMap
 from app.models.schemas import RobotPose, ModeEnum
 
-# Import d500 driver from 03-MinhHieu
+# Import d500 driver from dashboard
 import importlib.util
-spec = importlib.util.spec_from_file_location("d500_driver_03", os.path.join(PROJECT_ROOT, "03-MinhHieu", "d500_driver.py"))
+spec = importlib.util.spec_from_file_location("d500_driver_03", os.path.join(PROJECT_ROOT, "dashboard", "d500_driver.py"))
 d500_03 = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(d500_03)
 
-spec_05 = importlib.util.spec_from_file_location("d500_driver_05", os.path.join(PROJECT_ROOT, "05-d500lib-motion", "d500_driver.py"))
+spec_05 = importlib.util.spec_from_file_location("d500_driver_05", os.path.join(PROJECT_ROOT, "motion", "d500_driver.py"))
 d500_05 = importlib.util.module_from_spec(spec_05)
 spec_05.loader.exec_module(d500_05)
 
@@ -93,10 +93,10 @@ class TestSLAMFixes(unittest.TestCase):
     def test_01_d500_driver_single_revolution_sweep(self):
         """LiDAR Driver should be Pure Single-Revolution (~100ms) with no sliding cache ghosting."""
         driver_03 = d500_03.D500OfficialDriver()
-        self.assertFalse(hasattr(driver_03, "_sliding_ranges"), "03-MinhHieu must not have sliding_ranges")
+        self.assertFalse(hasattr(driver_03, "_sliding_ranges"), "dashboard must not have sliding_ranges")
 
         driver_05 = d500_05.D500OfficialDriver()
-        self.assertFalse(hasattr(driver_05, "_sliding_ranges"), "05-d500lib-motion must not have sliding_ranges")
+        self.assertFalse(hasattr(driver_05, "_sliding_ranges"), "motion must not have sliding_ranges")
 
         # Verify timeout logic at 120ms does NOT prematurely fire
         now = time.time()

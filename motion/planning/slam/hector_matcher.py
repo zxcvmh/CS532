@@ -1,7 +1,7 @@
 """
 HectorMatcher: Fast 2D Likelihood Field Scan Matcher for LiDAR Odometry.
 Uses cached probability map and Gauss-Newton bilinear gradient optimization.
-CS532 Advanced AI Robotics — Module 05-d500lib-motion / slam
+CS532 Advanced AI Robotics — Module motion / slam
 """
 import math
 from typing import Tuple, List, Optional, Dict, Any

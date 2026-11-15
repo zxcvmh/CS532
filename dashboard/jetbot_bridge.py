@@ -270,13 +270,10 @@ ROBOT_DYNAMICS = {
     "motor_right_polarity": -1
 }
 
+# Single source of truth: setup/robot_dynamics.json (field-measured by the operator).
 for _p in (
-    "/home/jetbot/dashboard/test-hardware/robot_dynamics.json",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "setup", "robot_dynamics.json"),
     "/home/jetbot/setup/robot_dynamics.json",
-    os.path.join(os.path.dirname(__file__), "test-hardware", "robot_dynamics.json"),
-    os.path.join(os.path.dirname(__file__), "..", "setup", "robot_dynamics.json"),
-    "dashboard/test-hardware/robot_dynamics.json",
-    "setup/robot_dynamics.json"
 ):
     try:
         if os.path.isfile(_p):
@@ -286,16 +283,18 @@ for _p in (
             break
     except Exception:
         pass
+else:
+    print("[BRIDGE][WARN] setup/robot_dynamics.json NOT FOUND - using stale built-in defaults!", flush=True)
 
 LIDAR_YAW_OFFSET_DEG = float(ROBOT_DYNAMICS.get("lidar_yaw_offset_deg", 0.0))
 MIN_DRIVE_SPEED = float(ROBOT_DYNAMICS.get("min_drive_speed", 0.12))
 CRUISE_SPEED = float(ROBOT_DYNAMICS.get("cruise_speed", 0.17))
 TRIM_FACTOR = float(ROBOT_DYNAMICS.get("trim_factor", 1.024))
 TURN_SPEED = float(ROBOT_DYNAMICS.get("turn_speed", 0.14))
-TURN_TIME_90_SEC = 0.50  # 90 deg in 0.50s = 3.1416 rad/s
+TURN_TIME_90_SEC = float(ROBOT_DYNAMICS.get("turn_time_90_deg_sec", 0.50))
 SOFT_START_RAMP_SEC = float(ROBOT_DYNAMICS.get("soft_start_ramp_sec", 0.4))
 MAX_SAFE_SPEED_MPS = float(ROBOT_DYNAMICS.get("max_safe_speed_mps", 0.14))
-MAX_ANGULAR_SPEED_RADS = 3.1416  # EXACT physical angular speed (90 deg in 0.50s)
+MAX_ANGULAR_SPEED_RADS = (math.pi / 2.0) / TURN_TIME_90_SEC  # physical spin rate at turn_speed PWM
 ACTUAL_SPEED_MPS = float(ROBOT_DYNAMICS.get("actual_speed_mps", 0.244))
 MOTOR_LEFT_POLARITY = int(ROBOT_DYNAMICS.get("motor_left_polarity", -1))
 MOTOR_RIGHT_POLARITY = int(ROBOT_DYNAMICS.get("motor_right_polarity", -1))
@@ -567,9 +566,9 @@ try:
 except ImportError:
     _dde_candidates = [
         os.path.abspath(os.path.join(os.path.dirname(__file__), "../motion/planning")),
-        os.path.abspath(os.path.join(os.path.dirname(__file__), "../05-d500lib-motion/planning")),
+        os.path.abspath(os.path.join(os.path.dirname(__file__), "../motion/planning")),
         os.path.abspath(os.path.join(os.path.dirname(__file__), "../navigation/planning")),
-        os.path.abspath(os.path.join(os.path.dirname(__file__), "../02-DuyHieu/planning")),
+        os.path.abspath(os.path.join(os.path.dirname(__file__), "../navigation/planning")),
     ]
     for _dde_dir in _dde_candidates:
         if os.path.isdir(_dde_dir) and _dde_dir not in sys.path:

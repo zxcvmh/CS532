@@ -15,10 +15,10 @@ import math
 import unittest
 import numpy as np
 
-# Ensure 03-MinhHieu and 05-d500lib-motion are in sys.path
+# Ensure dashboard and motion are in sys.path
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(BASE_DIR)
-MOTION_LIB = os.path.join(PROJECT_ROOT, "05-d500lib-motion")
+MOTION_LIB = os.path.join(PROJECT_ROOT, "motion")
 BACKEND_APP = os.path.join(BASE_DIR, "backend")
 
 for p in [MOTION_LIB, BACKEND_APP, BASE_DIR]:

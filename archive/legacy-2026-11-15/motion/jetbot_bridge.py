@@ -242,11 +242,11 @@ ROBOT_DYNAMICS = {
 }
 
 for _p in (
-    "/home/jetbot/03-MinhHieu/test-hardware/robot_dynamics.json",
+    "/home/jetbot/dashboard/test-hardware/robot_dynamics.json",
     "/home/jetbot/setup/robot_dynamics.json",
     os.path.join(os.path.dirname(__file__), "test-hardware", "robot_dynamics.json"),
     os.path.join(os.path.dirname(__file__), "..", "setup", "robot_dynamics.json"),
-    "03-MinhHieu/test-hardware/robot_dynamics.json",
+    "dashboard/test-hardware/robot_dynamics.json",
     "setup/robot_dynamics.json"
 ):
     try:
@@ -516,7 +516,7 @@ from d500_driver import D500OfficialDriver
 try:
     from disparity_extender import DisparityExtender
 except ImportError:
-    _dde_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../05-d500lib-motion/planning"))
+    _dde_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../motion/planning"))
     if _dde_dir not in sys.path:
         sys.path.insert(0, _dde_dir)
     from disparity_extender import DisparityExtender

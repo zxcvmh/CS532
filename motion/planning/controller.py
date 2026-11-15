@@ -1230,10 +1230,10 @@ class PurePursuitController:
                 os.path.join(os.path.dirname(__file__), "..", "..", "setup", "robot_dynamics.json"),
                 os.path.join(os.path.dirname(__file__), "..", "setup", "robot_dynamics.json"),
                 os.path.join(os.path.dirname(__file__), "robot_dynamics.json"),
-                os.path.join(os.path.dirname(__file__), "..", "..", "03-MinhHieu", "test-hardware", "robot_dynamics.json"),
+                os.path.join(os.path.dirname(__file__), "..", "..", "dashboard", "test-hardware", "robot_dynamics.json"),
                 os.path.join(os.path.dirname(__file__), "..", "test-hardware", "robot_dynamics.json"),
                 os.path.expanduser("~/setup/robot_dynamics.json"),
-                os.path.expanduser("~/03-MinhHieu/test-hardware/robot_dynamics.json"),
+                os.path.expanduser("~/dashboard/test-hardware/robot_dynamics.json"),
                 os.path.expanduser("~/CS532-main/setup/robot_dynamics.json"),
             ]
             for p in search_paths:

@@ -1,7 +1,7 @@
 """
 Evaluation Benchmark Suite for JetBot Imitation Learning Policy
 ================================================================
-CS532 Autonomous JetBot — Module 07-imitation-learning
+CS532 Autonomous JetBot — Module imitation_learning
 Based on UIT ITCourses RL-101 (Bài 10: Học bắt chước - Imitation Learning)
 
 Standard Robotics Navigation Evaluation Protocol:
@@ -460,8 +460,8 @@ def run_full_benchmark(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Evaluate JetBot Imitation Learning Benchmark")
-    parser.add_argument("--model", type=str, default="07-imitation-learning/models/bc_policy.onnx", help="Path to policy model")
-    parser.add_argument("--report", type=str, default="07-imitation-learning/logs/evaluation_benchmark_report.json", help="Path to output report")
+    parser.add_argument("--model", type=str, default="imitation_learning/models/bc_policy.onnx", help="Path to policy model")
+    parser.add_argument("--report", type=str, default="imitation_learning/logs/evaluation_benchmark_report.json", help="Path to output report")
     args = parser.parse_args()
 
     run_full_benchmark(model_path=args.model, report_path=args.report)

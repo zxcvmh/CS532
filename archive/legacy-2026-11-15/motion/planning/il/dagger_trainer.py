@@ -44,7 +44,7 @@ class DAggerTrainer:
         lr: float = 1e-3,
         batch_size: int = 64,
         epochs_per_iter: int = 15,
-        save_dir: str = "05-d500lib-motion/planning/il/checkpoints"
+        save_dir: str = "motion/planning/il/checkpoints"
     ):
         self.policy = policy if policy is not None else NavPolicy1DCNN()
         self.oracle = oracle if oracle is not None else ExpertOracle()

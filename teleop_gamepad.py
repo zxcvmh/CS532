@@ -99,7 +99,7 @@ except Exception as e:
 CONFIG_PATHS = [
     os.path.join(os.path.dirname(__file__), "setup", "robot_dynamics.json"),
     os.path.join(os.path.dirname(__file__), "robot_dynamics.json"),
-    os.path.join(os.path.dirname(__file__), "03-MinhHieu", "test-hardware", "robot_dynamics.json"),
+    os.path.join(os.path.dirname(__file__), "dashboard", "test-hardware", "robot_dynamics.json"),
     "/home/jetbot/setup/robot_dynamics.json",
 ]
 

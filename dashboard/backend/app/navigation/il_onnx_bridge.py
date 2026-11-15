@@ -1,7 +1,7 @@
 """
 Imitation Learning ONNX Bridge for Backend Navigation Coordinator
 =================================================================
-CS532 Autonomous JetBot — Module 07-imitation-learning integration
+CS532 Autonomous JetBot — Module imitation_learning integration
 Plugs trained ONNX Policy directly into FastAPI Backend coordinator.
 """
 
@@ -14,10 +14,10 @@ logger = logging.getLogger("jetbot.il_onnx_bridge")
 
 cur_dir = os.path.dirname(os.path.abspath(__file__))
 candidates_il = [
-    os.path.abspath(os.path.join(cur_dir, "../../../../07-imitation-learning")),
-    os.path.abspath(os.path.join(cur_dir, "../../../07-imitation-learning")),
-    os.path.abspath("07-imitation-learning"),
-    os.path.abspath("../07-imitation-learning"),
+    os.path.abspath(os.path.join(cur_dir, "../../../../imitation_learning")),
+    os.path.abspath(os.path.join(cur_dir, "../../../imitation_learning")),
+    os.path.abspath("imitation_learning"),
+    os.path.abspath("../imitation_learning"),
 ]
 il_dir = None
 for c in candidates_il:

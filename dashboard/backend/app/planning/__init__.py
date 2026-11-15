@@ -1,6 +1,6 @@
 """
 Planning namespace compatibility shim.
-Forwards to planning module in 05-d500lib-motion.
+Forwards to planning module in motion.
 """
 from planning.occupancy_grid import OccupancyGridMap
 

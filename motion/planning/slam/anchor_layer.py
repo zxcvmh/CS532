@@ -1,7 +1,7 @@
 """
 AnchorLayer: Static Anchor Map layer for fixed environmental boundaries.
 Locks wall cells and protects them from raycasting erosion.
-CS532 Advanced AI Robotics — Module 05-d500lib-motion / slam
+CS532 Advanced AI Robotics — Module motion / slam
 """
 import math
 import numpy as np

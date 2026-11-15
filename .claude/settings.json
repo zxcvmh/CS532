@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "deny": [
+      "Edit(setup/robot_dynamics.json)",
+      "Write(setup/robot_dynamics.json)"
+    ]
+  }
+}

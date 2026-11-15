@@ -6,7 +6,7 @@ Implements section 8/10 of cs532-jetbot-final-fix-plan.md: it prints the census,
 bounds, goal fidelity, the cluster lifecycle and the near-field constants, in one shot,
 runnable on the Jetson.
 
-Usage (from 03-MinhHieu/):
+Usage (from dashboard/):
     python3 verify_fixes.py
 
 Exit code 0 = every offline-provable check passed. Exit code 1 = at least one FAIL.
@@ -22,7 +22,7 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 BACKEND = os.path.join(HERE, "backend")
-MOTION = os.path.join(REPO, "05-d500lib-motion")
+MOTION = os.path.join(REPO, "motion")
 for _p in (BACKEND, MOTION, HERE):
     if _p not in sys.path:
         sys.path.insert(0, _p)
@@ -78,9 +78,9 @@ class FakeCluster:
 
 
 def load_live(module_name, filename):
-    """Loads a module from 03-MinhHieu/ BY PATH.
+    """Loads a module from dashboard/ BY PATH.
 
-    Required because ``app/__init__.py`` puts ``05-d500lib-motion`` at sys.path[0], which
+    Required because ``app/__init__.py`` puts ``motion`` at sys.path[0], which
     makes the stale 05 mirrors of ``d500_driver`` / ``disparity_extender`` shadow the live
     03 copies this harness is supposed to be verifying.
     """

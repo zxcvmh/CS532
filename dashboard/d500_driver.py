@@ -2,7 +2,7 @@
 """
 Official LDROBOT LD19 / D500 LiDAR High-Precision Python Driver
 =============================================================================
-CS532 Autonomous Robotics — Module 05-d500lib-motion
+CS532 Autonomous Robotics — Module motion
 Based on Official LDROBOT C++ SDK (ldrobotSensorTeam/ldlidar_stl_sdk / lipkg)
 
 Key Specifications:

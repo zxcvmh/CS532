@@ -1,3 +1,4 @@
+import math
 import os
 
 
@@ -42,7 +43,6 @@ class Config:
     # Load calibrated dynamics from setup/robot_dynamics.json (Single Source of Truth)
     _dynamics_paths = [
         os.path.join(os.path.dirname(__file__), "../../../setup/robot_dynamics.json"),
-        os.path.join(os.path.dirname(__file__), "../../test-hardware/robot_dynamics.json"),
         "/home/zxcvmh/Projects/CS532/setup/robot_dynamics.json",
         "/home/jetbot/setup/robot_dynamics.json"
     ]
@@ -62,9 +62,9 @@ class Config:
     CRUISE_SPEED = float(_cfg_dyn.get("cruise_speed", 0.17))  # m/s (calibrated cruise_speed)
     MIN_DRIVE_SPEED = float(_cfg_dyn.get("min_drive_speed", 0.12))  # m/s (GA25 static deadband compensation)
     TURN_SPEED = float(_cfg_dyn.get("turn_speed", 0.14))  # normalized speed PWM for rotation
-    TURN_TIME_90_DEG_SEC = 0.50  # 0.50s for 90 deg = 3.1416 rad/s
-    TURN_TIME_180_DEG_SEC = 1.00  # 1.00s for 180 deg
-    MAX_ANGULAR_SPEED = 3.1416  # rad/s: EXACT physical angular speed (90 deg in 0.50s)
+    TURN_TIME_90_DEG_SEC = float(_cfg_dyn.get("turn_time_90_deg_sec", 0.50))
+    TURN_TIME_180_DEG_SEC = float(_cfg_dyn.get("turn_time_180_deg_sec", 1.00))
+    MAX_ANGULAR_SPEED = (math.pi / 2.0) / TURN_TIME_90_DEG_SEC  # rad/s: physical spin rate at turn_speed
     ACTUAL_SPEED_MPS = float(_cfg_dyn.get("actual_speed_mps", 0.244))  # m/s
     TRIM_FACTOR = float(_cfg_dyn.get("trim_factor", 1.024))
     LIDAR_YAW_OFFSET_DEG = float(_cfg_dyn.get("lidar_yaw_offset_deg", 0.0))

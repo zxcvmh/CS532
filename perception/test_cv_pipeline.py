@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-CS532 - Comprehensive Unit Test Suite for Computer Vision Pipeline (01-HieuMe)
+CS532 - Comprehensive Unit Test Suite for Computer Vision Pipeline (perception)
 ==============================================================================
 Tests:
   1. FrameGrabber: Synthetic generation & static image reading (640x480).
@@ -24,7 +24,7 @@ if sys.platform.startswith("win"):
     except Exception:
         pass
 
-# Ensure import of 01-HieuMe modules
+# Ensure import of perception modules
 _DIR = os.path.dirname(os.path.abspath(__file__))
 if _DIR not in sys.path:
     sys.path.insert(0, _DIR)

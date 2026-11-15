@@ -1,6 +1,6 @@
 """
 GridCore: Fundamental 2D Occupancy Grid geometry, coordinate conversions, and ray algorithms.
-CS532 Advanced AI Robotics — Module 05-d500lib-motion / slam
+CS532 Advanced AI Robotics — Module motion / slam
 """
 import math
 from typing import Tuple, List, Optional
