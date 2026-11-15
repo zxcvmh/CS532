@@ -137,7 +137,7 @@ ideal scan @5.24 rad/s 0.0°/1.6 cm ✅ · distorted scan −22.8°/8.5 cm ❌ �
 +4.7°/36.5 cm ❌. Repro scripts (auditor scratchpad, to be turned into a locked test by the Supervisor):
 `repro_slam.py`, `repro4.py`.
 
-### TK-SLAM-02: LiDAR points and clusters ignore the lever arm
+### TK-SLAM-02: LiDAR points and clusters ignore the lever arm - [x]
 - Role: integration (both files are in `dashboard/backend/`)
 - Status: DONE 2026-11-15 — auditor PASS. Lever arm = 0.01 m (human-measured, `lidar_lever_arm_m`).
   Contour test_02 passes; dashboard points and cluster poses agree to 1e-7. Ran while DRAFT and touched
@@ -145,31 +145,116 @@ ideal scan @5.24 rad/s 0.0°/1.6 cm ✅ · distorted scan −22.8°/8.5 cm ❌ �
   `motion_adapter.py:205` use `Config.LIDAR_LEVER_ARM_M` (drop the getattr default);
   `telemetry_parser.py:88` docstring still says LiDAR is at the robot origin.
 - Problem: `dashboard/backend/app/hardware/telemetry_parser.py:92-93` (`ranges_to_points`) and
-  `dashboard/backend/app/navigation/motion_adapter.py:205` (`la = 0.0`) drop the 0.08 m axle→LiDAR
-  offset that the raycaster and matcher apply → dashboard points/person boxes sit 8 cm off and
+  `dashboard/backend/app/navigation/motion_adapter.py:205` (`la = 0.0`) drop the 0.01 m axle→LiDAR
+  offset that the raycaster and matcher apply → dashboard points/person boxes sit 1 cm off and
   the error rotates with heading, even with perfect SLAM.
 
-### TK-SLAM-03: Map follows the robot during in-place turns (self-reinforcing drift)
+### TK-SLAM-03: Map follows the robot during in-place turns — three different lever arms in SLAM
 - Role: slam
-- Status: DRAFT (locked test pending)
-- Problem: `motion/planning/lidar_odometry.py:614-617` lets the Hector stage translate up to 6 cm per
-  scan while pivoting (ICP stage clamps 2 mm at `:689-694`); `motion/planning/slam/bayesian_raycaster.py:131-132`
-  writes hits at full weight immediately, so the map shifts with the wrong pose; the gate at `:620`
-  then rejects corrections > 6 cm. `occupancy_grid.update_scan(is_rotating=...)` is unused.
-  Also `lidar_odometry.py:117-119` hardcodes 0.50 s / 3.1416 rad/s / 5.0 (fix together).
-- Lever arm (added 2026-11-15): the human measured axle-centre → LiDAR-centre = **0.01 m**, stored as
-  `lidar_lever_arm_m` in `setup/robot_dynamics.json` and exposed as `Config.LIDAR_LEVER_ARM_M`. SLAM still
-  hardcodes other values: `motion/planning/slam/bayesian_raycaster.py:18` (0.08),
-  `motion/planning/slam/anchor_layer.py:44` (0.08), `motion/planning/lidar_odometry.py:69,603,613` (0.08),
-  `motion/planning/occupancy_grid.py:73` (0.0). All must read the json value.
-  Evidence: `dashboard/test_slam_lidar_contour_restoration.py` test_01 fails
-  (`Space between robot and box must be cleared navigable free space`) — must pass after the fix.
+- Status: CLOSED — auditor PASS 2026-11-15 (acceptance 4/4, 1.6 cm / 0.0° / 0 ghost; hector 4 OK;
+  path_following 7 OK 1 skip; backend boots). Report omitted the regression section (auditor ran it).
+  Contour test_01 still fails and is NOT caused by the lever arm: the 0.20 m probe cell is the cell next to
+  the 0.28 m hit, which the raycaster skips by design — fails identically before and after. Supervisor's
+  "should pass" note below was wrong. Stress (sim): noise 1–2 cm, wheel slip 0.7–1.3×, drive+turn routes,
+  person crossing → all ≤ 5 cm / 3°. Still FAILS with intra-sweep smear at 5.24 rad/s (29° / 103 ghost
+  cells) → TK-SLAM-04 is the next blocker for the real robot. Non-blocking: lever-arm json loader is
+  copy-pasted in 3 files (+config.py); `* 1.25` yaw margin is unnamed.
+- Hypothesis (ONE): the matcher, the map raycaster and the anchor layer each place the LiDAR at a
+  different distance from the axle, so during a pivot the scan used for matching and the map it is
+  matched against disagree by a vector that rotates with heading, and Hector "fixes" that by moving
+  the robot. Evidence:
+  - `motion/planning/lidar_odometry.py:69,181` builds the matching cloud at axle **+0.08 m**
+    (`:603,613` hardcode 0.08 again for the gates).
+  - `motion/planning/occupancy_grid.py:73` builds the raycaster with **`lever_arm=0.0`** (map drawn as
+    if the LiDAR sat on the axle); the raycaster's own default `slam/bayesian_raycaster.py:18` is 0.08.
+  - `motion/planning/occupancy_grid.py:488-494` calls `anchor.set_anchor_from_scan` without a lever
+    arm, so `slam/anchor_layer.py:44` uses its default **0.08**.
+  - Measured value (human, TK-SLAM-02): `lidar_lever_arm_m = 0.01` in `setup/robot_dynamics.json`.
+  - Supervisor experiment (runtime patch only, no source change): setting the matcher and raycaster
+    to 0.01 m takes all 4 locked scenarios from 10.6–16.3 cm drift / 2–160 ghost cells to
+    1.6 cm / 0.0° / 0 ghost cells, WITHOUT touching any gate or the raycaster update rule.
+- Also fix in the same file (same physics-from-json rule): `lidar_odometry.py:117-119` overwrites the
+  json with 0.50 s / 3.1416 rad/s / 5.0. Derive the pivot yaw rate from `turn_time_90_deg_sec`.
+- Allowed files (4, each a few lines — accepted because the bug is the disagreement between them):
+  `motion/planning/lidar_odometry.py`, `motion/planning/occupancy_grid.py`,
+  `motion/planning/slam/bayesian_raycaster.py`, `motion/planning/slam/anchor_layer.py`
+- Forbidden files: everything else + agents-doc/LOCKED_PATHS.txt. In particular
+  `dashboard/backend/app/navigation/motion_adapter.py` (Integration) and `tests/acceptance/`.
+- Rules for this fix:
+  - One source: read `lidar_lever_arm_m` and `turn_time_90_deg_sec` from `setup/robot_dynamics.json`.
+    No numeric fallback that repeats a json value (no `.get("lidar_lever_arm_m", 0.01)`, no `= 0.08`
+    defaults left behind). Missing key = raise with a clear message.
+  - Do NOT tighten the pivot gates (`:614-620`, `:650-654`) and do NOT add an `is_rotating` map freeze in
+    this ticket. That is a separate hypothesis (TK-SLAM-04) and would hide this bug instead of fixing it.
+- Acceptance command: `.venv/bin/python tests/acceptance/test_slam_inplace_turn.py -v`
+- Threshold (numbers, all 4 tests): drift after 360° ≤ 5 cm AND ≤ 3°; ghost wall cells ≤ 10;
+  median SLAM time ≤ 15 ms/scan. Baseline 2026-11-15: 10.7 / 15.0 / 16.3 / 10.6 cm → FAILED (failures=4).
+- Regression commands:
+  - `.venv/bin/python tests/test_hector_anchor_slam.py` (baseline: 4 OK)
+  - `cd dashboard && PYTHONPATH=../motion:backend ../.venv/bin/python test_path_following_and_modular_architecture.py` (baseline: 7 OK, 1 skipped)
+  - `cd dashboard && PYTHONPATH=../motion:backend ../.venv/bin/python test_slam_lidar_contour_restoration.py`
+    (baseline: test_01 FAIL `100 != 0 : Space between robot and box must be cleared` — report its result; it should
+    pass after this fix, but it is not the acceptance gate)
+  - `cd dashboard/backend && ../../.venv/bin/python -c "import app.main"` (must still boot)
+- Rejected design (docs/research/tk_slam_03_in_place_drift_design.md, 2026-11-15): its call trace hops 1 and 5
+  point at the wrong code (`coordinator.py:465` is the simulator loop, `:512` is the health log; real scans
+  enter through `telemetry_parser.py` `apply_binary_telemetry` → `motion_adapter.update_odometry`); it missed
+  `occupancy_grid.py:73` (`lever_arm=0.0`); its 7 mm gate would keep rejecting Hector corrections (the
+  lock-in found in the audit); its "wall drift ≤ 2 cm" target is below what a 5 cm grid can measure.
+- Depends on: TK-SLAM-02 (DONE)
 
-### TK-SLAM-04: No scan deskew while rotating
+### TK-SLAM-04: Stop-then-scan — never map smeared sweeps, re-anchor pose after each turn (direction C)
 - Role: slam
-- Status: DRAFT
-- Problem: D500 at 10 Hz + 5.24 rad/s turn = ~30° smear inside one scan. Options: deskew with the
-  commanded ω, or cap ω while mapping. Needs a decision after TK-SLAM-03.
+- Status: READY — ATTEMPT 2 (2026-11-15). TK-SLAM-03 committed (fc02870).
+  Attempt 1 (WIP saved in `docs/plans/tk-slam-04-attempt1-wip.patch`, removed from the tree) passed the
+  first test version but is REJECTED:
+  (a) heading prediction used the MAGNITUDE of w_cmd (`eff_w = copysign(min(|w_cmd|, pivot_rate), w_cmd)`).
+      w_cmd is the planner's command, not the physical rate — the bridge spins at ONE rate whenever
+      |w| >= 0.02. With the hardened test: heading error 78.4° at stop 3, 180° at stop 4;
+  (b) `motion_adapter.py` changed 16 lines (limit 10);
+  (c) added a second hypothesis (map writes only on Hector SUCCESS, "R2 defense") — out of scope.
+- Attempt 2 instructions (Supervisor checked feasibility: a ~14-line change passes both tests and keeps
+  `test_slam_inplace_turn.py` 4/4):
+  1. While pivoting, predict heading with the SIGN of w_cmd and the rate from json:
+     `copysign(self.calibrated_pivot_yaw_rate, w_cmd)`. Never use |w_cmd| as the spin rate.
+  2. While pivoting, skip scan-to-map matching (dead-reckon heading, translation 0).
+  3. `motion_adapter.py`: skip `grid_map.update_scan` and anchor locking while spinning. ≤ 10 lines.
+     No Hector-status gate.
+- Decision (human, 2026-11-15): direction C. The robot can only spin at ~5.24 rad/s (`turn_speed` =
+  `min_drive_speed` = 0.19 PWM, 90 deg in 0.3 s measured with `setup/calibrate_motors.py`), so a 10 Hz
+  D500 sweep is smeared by ~30 deg while spinning. Slowing down (A) is not possible without pulsing;
+  software deskew (B) is deferred.
+- Required behaviour:
+  1. While the commanded |w| is above a small threshold (robot spinning in place): do NOT write the
+     sweep into the occupancy grid / anchor, and do not trust scan-to-map matching on the smeared sweep;
+     predict heading from the commanded w.
+  2. On the first stationary sweeps after a turn: match the (unsmeared) sweep against the map, seeded
+     with the predicted heading, with a search window wide enough to absorb a ±10 % turn error
+     (±9 deg on a 90 deg turn); only then resume map writes.
+- Locked test: `tests/acceptance/test_slam_stop_turn_go.py` — 4 x (90 deg spin at the physical rate with
+  smeared sweeps, actual turn x1.00/x0.90/x1.10/x0.95, then 4 stationary sweeps), anchor ON and production
+  (anchor OFF). Hardened 2026-11-15: w_cmd magnitude during the spin ramps 0.6/1.2/1.8 rad/s (NOT the
+  physical 5.24 rad/s) — only its sign is trustworthy.
+- Baseline 2026-11-15 (on top of the uncommitted TK-SLAM-03 tree):
+  anchor ON: drift 1.3–3.7 cm, heading 0.0°, **76 ghost cells** → FAIL;
+  production: heading error 0.0 → 2.5 → **5.1 → 14.0°**, drift up to 8.4 cm, **129 ghost cells** → FAIL.
+  Control run with unsmeared sweeps (same scenario): 1.6 cm / 0.0° / 0 ghost cells at every stop — the
+  failure is caused by the smear only.
+- Allowed files: `motion/planning/lidar_odometry.py`; `dashboard/backend/app/navigation/motion_adapter.py`
+  **only** to skip `grid_map.update_scan` / anchor locking while spinning (≤ 10 changed lines there;
+  Supervisor-approved exception to Integration ownership).
+- Acceptance command: `.venv/bin/python tests/acceptance/test_slam_stop_turn_go.py -v`
+- Threshold: both tests pass — at every stop heading error ≤ 3°, drift ≤ 5 cm; ghost wall cells ≤ 10;
+  map writes (`grid_map.update_scan` calls) = 0 during every spin and ≥ 1 during every stop
+  (test hardened 2026-11-15: baseline spin=[3,3,3,3] stop=[4,4,4,4]; "freeze the map forever" now fails).
+- Regression commands: `.venv/bin/python tests/acceptance/test_slam_inplace_turn.py -v` (must stay 4/4);
+  `.venv/bin/python tests/test_hector_anchor_slam.py`;
+  `cd dashboard/backend && ../../.venv/bin/python -c "import app.main"`
+- Depends on: TK-SLAM-03 (DONE fc02870), TK-INT-07 (bridge spin PWM step, Supervisor).
+  The earlier "field dependency TK-INT-04" was wrong: on the binary path `telemetry_parser.py:406` checks
+  keys `linear_vel`/`angular_vel` but `binary_protocol.py:117-118` returns `linear_speed`/`angular_speed`,
+  so telemetry velocities are never applied; w_cmd is the planner's command (`coordinator.py:391,422`),
+  which `stop()` resets to 0.
 
 ### TK-SLAM-05: Production runs anchor OFF while the test runs it ON; test cannot see heading error
 - Role: slam
@@ -179,9 +264,23 @@ ideal scan @5.24 rad/s 0.0°/1.6 cm ✅ · distorted scan −22.8°/8.5 cm ❌ �
 
 ### TK-INT-04: Velocity latch in AUTO mode makes the robot icon spin between scans
 - Role: integration
-- Status: DRAFT
+- Status: DRAFT — premise WRONG (Supervisor, 2026-11-15). The latch at `:406-409` is dead code on the
+  binary path: `unpack_binary_telemetry` returns `linear_speed`/`angular_speed`, the parser looks for
+  `linear_vel`/`angular_vel`. coord velocities come only from the planner command. Re-scope before READY:
+  decide whether the backend should use bridge-reported w at all (it is slewed, not physical either).
+  Not a blocker for TK-SLAM-04.
 - Problem: `dashboard/backend/app/hardware/telemetry_parser.py:406-409` never accepts v=0, so the
   interpolation at `:424-433` keeps rotating with a stale ω, then snaps back (perceived lag/jerk).
+
+### TK-INT-07: Bridge ramps spin PWM 0 -> turn_speed over 0.24 s; calibration used a step
+- Role: supervisor (hardware)
+- Status: IN PROGRESS — code + test done, not deployed / not field-checked
+- Evidence: `setup/calibrate_motors.py:333` measured `turn_time_90_deg_sec` with `drive_raw` (PWM step);
+  `dashboard/jetbot_bridge.py` spin branch slewed PWM at 0.8/s (0.19 / 0.8 = 0.24 s). turn_speed ==
+  min_drive_speed, so the ramp is below the measured drive threshold; whether the motor moves during it
+  is UNVERIFIED. Removing the ramp makes the bridge equal to the calibration by construction.
+- Fix: spin PWM applied as a step. Test `tests/test_bridge_spin_step.py` (RED 0.04 PWM -> GREEN 0.19).
+- Field check (human): command a 90° turn from the dashboard, confirm ≈ 90°.
 
 ### TK-INT-05: Robot veers right — trim applied to the wrong wheel (Supervisor hotfix)
 - Role: supervisor (hotfix during first field run, 2026-11-15)
