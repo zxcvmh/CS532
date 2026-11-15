@@ -42,7 +42,6 @@ PIVOT_RATE = (math.pi / 2.0) / float(DYN["turn_time_90_deg_sec"])  # physical sp
 
 # --- Locked evaluation constants (the coder cannot tune these) ---------------------------
 DT = 0.10                  # D500 sweep period, s
-SLOW_RATE = 0.35           # rad/s, a gentle mapping turn (test scenario, not a robot parameter)
 WARMUP_SCANS = 6
 MAX_DRIFT_M = 0.05
 MAX_HEADING_DEG = 3.0
@@ -133,11 +132,9 @@ class TestSlamInPlaceTurn(unittest.TestCase):
         self.assertLessEqual(m["ghost"], MAX_GHOST_CELLS, f"{tag}: {m['ghost']} ghost wall cells")
         self.assertLessEqual(m["median_ms"], MAX_MEDIAN_MS, f"{tag}: median {m['median_ms']:.1f} ms")
 
-    def test_01_slow_turn_anchor_on(self):
-        self._check(SLOW_RATE, production_mode=False)
-
-    def test_02_slow_turn_production(self):
-        self._check(SLOW_RATE, production_mode=True)
+    # 2026-11-15 (TK-SLAM-04 audit): the 0.35 rad/s cases were removed. The bridge spins at ONE
+    # physical rate (turn_speed == min_drive_speed, TK-INT-07), so a slow turn cannot happen on the
+    # robot, and after TK-SLAM-04 they passed only because 5.24 / 0.35 ~ 15 full turns.
 
     def test_03_physical_rate_anchor_on(self):
         self._check(PIVOT_RATE, production_mode=False)
