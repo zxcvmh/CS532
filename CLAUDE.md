@@ -33,7 +33,8 @@ avoiding people and static obstacles. Talk to the human in Vietnamese.
 3. **Hand-off** — tell the human which workflow to start in Antigravity (`/il-policy TK-IL-01`).
 4. **Audit** — when the report comes back, dispatch the `quality-auditor` subagent with the ticket id.
    Never accept an Antigravity report on its word.
-5. **Close** — only on auditor `PASS`: commit (one ticket per commit), mark ticket `DONE`, append to
+5. **Close** — only on auditor `PASS`: commit (one ticket per commit, `git add <explicit paths>` —
+   never `git add -u`/`-A`, Antigravity may have uncommitted work), mark ticket `DONE`, append to
    STATE.md. On `REJECT`: append the ledger entry, send the auditor's findings back as a new attempt.
 6. **Research** — the human finds papers; `/researcher` summarizes; the auditor opens every cited
    locator before a finding can drive a design decision.

@@ -199,3 +199,4 @@ Hệ thống rút gọn tối đa còn **4 Core Agents**, tuân thủ phong các
 |---|---|---|---|---|
 | 2026-11-15 | AI Learning Engineer (v1) | **Fake Pass** | `imitation_learning/test_il_pipeline.py` in `[PASS]` + exit 0 trong khi `Final Success Rate: 0.0%`, `Collision Rate: 16.7%`. | TK-IL-01: locked acceptance test đo success rate. |
 | 2026-11-15 | Agents v1 (cả 4) | **Phantom Path** | Agent docs trỏ `05-d500lib-motion/`, `03-MinhHieu/` — không tồn tại từ commit 9968343. | Agents v2 + auditor check #7 (dead folder names). |
+| 2026-11-15 | Supervisor (Claude) | **Process: commit before audit** | `git add -u` for checkpoint d589c4a swept in Antigravity's uncommitted TK-SLAM-01 edit to `cartographer_adapter.py` before the auditor ran. | Supervisor stages explicit paths only; one ticket per commit, after auditor PASS. |

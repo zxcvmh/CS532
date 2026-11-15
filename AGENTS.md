@@ -58,9 +58,11 @@ Run Python with `.venv/bin/python`. Backend imports need: `cd dashboard/backend`
 - **Deadband:** wheel PWM below `min_drive_speed` does not move the robot.
 - **Steering band:** `min_drive_speed`≈`cruise_speed`, so the robot cannot arc-steer while driving.
   It uses **stop-turn-go** (decided 2026-11-15). Do not design controllers that need arc steering.
-- **Jetson Nano:** 4 GB RAM shared CPU/GPU, Maxwell GPU, old JetPack. Before using any library
-  feature, the version on the Jetson must be confirmed (ask for `cat /etc/nv_tegra_release`,
-  `python3 --version`, `dpkg -l | grep -i tensorrt`). Do not assume versions.
+- **Jetson Nano (verified 2026-11-15, host `nano-4gb-jp45`):** L4T **R32.5.2** (JetPack 4.5.x),
+  **Python 3.6.9**, 4 GB RAM shared CPU/GPU. Code that runs on the Jetson (`dashboard/jetbot_bridge.py`
+  and what it imports) must stay **Python 3.6 compatible**: no `dataclasses`, no walrus `:=`, no
+  `from __future__ import annotations`, no `list[int]`-style hints, no `asyncio.run`-only APIs added
+  after 3.6. Library versions (TensorRT, onnxruntime) are not verified yet — ask, do not assume.
 
 ## 3. How every ticket ends — the report (copy this exactly)
 
