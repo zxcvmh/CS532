@@ -28,6 +28,23 @@ class TestBridgeSpinStep(unittest.TestCase):
         br.set_motor_speeds(0.0, -br.MAX_ANGULAR_SPEED_RADS)
         self.assertAlmostEqual(br._current_spin_pwm, -br.TURN_SPEED, places=6)
 
+    def test_partial_w_spins_at_turn_speed_even_below_min_drive(self):
+        """TK-INT-09: only ONE spin PWM was calibrated (turn_speed -> turn_time_90_deg_sec). With
+        turn_speed (0.14) < min_drive_speed (0.19) the old interpolation min + (turn - min) * ratio made a
+        partial joystick / slider command spin FASTER (0.19) than a full one (0.14)."""
+        saved = (br.TURN_SPEED, br.MIN_DRIVE_SPEED)
+        try:
+            br.TURN_SPEED, br.MIN_DRIVE_SPEED = 0.14, 0.19
+            for ratio in (0.1, 0.5, 1.0):
+                br.set_motor_speeds(0.0, 0.0)
+                br.set_motor_speeds(0.0, ratio * br.MAX_ANGULAR_SPEED_RADS)
+                self.assertAlmostEqual(br._current_spin_pwm, 0.14, places=6, msg=f"w ratio {ratio}")
+                br.set_motor_speeds(0.0, 0.0)  # stop first: the bridge slews w, it cannot flip sign in 10 ms
+                br.set_motor_speeds(0.0, -ratio * br.MAX_ANGULAR_SPEED_RADS)
+                self.assertAlmostEqual(br._current_spin_pwm, -0.14, places=6, msg=f"w ratio -{ratio}")
+        finally:
+            br.TURN_SPEED, br.MIN_DRIVE_SPEED = saved
+
     def test_stop_zeroes_spin(self):
         br.set_motor_speeds(0.0, br.MAX_ANGULAR_SPEED_RADS)
         br.set_motor_speeds(0.0, 0.0)

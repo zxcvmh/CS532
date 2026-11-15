@@ -987,16 +987,10 @@ def set_motor_speeds(linear: float, angular: float):
     w = _active_cmd_w
     # 2. In-place turn (Stop-Turn-Go / Pivot Spin calibrated 100% to robot_dynamics.json)
     if abs(v) < 0.01 and abs(w) >= 0.02:
-        # Scale target spin PWM proportionally with |w| relative to max angular speed (3.1416 rad/s)
-        max_w = MAX_ANGULAR_SPEED_RADS
-        w_ratio = min(1.0, abs(w) / max_w)
-
-        # Ground-truth hardware calibrated spin parameters:
-        # turn_speed = 0.14 from robot_dynamics.json produces exactly 90 deg in 4.5s (0.35 rad/s)
-        # min_drive_speed = 0.12 is the motor deadband threshold
-        min_spin_pwm = MIN_DRIVE_SPEED  # 0.12
-        max_spin_pwm = TURN_SPEED       # 0.14
-        spin_mag = min_spin_pwm + (max_spin_pwm - min_spin_pwm) * w_ratio
+        # Single-rate pivot (TK-INT-09): only turn_speed was calibrated (setup/calibrate_motors.py test 4
+        # measures turn_time_90_deg_sec at exactly this PWM). Any |w| spins at turn_speed; interpolating
+        # from min_drive_speed inverted the speed once turn_speed < min_drive_speed.
+        spin_mag = TURN_SPEED
 
         # Signed target PWM:
         # Positive = Turn Left (CCW: left motor backward, right motor forward)
