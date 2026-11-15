@@ -137,9 +137,13 @@ ideal scan @5.24 rad/s 0.0°/1.6 cm ✅ · distorted scan −22.8°/8.5 cm ❌ �
 +4.7°/36.5 cm ❌. Repro scripts (auditor scratchpad, to be turned into a locked test by the Supervisor):
 `repro_slam.py`, `repro4.py`.
 
-### TK-SLAM-02: LiDAR points and clusters ignore the 8 cm lever arm
+### TK-SLAM-02: LiDAR points and clusters ignore the lever arm
 - Role: integration (both files are in `dashboard/backend/`)
-- Status: DRAFT (locked test pending)
+- Status: DONE 2026-11-15 — auditor PASS. Lever arm = 0.01 m (human-measured, `lidar_lever_arm_m`).
+  Contour test_02 passes; dashboard points and cluster poses agree to 1e-7. Ran while DRAFT and touched
+  `config.py` (accepted 1-line scope extension). Follow-ups for the next integration ticket:
+  `motion_adapter.py:205` use `Config.LIDAR_LEVER_ARM_M` (drop the getattr default);
+  `telemetry_parser.py:88` docstring still says LiDAR is at the robot origin.
 - Problem: `dashboard/backend/app/hardware/telemetry_parser.py:92-93` (`ranges_to_points`) and
   `dashboard/backend/app/navigation/motion_adapter.py:205` (`la = 0.0`) drop the 0.08 m axle→LiDAR
   offset that the raycaster and matcher apply → dashboard points/person boxes sit 8 cm off and
@@ -153,6 +157,13 @@ ideal scan @5.24 rad/s 0.0°/1.6 cm ✅ · distorted scan −22.8°/8.5 cm ❌ �
   writes hits at full weight immediately, so the map shifts with the wrong pose; the gate at `:620`
   then rejects corrections > 6 cm. `occupancy_grid.update_scan(is_rotating=...)` is unused.
   Also `lidar_odometry.py:117-119` hardcodes 0.50 s / 3.1416 rad/s / 5.0 (fix together).
+- Lever arm (added 2026-11-15): the human measured axle-centre → LiDAR-centre = **0.01 m**, stored as
+  `lidar_lever_arm_m` in `setup/robot_dynamics.json` and exposed as `Config.LIDAR_LEVER_ARM_M`. SLAM still
+  hardcodes other values: `motion/planning/slam/bayesian_raycaster.py:18` (0.08),
+  `motion/planning/slam/anchor_layer.py:44` (0.08), `motion/planning/lidar_odometry.py:69,603,613` (0.08),
+  `motion/planning/occupancy_grid.py:73` (0.0). All must read the json value.
+  Evidence: `dashboard/test_slam_lidar_contour_restoration.py` test_01 fails
+  (`Space between robot and box must be cleared navigable free space`) — must pass after the fix.
 
 ### TK-SLAM-04: No scan deskew while rotating
 - Role: slam

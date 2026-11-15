@@ -14,5 +14,6 @@
     "note": "Cau hinh chuan an toan san gach men va lidar D500 quay mui xe (offset 0 deg)",
     "motor_left_polarity": -1,
     "motor_right_polarity": -1,
-    "actual_speed_mps": 0.294
+    "actual_speed_mps": 0.294,
+    "lidar_lever_arm_m": 0.01
 }

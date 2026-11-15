@@ -68,6 +68,7 @@ class Config:
     ACTUAL_SPEED_MPS = float(_cfg_dyn.get("actual_speed_mps", 0.244))  # m/s
     TRIM_FACTOR = float(_cfg_dyn.get("trim_factor", 1.024))
     LIDAR_YAW_OFFSET_DEG = float(_cfg_dyn.get("lidar_yaw_offset_deg", 0.0))
+    LIDAR_LEVER_ARM_M = float(_cfg_dyn.get("lidar_lever_arm_m", 0.01))
     CENTRIFUGAL_LIMIT_MPS2 = (
         0.176  # m/s^2 (|v*w| <= 0.176 prevents slip on glossy tile)
     )

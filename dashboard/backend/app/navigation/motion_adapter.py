@@ -202,7 +202,7 @@ class MotionAdapter:
         raw_clusters = cluster_lidar_obstacles(ranges, min_dist=Config.LIDAR_MIN_RANGE, max_dist=min(6.0, Config.MAX_RANGE))
         env_mode = getattr(Config, "ENVIRONMENT_MODE", "ROOM")
         c_th, s_th = math.cos(pose_theta), math.sin(pose_theta)
-        la = 0.0
+        la = getattr(Config, "LIDAR_LEVER_ARM_M", 0.01)
         lx = pose_x + la * c_th
         ly = pose_y + la * s_th
         tracked = self.obstacle_tracker.update(raw_clusters, robot_pose=(lx, ly, pose_theta))

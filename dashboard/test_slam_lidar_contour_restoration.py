@@ -9,7 +9,8 @@ Checks:
    - Remains solid 100 on subsequent cycles while obstacle persists.
    - Raycasting does not turn obstacle into white free space (0).
 2. LiDAR scan contour and beam extraction:
-   - 360-ray ranges accurately convert to world points with +0.08m lever-arm compensation.
+   - 360-ray ranges accurately convert to world points with lever-arm compensation
+     (lidar_lever_arm_m from setup/robot_dynamics.json, measured by the operator).
    - Dense scan points correctly outline walls and obstacles.
 3. Dashboard map format integrity:
    - Unknown cells: -1 (transparent on canvas)
@@ -49,10 +50,8 @@ class TestSlamLidarContourRestoration(unittest.TestCase):
         # Perform scan update
         self.grid.update_scan(robot_x=0.0, robot_y=0.0, robot_theta=0.0, ranges=ranges)
 
-        # Coordinate of box hit:
-        # lidar_x = 0.0 + 0.08 = 0.08m
-        # hit_x = 0.08 + 0.27 = 0.35m, hit_y = 0.0m
-        box_c, box_r = self.grid.world_to_grid(0.35, 0.0)
+        # Box hit = lever arm (axle -> LiDAR, from robot_dynamics.json) + 0.27 m range.
+        box_c, box_r = self.grid.world_to_grid(Config.LIDAR_LEVER_ARM_M + 0.27, 0.0)
         box_idx = box_r * self.grid.width + box_c
 
         # 1. Log-odds must be positive and strong
@@ -89,12 +88,9 @@ class TestSlamLidarContourRestoration(unittest.TestCase):
         pts = TelemetryParser.ranges_to_points(ranges, px=0.0, py=0.0, pth=0.0, max_range=6.0)
         self.assertGreaterEqual(len(pts), 350, "At least 350 valid LiDAR contour points must be extracted")
 
-        # Verify point at 45 deg with 0.08m lever arm:
-        # lidar_x = 0.08, lidar_y = 0.0
-        # px = 0.08 + 0.5 * cos(45 deg) = 0.08 + 0.3536 = 0.4336
-        # py = 0.00 + 0.5 * sin(45 deg) = 0.3536
+        # Point at 45 deg: LiDAR sits LIDAR_LEVER_ARM_M ahead of the axle (robot_dynamics.json).
         pt_45 = pts[45]
-        expected_x = 0.08 + 0.50 * math.cos(math.radians(45))
+        expected_x = Config.LIDAR_LEVER_ARM_M + 0.50 * math.cos(math.radians(45))
         expected_y = 0.00 + 0.50 * math.sin(math.radians(45))
         self.assertAlmostEqual(pt_45.x, expected_x, places=2)
         self.assertAlmostEqual(pt_45.y, expected_y, places=2)

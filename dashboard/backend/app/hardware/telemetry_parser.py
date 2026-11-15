@@ -89,8 +89,8 @@ class TelemetryParser:
         if max_range is None:
             max_range = Config.MAX_RANGE
         points = []
-        lidar_x = px
-        lidar_y = py
+        lidar_x = px + Config.LIDAR_LEVER_ARM_M * math.cos(pth)
+        lidar_y = py + Config.LIDAR_LEVER_ARM_M * math.sin(pth)
         for ang_deg, dist in enumerate(ranges):
             if Config.LIDAR_MIN_RANGE <= dist <= max_range:
                 rad = math.radians(ang_deg) + pth
