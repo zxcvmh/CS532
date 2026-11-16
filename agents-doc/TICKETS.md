@@ -92,13 +92,13 @@ Old v1 tickets: `agents-doc/archive/agents-v1/TICKETS-v1.md` (paths there are de
 
 ### TK-CV-01: Two diverged floor IPM implementations
 - Role: perception
-- Status: DRAFT
+- Status: DEFERRED 2026-11-16 (human approved the cut: floor IPM / low obstacles are out of the demo scope)
 - Problem: `perception/core/floor_ipm.py` ≠ `dashboard/floor_ipm.py` (bridge imports the latter).
 - Depends on: —
 
 ### TK-CV-02: Camera detections never reach navigation
 - Role: perception (+ interface note to integration)
-- Status: DRAFT
+- Status: DRAFT — REWRITTEN 2026-11-16 as the person-aware LiDAR layer (below); the original premise was half wrong: `coordinator.py:272` already feeds person detections into 0.40 m social bubbles.
 - Problem: `dashboard/backend/app/navigation/coordinator.py:266-270` only uses detections to set
   `yolo_connected`; people are not added to any costmap layer or IL observation.
 - Depends on: TK-SLAM-01
@@ -452,13 +452,13 @@ ideal scan @5.24 rad/s 0.0°/1.6 cm ✅ · distorted scan −22.8°/8.5 cm ❌ �
 
 ### TK-SLAM-05: Production runs anchor OFF while the test runs it ON; test cannot see heading error
 - Role: slam
-- Status: DRAFT
+- Status: DEFERRED 2026-11-16 (human approved the cut)
 - Problem: `dashboard/backend/app/hardware/telemetry_parser.py:465-466` disables the anchor;
   `tests/test_hector_anchor_slam.py:31-44` uses a circular room (rotation-invariant scan) for 1 step.
 
 ### TK-INT-04: Velocity latch in AUTO mode makes the robot icon spin between scans
 - Role: integration
-- Status: DRAFT — premise WRONG (Supervisor, 2026-11-15). The latch at `:406-409` is dead code on the
+- Status: CANCELLED 2026-11-16 (premise was wrong; human approved the cut)
   binary path: `unpack_binary_telemetry` returns `linear_speed`/`angular_speed`, the parser looks for
   `linear_vel`/`angular_vel`. coord velocities come only from the planner command. Re-scope before READY:
   decide whether the backend should use bridge-reported w at all (it is slewed, not physical either).
@@ -492,7 +492,7 @@ ideal scan @5.24 rad/s 0.0°/1.6 cm ✅ · distorted scan −22.8°/8.5 cm ❌ �
 
 ### TK-INT-06: Motion is jerky (unexplained)
 - Role: supervisor (needs field log) → integration
-- Status: DRAFT — waiting for a captured bridge log with `[MOTOR RAW]` lines after TK-INT-05
+- Status: DEFERRED 2026-11-16 (human approved the cut; reopen only with a captured bridge log)
 - Candidates (unverified): reflex-task exception every loop (fixed in TK-INT-05),
   0 → min_drive_speed=0.19 PWM jump at start, backend velocity latch (TK-INT-04).
 
@@ -560,3 +560,111 @@ ideal scan @5.24 rad/s 0.0°/1.6 cm ✅ · distorted scan −22.8°/8.5 cm ❌ �
 - Status: DRAFT
 - Threshold: Jetson loop ≤ 50 ms, RAM ≤ 1.5 GB; real robot 10/10 goals, no contact.
 - Depends on: TK-IL-06, TK-SLAM-09
+
+---
+
+## Week-1 plan tickets (2026-11-16, from the confirmed project plan in STATE.md)
+
+### TK-INT-10: Bridge forward drive must be ONE PWM (cruise_speed), not a v-dependent window
+- Role: integration
+- Status: READY (2026-11-16) — locked test `tests/acceptance/test_bridge_forward_single_pwm.py` fails on HEAD for the
+  ticket's reasons (steady PWM 0.112 / 0.122 / 0.140 for v = 0.02 / 0.05 / 0.10 instead of cruise 0.2; w steers the
+  wheels, w = 3 even reverses the left one; after a pivot the forward PWM sticks at 0.14) and a Supervisor reference
+  (in memory, not in the repo) passes 6/6, and keeps `tests/test_bridge_spin_step.py` 4/4.
+- Problem: `set_motor_speeds` section "3. Linear drive" maps wheel speeds through a window around
+  `max_safe_speed_mps` onto PWM [`min_drive_speed`, `cruise_speed`]. With the field file of 2026-11-16
+  (min_drive 0.08, max_safe 0.1, cruise 0.2) the robot drives at PWM 0.14-0.175 for most commands, so
+  `actual_speed_mps` (0.284, measured at cruise 0.2), the IL sim (TK-IL-04) and every SLAM assumption describe a
+  robot that does not exist. Same fix pattern as TK-INT-09 for the pivot.
+- Required: stop-turn-go. |v| >= 0.01 and no pivot -> both logical wheel PWMs = sign(v) x `cruise_speed` after the soft
+  start, for any |v| and any w (w ignored); soft start = a PWM ramp 0 -> cruise over `soft_start_ramp_sec`
+  (non-decreasing, starts below cruise, never above it), which mirrors `setup/calibrate_motors.py`
+  `soft_start_drive`; backward symmetric; a pivot resets the forward ramp; stop = 0. Trim stays in
+  `set_raw_motor_speeds` (do not apply it here). `min_drive_speed` / `max_safe_speed_mps` must not influence the
+  forward PWM. Hint (Supervisor reference, ~6 lines): one module-level magnitude `_fwd_pwm_mag` raised by
+  `CRUISE_SPEED / ramp * dt` per call and capped at `CRUISE_SPEED`, zeroed in the full-stop and spin branches.
+- Allowed files: `dashboard/jetbot_bridge.py` (only `set_motor_speeds` and the new state variable)
+- Forbidden: `tests/`, `setup/robot_dynamics.json`, `dashboard/backend/`, everything else. Python 3.6 compatible.
+- Acceptance command: `.venv/bin/python tests/acceptance/test_bridge_forward_single_pwm.py -v`
+- Threshold: 6/6 over four dynamics sets (field file, old file, two synthetic): steady PWM = cruise_speed +-1e-6.
+- Regression: `.venv/bin/python tests/test_bridge_spin_step.py` (4 OK);
+  `.venv/bin/python dashboard/test_path_following_and_modular_architecture.py`; py3.6 `ast.parse(..., feature_version=(3,6))`.
+- NOT in this ticket: deployment. The Supervisor diffs against `~/03-MinhHieu/jetbot_bridge.py` and deploys the bridge
+  TOGETHER with the new dynamics file once the auditor passes. The human must not copy the new dynamics file to the
+  Jetson before that, or its speed becomes command-dependent (0.122-0.2 PWM).
+- Depends on: —
+
+### TK-INT-11: Emergency-stop paths are unproven (demo safety)
+- Role: integration (Supervisor measures first)
+- Status: DRAFT — needs a measurement before any code: (1) dashboard / API `emergency_stop` (laptop -> WiFi -> bridge)
+  and (2) `teleop_gamepad.py` button A, which calls `robot.stop()` in its OWN process, while the bridge is running.
+  Nothing shows that either pre-empts an active automatic command or how long motors take to reach 0.
+- Plan: Supervisor writes a measurement protocol (trigger -> motor PWM 0, 20 trials, p95) and, if the gamepad path
+  does not pre-empt the bridge, a locked test for a gamepad -> bridge stop that wins over every other source.
+- Threshold (proposal, to confirm after the Jetson measurement): trigger -> PWM 0 p95 <= 300 ms for the gamepad path.
+- Depends on: Jetson reachable from the home network.
+
+### TK-CV-03: Camera calibration (intrinsics + distortion)
+- Role: perception (human takes the images; no code can start before)
+- Status: DRAFT — no intrinsics exist in the repo (`find` for calib/intrinsic found only `setup/calibrate_motors.py`).
+- Plan: human photographs a printed checkerboard (about 20 poses, week-1 field session); a script writes
+  `setup/camera_intrinsics.json`. Threshold: mean reprojection error <= 0.5 px, image size and focal length stored.
+  Needed by TK-CV-05 (tags) and for projecting detections onto LiDAR azimuth.
+
+### TK-CV-04: Person detection measured on the real room and the Jetson
+- Role: perception (Supervisor writes the locked evaluation script from the human's labelled frames)
+- Status: DRAFT — only a detector exists (`perception/models/yolo26n`, engine in the bridge); there is no measurement.
+- Plan: about 200 frames from the real robot and room with a person at 0.5-3 m, labelled by the human.
+  Proposed thresholds (to confirm after the first measurement): recall >= 0.90 and precision >= 0.90 for persons in
+  the camera's field of view at 0.5-3 m; Jetson detection loop >= 8 FPS with the bridge running; whole-bridge RAM
+  <= 1.5 GB. Depends on: TK-CV-03, Jetson measurement.
+
+### TK-CV-02 (rewritten): Person-aware LiDAR layer — label clusters, mask person beams out of scan matching
+- Role: perception + slam (split into two tickets when it starts: labelling, then CSM masking)
+- Status: DRAFT (see the Status line above) — needs a real recording with a person walking (TK-CV-04 session).
+- Required behaviour: a LiDAR cluster whose azimuth falls inside a detection box is a PERSON (else static/unknown);
+  persons keep the 0.40 m bubble; the beams of persons are removed before `CSMTracker.update` so a crossing person
+  does not pull the pose; IL observations are NOT changed (stay 41-D, no retrain).
+- Measurement for the report (ablation): pose error with a person walking, masking OFF vs ON, same recording.
+- Depends on: TK-SLAM-09, TK-CV-04, a recording with people.
+
+### TK-CV-05: AprilTag / ArUco drift anchor and optional goal (should-have)
+- Role: perception
+- Status: DRAFT — no tag code in the repo; `cv2.aruco` availability on the Jetson (OpenCV from JetPack) is unchecked.
+- Plan: one tag on a stand in the room; pose of the tag in the map frame corrects accumulated drift when seen.
+  Threshold: tag position error <= 5 cm vs a ruler at 1-2 m; drift after 5 minutes of driving with vs without the anchor.
+  Cut first if week-2 field time runs short. Depends on: TK-CV-03.
+
+### TK-CV-06: People counter overlay (only after the IL gate of 2026-12-07)
+- Role: perception
+- Status: DRAFT / OPTIONAL — IDs on top of the person detector, count shown on the dashboard. Dropped if IL is late.
+
+### TK-MEAS-01: Measure the network, the Jetson budget and the LiDAR with people (decides "real time" and where the loop runs)
+- Role: supervisor-assistant (laptop side only) + Supervisor / human for everything that touches the Jetson or the room
+- Status: READY (2026-11-16) — locked validator `tests/acceptance/test_measurements_valid.py` is red on HEAD (no
+  `docs/measurements/<date>/`), green on synthetic data (proved, then deleted).
+- Problem: no number exists for laptop<->Jetson latency, Jetson RAM/CPU headroom, or how a walking person looks in the
+  LiDAR scan. Without them the control-loop location and the CV mask (TK-CV-02) cannot be decided.
+- Division of work (Rule 8: the assistant never SSHes to the Jetson, never starts motors):
+  1. Assistant writes `scripts/measure_summary.py`: reads the raw files in the date directory and writes `results.json`
+     (schema in the validator docstring). It computes; it never types a number.
+  2. M1 ping: Supervisor/human runs `ping -c 200 <jetson> | tee docs/measurements/<date>/ping_home_wifi.txt` (home WiFi).
+  3. M2 inventory (read-only): Supervisor runs `free -m`, `uptime`, `python3 -c "import cv2;print(cv2.__version__,hasattr(cv2,'aruco'))"`,
+     `ls` of the engine/model dirs, `ps` of the bridge; output saved raw as `jetson_inventory.txt`. No kill, no install.
+  4. M4 LiDAR with people: human stands/walks, robot stationary, 3 x 60 s: `static_person`, `crossing`, `head_on`.
+     Recorder = whatever produced `tests/acceptance/data/field_turns_2026-11-15.npz` (keys `t`, `ranges` (n,360));
+     if none is in the repo the assistant writes `scripts/record_lidar.py` that flushes every 5 s.
+  5. Assistant writes `scripts/analyze_lidar_people.py` (reads the three .npz): per recording, number of person-like
+     clusters per scan, their speed estimate and range, wall-point density; prints raw numbers into `analysis.txt`.
+     It makes NO claim about SLAM pose (that is TK-CV-02's ablation).
+- Allowed files: `scripts/measure_summary.py`, `scripts/analyze_lidar_people.py`, `scripts/record_lidar.py` (only if
+  no recorder exists), `docs/measurements/**`.
+- Forbidden files: everything else + agents-doc/LOCKED_PATHS.txt (tests/, setup/robot_dynamics.json, dashboard/, motion/).
+- Acceptance command: `.venv/bin/python tests/acceptance/test_measurements_valid.py -v`
+- Threshold: 3/3 tests pass on the real date directory; ping >= 200 packets; each recording >= 55 s; every figure in
+  results.json recomputes from its raw file within 1 %. Anything not measured is written `CHƯA ĐO`, never estimated.
+- Decision rule (Supervisor applies, not the assistant): ping p99 < 30 ms and loss < 1 % -> loop may run on the laptop;
+  otherwise reflex + local policy run on the Jetson.
+- Regression commands: `.venv/bin/python tests/acceptance/test_slam_csm_turns.py -v` (unchanged: no source file is touched).
+- Out of scope: YOLO FPS on the Jetson (needs the detector chosen; TK-CV-04), motors, deployment, any threshold change.
+- Depends on: the human on the home WiFi (not 172.30.x) for M1/M2; a free 2 h field slot for M4.

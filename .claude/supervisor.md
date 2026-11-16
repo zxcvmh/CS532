@@ -27,6 +27,15 @@ pose correct on real data (TK-SLAM-09) → field check on robot → slower pivot
 ```
 The IL lane (IL-04..06) is pure simulation and does NOT wait for SLAM — keep it moving in parallel.
 
+### 1b. Confirmed plan (human, 2026-11-16) — full text in STATE.md
+- Deadline end of Dec 2026, LIVE demo, 3 runs in a row (static + goal / person crossing / person head-on). Freeze 14/12.
+- Hybrid: planner + IL local + reflex (reflex > IL > planner), gamepad e-stop held by a person. Goal = clicked point.
+- Accept = 1 person <= 1 m/s, 10/10 runs, no contact, >= 0.3 m. 2 people / from behind = stress. Room 5x5 m closed, glossy tile.
+- CV = A (person detection -> cluster labels + mask beams in CSM) required, B (AprilTag anchor) should, counting after IL gate, IPM cut.
+- **IL gate 7/12**: >= 8/10 real runs on {static+goal, crossing} else fallback A* + DWA + reflex. Sim-to-real kept (noise, latency, closed loop on the real robot from week 3).
+- Field time 2-3 x 2 h / week. Blocked: numeric "real time" + where the loop runs -> Jetson measurement on the home WiFi (laptop was on 172.30.x).
+- Week 1 tickets: SLAM-09 attempt 2, IL-04 (READY, with coders), INT-10 (bridge single forward PWM), INT-11 (e-stop paths), CV calibration + CV-02 rewrite.
+
 ## 2. How I reason (every non-trivial request)
 
 1. **Restate** the goal in one sentence. Ambiguous → ask ≤ 3 questions, each with my default.
@@ -83,7 +92,7 @@ Hand-off message to the human = exactly one copy-paste line, e.g. `/slam TK-SLAM
 
 When the human asks "why should I trust your test?" — answer with evidence, including my own past errors.
 
-## 6. Snapshot 2026-11-15 (verify against TICKETS/STATE/git before acting)
+## 6. Snapshot 2026-11-16 (verify against TICKETS/STATE/git before acting)
 
 | Item | State | My next move |
 |---|---|---|
@@ -92,7 +101,11 @@ When the human asks "why should I trust your test?" — answer with evidence, in
 | TK-INT-07 spin step, TK-INT-09 single-rate pivot | in repo, NOT deployed | after human sets turn 0.14 / 0.53 / 1.06 and Jetson online: diff `~/03-MinhHieu/jetbot_bridge.py`, deploy bridge + dynamics |
 | TK-IL-04 sim uses field dynamics | READY (2026-11-16): locked test 14/14 red on HEAD, prototype green; uncommitted test + ticket | human runs `/il-policy TK-IL-04`; expect `test_il_pipeline.py::test_05` RED afterwards (accepted, ledgered) |
 | TK-INT-08 low-obstacle TypeError | DRAFT | locked test, then `/integration` |
-| TK-SLAM-05, INT-04 (premise wrong), INT-06, CV-01/02, INT-02, IL-05..07 | DRAFT | later; INT-04 likely close as invalid |
+| TK-INT-10 bridge single forward PWM | READY (2026-11-16): locked test red on HEAD, reference passes 6/6 + spin 4/4; uncommitted | human runs `/integration TK-INT-10`; deploy bridge + dynamics TOGETHER after audit (Jetson must NOT get the new dynamics file before) |
+| TK-INT-11 e-stop paths, TK-CV-03/04/05/06, TK-CV-02 (rewritten) | DRAFT (week-1/2 plan, ordering in TICKETS.md) | Jetson measurement on the home WiFi first; then calibration -> detection measurement -> person-aware layer |
+| TK-MEAS-01 measurements | attempt 1 REJECT (assistant ran sudo/WiFi/bridge on the Jetson; static_person has 12 s hole); validator now checks gaps; placement decision provisional | check Jetson state read-only when robot is on; attempt 2 = re-record static_person only; see docs/handoffs/2026-11-16-supervisor.md |
+| TK-IL-05, TK-IL-06, TK-IL-07 | DRAFT | IL-05 locked test next (needed before 30/11 for the 7/12 IL gate) |
+| TK-SLAM-05, INT-04, INT-06, CV-01 | DEFERRED / CANCELLED (human-approved cut) | none |
 | De-skew | not ticketed | after SLAM-09 field check, measured against moving-sweep error |
 
 Open risks / questions:
