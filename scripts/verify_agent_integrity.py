@@ -25,7 +25,7 @@ if hasattr(sys.stderr, 'reconfigure'):
 ROOT_DIR = Path(__file__).resolve().parent.parent
 
 # Các module cốt lõi thực tế trên codebase hiện tại
-CORE_DIRS = ["01-HieuMe", "02-DuyHieu", "03-MinhHieu", "05-d500lib-motion", "setup", "agents-doc", "scripts"]
+CORE_DIRS = ["packages", "apps", "ros2", "hardware", "tests", "docs", "scripts"]
 
 def get_python_interpreter():
     """Tự động phát hiện virtual environment của dự án."""
@@ -74,17 +74,17 @@ def audit_python_syntax():
         return True
 
 def audit_documentation_paths():
-    print("\n[2/2] 🔍 Kiểm định liên kết & đường dẫn trong agents-doc/agents/ (Bẫy Hallucination)...")
-    agents_dir = ROOT_DIR / "agents-doc" / "agents"
+    print("\n[2/2] 🔍 Kiểm định liên kết & đường dẫn trong docs/agents-doc/agents/ (Bẫy Hallucination)...")
+    agents_dir = ROOT_DIR / "docs" / "agents-doc" / "agents"
     if not agents_dir.is_dir():
-        print("  ⚠️ Không tìm thấy thư mục agents-doc/agents/")
+        print("  ⚠️ Không tìm thấy thư mục docs/agents-doc/agents/")
         return True
 
     path_pattern = re.compile(r"[`'\"]([a-zA-Z0-9_\-\./\\]+\.[a-zA-Z0-9]+)[`'\"]")
     missing_paths = []
     checked_refs = 0
 
-    valid_prefixes = ["01-", "02-", "03-", "05-", "agents-doc", "setup", "cad", "scripts"]
+    valid_prefixes = ["packages/", "apps/", "ros2/", "hardware/", "tests/", "docs/", "scripts/", "archive/"]
 
     for md_file in agents_dir.glob("*.md"):
         with open(md_file, "r", encoding="utf-8") as f:

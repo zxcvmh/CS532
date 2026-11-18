@@ -8,7 +8,7 @@
 Đồ án **CS532** phát triển hệ thống robot tự hành thông minh trên nền tảng **NVIDIA JetBot** (Jetson Nano) kết hợp cảm biến **LiDAR D500** (quét 360° UART 230400 baud) và **Camera CSI IMX219** (góc rộng 160° FOV).
 
 Hệ thống được thiết kế theo kiến trúc **Fog-Edge Decoupled Computing**:
-* **Edge Node (JetBot - Jetson Nano `192.168.1.11`):** Chạy `03-MinhHieu/jetbot_bridge.py` đọc cảm biến phần cứng thời gian thực, phát luồng video native MJPEG (cổng `:8080`), đóng gói dữ liệu LiDAR qua giao thức nhị phân siêu nhẹ **JB-Binary Protocol** (1,130 bytes @ 10Hz), kiểm soát vùng chết động cơ GA25 và kích hoạt phản xạ an toàn cục bộ (Emergency Reflex Shield $< 14\text{cm}$).
+* **Edge Node (JetBot - Jetson Nano `192.168.1.11`):** Chạy `apps/edge_bridge/jetbot_bridge.py` đọc cảm biến phần cứng thời gian thực, phát luồng video native MJPEG (cổng `:8080`), đóng gói dữ liệu LiDAR qua giao thức nhị phân siêu nhẹ **JB-Binary Protocol** (1,130 bytes @ 10Hz), kiểm soát vùng chết động cơ GA25 và kích hoạt phản xạ an toàn cục bộ (Emergency Reflex Shield $< 14\text{cm}$).
 * **Fog Brain (Laptop / Trạm điều khiển trung tâm):** Xử lý thuật toán điều hướng cấp cao gồm 2 cơ chế song song:
   1. **Chính sách Học máy Imitation Learning (Primary):** Mạng nơ-ron **SpiralMLP** (Mu et al., arXiv:2404.00648v2) & thuật toán **DAgger** (Ross et al., 2011) triệt tiêu Covariate Shift, chạy trên nhân suy luận **ONNX Runtime** siêu tốc độ trễ $< 0.05\text{ms}$.
   2. **Quy hoạch Cổ điển C-Core (Fallback):** Nhân A* C-core tối ưu (`astar_core.c` $< 0.2\text{ms}$), gom cụm 1D Range Jump, né cản hình thang Plateau Detour, điều tốc vào cua Curvature Scaling và điều khiển bám đường Pure Pursuit.
@@ -22,83 +22,76 @@ Dự án được phân rã thành **các module độc lập** theo nguyên t�
 
 ```text
 CS532/
-├── 01-HieuMe/               # [THỊ GIÁC MÁY TÍNH & BÙ ĐIỂM MÙ LIDAR]
-│   ├── config/              # Cấu hình camera, 4 điểm hiệu chuẩn Homography IPM & Safety Margins
-│   ├── core/                # Thuật toán cốt lõi: FrameGrabber, FloorIPM, YoloDetector, Proxemics
-│   ├── models/              # Trọng số YOLO26-n ONNX/PT & Hướng dẫn build TensorRT FP16 .engine
-│   ├── sample_data/         # Ảnh chụp thực tế từ camera CSI JetBot để kiểm thử
-│   ├── pipeline.py          # Pipeline hoàn chỉnh End-to-End: Frame -> Detections + IPM -> JSON
-│   ├── test_cv_pipeline.py  # Bộ kiểm thử độc lập 5/5 bài test (Pass 100% không cần phần cứng)
-│   └── requirements.txt     # Thư viện phụ thuộc (opencv-python, numpy, onnxruntime)
+├── pyproject.toml                 # Cấu hình đóng gói các package nội bộ (packages/jetbot_*) & pytest
+├── .env.example                   # Mẫu cấu hình biến môi trường
+├── README.md                      # Tài liệu hướng dẫn toàn diện dự án
 │
-├── 02-DuyHieu/              # [ĐIỀU HƯỚNG C-CORE & BỘ SINH QUỸ ĐẠO CHUYÊN GIA]
-│   ├── planning/            # Nhân thuật toán A* tối ưu bằng C (astar_core.c < 0.2ms)
-│   ├── controller.py        # Curvature Velocity Scaling & Plateau Detour Splicing
-│   ├── test_planning_local.py # Script kiểm thử A* và né cản cục bộ trên PC (4/4 PASS)
-│   └── verify_step1_astar.py # Thẩm định hình học và đo đạc độ trễ A* (3/3 PASS)
+├── packages/                      # [CÁC GÓI THƯ VIỆN PYTHON CHUẨN HÓA (SINGLE SOURCE OF TRUTH)]
+│   ├── jetbot_perception/         # Thị giác máy tính & Bù điểm mù LiDAR (YOLO26-n, FloorIPM, Proxemics)
+│   │   ├── config/                # camera_config.json (Homography IPM & Safety Margins)
+│   │   ├── core/                  # FrameGrabber, FloorIPMTransformer, YoloDetector, ProxemicsEngine
+│   │   ├── models/                # Trọng số YOLO26-n (.pt / .onnx)
+│   │   ├── sample_data/           # Ảnh chụp thực tế từ camera CSI JetBot
+│   │   └── pipeline.py            # Pipeline hoàn chỉnh: Frame -> Detections + IPM -> JSON
+│   │
+│   ├── jetbot_planning/           # Quy hoạch đường đi, SLAM Costmap & Kiểm soát an toàn (SSoT)
+│   │   ├── control/               # MotorDynamics, PurePursuitTracker, VelocityRegulator
+│   │   ├── slam/                  # Decoupled Costmap (GridCore, Raycaster, EDT, HectorMatcher, Anchor/Dynamic)
+│   │   ├── astar_core.c           # Nhân thuật toán A* C-core (< 0.2ms)
+│   │   ├── astar_planner.py       # Bộ tìm đường toàn cục A*
+│   │   ├── controller.py          # Bộ điều khiển bám đường & Plateau Detour Splicing
+│   │   ├── disparity_extender.py  # Active Disparity Extender (DDE) né cản phản xạ
+│   │   ├── cbf_safety_filter.py   # Control Barrier Function (CBF-QP Safety Shield)
+│   │   ├── kinodynamic_rvo.py     # Né vật cản động Kinodynamic RVO
+│   │   ├── lidar_odometry.py      # LiDAR 2D Odometry + Lever-Arm compensation
+│   │   ├── mppi_controller.py     # Model Predictive Path Integral controller
+│   │   ├── obstacle_clustering.py # Gom cụm 1D Range Jump & DynamicObstacleTracker
+│   │   └── occupancy_grid.py      # Facade bản đồ lưới OccupancyGridMap
+│   │
+│   ├── jetbot_hardware/           # Driver phần cứng Edge (Single Source of Truth)
+│   │   ├── d500_driver.py         # Driver LiDAR LDROBOT D500 chuẩn bảng tra CRC-8 & Revolution Sync
+│   │   ├── command_mux.py         # Bộ chọn kênh điều khiển 50Hz (Manual vs Autonomous)
+│   │   └── floor_ipm_edge.py      # Biến đổi Floor-IPM nhẹ dùng trực tiếp trên Edge Bridge
+│   │
+│   └── jetbot_il/                 # AI Né Vật Cản: SpiralMLP + DAgger Imitation Learning
+│       ├── config.py              # Không gian trạng thái 41D, siêu tham số SpiralMLP & DAgger
+│       ├── core/                  # dataset.py, model.py, spiral_nav_policy.py
+│       ├── sim/                   # mock_expert_simulator.py, data_collector.py (DART)
+│       ├── training/              # train_bc.py, dagger_session.py
+│       ├── runtime/               # il_policy_runner.py, bridge_il_adapter.py
+│       ├── eval/                  # benchmark_onnx.py, evaluate_benchmark.py, live_evaluator.py
+│       ├── data/                  # Tập dữ liệu mô phỏng (.npz)
+│       ├── models/                # Trọng số đã huấn luyện (.pt, .onnx, _numpy.json)
+│       └── logs/                  # Báo cáo benchmark & telemetry
 │
-├── 03-MinhHieu/             # [GIAO DIỆN WEB VISIONOS & BACKEND ĐIỀU PHỐI]
-│   ├── frontend/            # Web Dashboard Apple visionOS glassmorphism (React 19 + Vite + Tailwind CSS)
-│   ├── backend/             # Server điều phối FastAPI, WebSocket 10Hz, ONNX Bridge & Telemetry Parser
-│   │   ├── app/
-│   │   │   ├── api/         # REST API endpoints & route handlers
-│   │   │   ├── hardware/    # Client nhận dữ liệu JB-Binary từ JetBot
-│   │   │   ├── navigation/  # Điều phối điều hướng: coordinator.py, il_onnx_bridge.py, motion_adapter.py
-│   │   │   ├── simulation/  # Mock arena giả lập môi trường vật lý trên PC
-│   │   │   ├── streaming/   # Hub WebSocket broadcaster & MJPEG video streamer
-│   │   │   └── config.py    # Cấu hình tần số, giới hạn bản đồ, tham số xe
-│   │   ├── run.py           # Entrypoint chính khởi động Backend Server
-│   │   └── requirements.txt # Thư viện phụ thuộc Backend (fastapi, uvicorn, websockets, pydantic)
-│   ├── jetbot_bridge.py     # Cầu nối phần cứng Edge (LiDAR D500, Camera CSI, Động cơ GA25, Mux 50Hz)
-│   ├── start_all.sh         # Script khởi động đồng bộ toàn bộ hệ thống trên Jetson Nano
-│   └── stop_all.sh          # Script dừng an toàn toàn bộ tiến trình
+├── apps/                          # [CÁC ỨNG DỤNG THỰC THI (BACKEND, FRONTEND, EDGE, TELEOP)]
+│   ├── backend/                   # Server điều phối FastAPI, WebSocket 10Hz, ONNX Bridge & Telemetry
+│   │   ├── app/                   # api/, cv/, hardware/, models/, navigation/, planning/, robot/, simulation/, streaming/
+│   │   ├── run.py                 # Entrypoint chính khởi động Backend Server
+│   │   └── requirements.txt       # Thư viện phụ thuộc Backend
+│   ├── frontend/                  # Web Dashboard Apple visionOS glassmorphism (React 19 + Vite + Tailwind CSS)
+│   ├── edge_bridge/               # Cầu nối phần cứng chạy trên Jetson Nano (jetbot_bridge.py, health.py, *.sh)
+│   └── teleop/                    # Điều khiển tay cầm / bàn phím thời gian thực (teleop_gamepad.py)
 │
-├── 05-d500lib-motion/       # [SLAM, ODOMETRY & ĐỘNG LỰC HỌC XE THẬT]
-│   ├── d500_driver.py       # Driver LiDAR LDROBOT D500 chuẩn bảng tra CRC-8 & Revolution Sync
-│   ├── planning/            # Tầng quy hoạch: Likelihood Field SLAM, Lever-Arm Odometry, Kinodynamic RVO
-│   │   ├── il/              # Mẫu thử nghiệm DAgger sơ khởi (test_dagger_policy.py)
-│   │   └── slam/            # Multi-layer Decoupled Costmap (Static Anchor, Rolling, Cluster, Low-Obs)
-│   └── robot_dynamics.json  # Cấu hình động học xe thật (tốc độ, deadband động cơ GA25-370)
+├── ros2/
+│   └── jetbot_cartographer/       # Gói ROS 2 & Cartographer 2D SLAM (Dockerfile, launch/, config/, cartographer_core/)
 │
-├── 06-cartographer/         # [CARTOGRAPHER 2D SLAM & ROS 2 BRIDGE]
-│   ├── cartographer_core/   # Pipeline thuần Python: Odds ProbabilityGrid, CSM, Submap2D, PoseGraph2D
-│   ├── config/              # Cấu hình Cartographer 2D LUA (REP-103/REP-105 TF Tree)
-│   └── scripts/             # Bridge kết nối ROS 2 và Web Dashboard
+├── hardware/
+│   ├── setup/                     # Single Source of Truth thông số xe (robot_dynamics.json) & hiệu chuẩn (battery, lidar, motors)
+│   └── cad/                       # Thiết kế giá đỡ LiDAR D500 bằng CadQuery/build123d & file xuất STEP/STL
 │
-├── 07-imitation-learning/   # [AI NÉ VẬT CẢN: SPIRALMLP + DAGGER IMITATION LEARNING]
-│   ├── config.py            # Không gian trạng thái 41D, siêu tham số SpiralMLP & DAgger
-│   ├── dataset.py           # Pipeline xử lý dữ liệu, chuẩn hóa & Bilateral Symmetry Augmentation
-│   ├── spiral_nav_policy.py # Kiến trúc SpiralMLP (Mu et al. arXiv:2404.00648v2) & Export ONNX
-│   ├── model.py             # Policy MLP baseline, Pure NumPy Engine & ONNX Runtime Runner
-│   ├── mock_expert_simulator.py # Giả lập 2D Raycaster + Chuyên gia hình học giải tích (DDE Oracle)
-│   ├── data_collector.py    # Thu thập dữ liệu chuyên gia kèm tiêm nhiễu ngẫu nhiên DART
-│   ├── train_bc.py          # Huấn luyện Behavioral Cloning (Weighted MSE, AdamW, Cosine LR)
-│   ├── dagger_session.py    # Vòng lặp DAgger triệt tiêu Covariate Shift & xuất mô hình ONNX
-│   ├── il_policy_runner.py  # Bộ điều phối thời gian thực (Safety Shield < 14cm + Motor Deadband)
-│   ├── bridge_il_adapter.py # Cầu nối tích hợp trực tiếp vào jetbot_bridge.py / Coordinator
-│   ├── benchmark_onnx.py    # Thẩm định cấu trúc đồ thị ONNX & Benchmark độ trễ (< 0.05ms)
-│   ├── evaluate_benchmark.py # Đánh giá tỷ lệ thành công, va chạm và thời gian về đích
-│   ├── live_evaluator.py    # Hộp đen máy bay đánh giá trực tiếp qua WebSocket `:8000`
-│   └── test_il_pipeline.py  # Bộ kiểm thử tự động toàn diện Module 07
+├── tests/                         # [KIỂM THỬ TẬP TRUNG THEO TỪNG MIỀN]
+│   ├── perception/                # Kiểm thử thị giác máy tính (test_cv_pipeline.py)
+│   ├── planning/                  # Kiểm thử A*, DDE, CBF, LiDAR Odometry, benchmark phần cứng
+│   ├── imitation_learning/        # Kiểm thử end-to-end SpiralMLP + DAgger (test_il_pipeline.py)
+│   ├── integration/               # Kiểm thử tích hợp đa tầng Backend + Planning + Hardware (verify_fixes.py, test_*.py)
+│   └── cartographer/              # Kiểm thử pipeline Cartographer 2D SLAM
 │
-├── agents-doc/              # [TÀI LIỆU KIẾN TRÚC & QUẢN TRỊ DỰ ÁN]
-│   ├── STATE.md             # Nguồn sự thật duy nhất (Single Source of Truth) ghi lại trạng thái hệ thống
-│   ├── TICKETS.md           # Hệ thống phiếu công việc và tiêu chuẩn nghiệm thu (Definition of Done)
-│   ├── README.md            # Tổng quan về kiến trúc và phân công vai trò tác nhân
-│   └── agents/              # Đặc tả 4 Core Agents (Lead Supervisor, AI Learning, Researcher, Auditor)
+├── scripts/
+│   └── verify_agent_integrity.py  # Quét AST tĩnh 100% mã nguồn Python & thẩm định đường dẫn tài liệu
 │
-├── scripts/                 # [KIỂM ĐỊNH TOÀN VẸN TỰ ĐỘNG]
-│   └── verify_agent_integrity.py # Quét AST tĩnh 100% cú pháp Python & thẩm định đường dẫn thật
-│
-├── setup/                   # [CẤU HÌNH & HIỆU CHUẨN PHẦN CỨNG XE THẬT]
-│   ├── robot_dynamics.json  # Single Source of Truth thông số động lực học xe
-│   └── test_lidar.py        # Đo đạc tần số quét, la bàn 4 hướng & kiểm tra hướng góc 0° LiDAR
-│
-├── teleop_gamepad.py        # [ĐIỀU KHIỂN TAY CẦM / BÀN PHÍM THỜI GIAN THỰC]
-│   └── Điều khiển JetBot bằng Gamepad (Xbox, PS4/PS5, Logitech) hoặc bàn phím kèm Watchdog
-│
-├── .env.example             # Mẫu cấu hình biến môi trường
-└── README.md                # Tài liệu hướng dẫn toàn diện dự án
+├── docs/                          # Tài liệu kiến trúc, quản trị (agents-doc/) & kế hoạch nhóm (task-team/)
+└── archive/                       # Mã nguồn lịch sử đã thay thế (02-DuyHieu legacy scripts, prototype IL cũ)
 ```
 
 ---
@@ -120,6 +113,9 @@ python -m venv .venv
 # Trên Linux / macOS:
 source .venv/bin/activate
 
+# Cài đặt các package nội bộ ở chế độ editable (khuyến nghị):
+pip install -e .
+
 # Cài đặt thư viện Backend điều phối:
 pip install fastapi uvicorn websockets pydantic
 
@@ -129,7 +125,7 @@ pip install numpy opencv-python onnx onnxruntime torch
 
 ### 3.3. Cài đặt Web Dashboard Frontend (Node.js)
 ```bash
-cd 03-MinhHieu/frontend
+cd apps/frontend
 npm install
 cd ../..
 ```
@@ -167,7 +163,7 @@ Dành cho nhà phát triển muốn thử nghiệm toàn bộ hệ thống đi�
 
 1. **Bước 1: Khởi động Backend Server (Bộ não điều phối)**
    ```bash
-   cd 03-MinhHieu/backend
+   cd apps/backend
    python run.py --host 0.0.0.0 --port 8000
    ```
    *(Backend sẽ tự động kích hoạt chế độ giả lập Mock Arena, tạo ra 5 vật cản hình tròn, tường phòng ảo, và nạp mô hình nơ-ron tự hành ONNX).*
@@ -175,7 +171,7 @@ Dành cho nhà phát triển muốn thử nghiệm toàn bộ hệ thống đi�
 2. **Bước 2: Khởi động Web Dashboard Frontend**
    Mở terminal thứ hai:
    ```bash
-   cd 03-MinhHieu/frontend
+   cd apps/frontend
    npm run dev
    ```
 
@@ -216,11 +212,11 @@ Dành cho thực nghiệm thực tế trên sa bàn: Laptop chịu tải tính t
    * Khởi động Backend và Frontend trên Laptop:
      ```bash
      # Terminal 1 - Backend:
-     cd 03-MinhHieu/backend
+     cd apps/backend
      python run.py --host 0.0.0.0 --port 8000
 
      # Terminal 2 - Frontend:
-     cd 03-MinhHieu/frontend
+     cd apps/frontend
      npm run dev
      ```
 
@@ -231,7 +227,7 @@ Dành cho thực nghiệm thực tế trên sa bàn: Laptop chịu tải tính t
      ```
    * Khởi động cầu nối phần cứng, truyền trực tiếp IP của Laptop:
      ```bash
-     cd ~/CS532/03-MinhHieu
+     cd ~/CS532/apps/edge_bridge
      python3 jetbot_bridge.py 192.168.1.100
      ```
    * `jetbot_bridge.py` sẽ tự động:
@@ -252,40 +248,40 @@ Dành cho kịch bản xe tự hành hoàn toàn, tự chứa cả Backend lẫn
 
 1. **Build bản phân phối tĩnh Frontend (chỉ cần làm 1 lần trên máy tính hoặc JetBot):**
    ```bash
-   cd 03-MinhHieu/frontend
+   cd apps/frontend
    npm run build
    ```
    *(Thư mục `dist/` tạo ra sẽ được FastAPI tự động mount và phục vụ tại đường dẫn gốc `/`).*
 
 2. **Khởi động trọn bộ bằng một câu lệnh:**
    ```bash
-   cd 03-MinhHieu
+   cd apps/edge_bridge
    bash start_all.sh
    ```
    * Toàn bộ hệ thống Backend `:8000` và `jetbot_bridge.py` sẽ chạy ngầm qua `nohup`.
    * Xem log thời gian thực:
      ```bash
-     tail -f 03-MinhHieu/backend/server.log
-     tail -f 03-MinhHieu/bridge.log
+     tail -f apps/backend/server.log
+     tail -f apps/edge_bridge/bridge.log
      ```
    * Truy cập giao diện điều khiển từ điện thoại / máy tính bảng bất kỳ trong mạng:
      `http://192.168.1.11:8000`
 
 3. **Dừng hệ thống an toàn:**
    ```bash
-   cd 03-MinhHieu
+   cd apps/edge_bridge
    bash stop_all.sh
    ```
 
 ---
 
-### 🟣 KỊCH BẢN 4: Huấn Luyện & Đánh Giá AI Imitation Learning (`07-imitation-learning/`)
+### 🟣 KỊCH BẢN 4: Huấn Luyện & Đánh Giá AI Imitation Learning (`packages/jetbot_il/`)
 
 Quy trình khép kín phát triển mô hình nơ-ron tự hành né vật cản theo lý thuyết **UIT RL-101 (Bài 10: Học bắt chước)**:
 
 1. **Bước 4.1: Thu thập tập dữ liệu chuyên gia mô phỏng (kèm tiêm nhiễu DART)**
    ```bash
-   python 07-imitation-learning/data_collector.py --episodes 50 --output 07-imitation-learning/data/expert_demonstrations.npz
+   python -m jetbot_il.sim.data_collector --episodes 50 --output packages/jetbot_il/data/expert_demonstrations.npz
    ```
    * Thu thập 50 kịch bản ngẫu nhiên.
    * Cơ chế **DART (Data Gathering with Asserted Random Trajectories)** tự động tiêm nhiễu ngẫu nhiên khi an toàn để buộc chuyên gia sinh hành vi tự sửa sai (recovery behavior).
@@ -293,52 +289,52 @@ Quy trình khép kín phát triển mô hình nơ-ron tự hành né vật cản
 
 2. **Bước 4.2: Huấn luyện mô hình Behavioral Cloning (BC) cơ sở**
    ```bash
-   python 07-imitation-learning/train_bc.py --data 07-imitation-learning/data/expert_demonstrations.npz --save-dir 07-imitation-learning/models --epochs 80 --batch-size 64
+   python -m jetbot_il.training.train_bc --data packages/jetbot_il/data/expert_demonstrations.npz --save-dir packages/jetbot_il/models --epochs 80 --batch-size 64
    ```
    * Sử dụng hàm mất mát có trọng số: $w_v = 1.0$ (vận tốc dài) và $w_\omega = 1.5$ (bẻ lái né cản).
-   * Tự động xuất ra:
-     * Checkpoint PyTorch: `models/bc_policy_best.pt`
-     * Trọng số thuần NumPy: `models/bc_policy_numpy.json`
-     * Mô hình chuẩn công nghiệp: `models/bc_policy.onnx`
+   * Tự động xuất ra trong `packages/jetbot_il/models/`:
+     * Checkpoint PyTorch: `bc_policy_best.pt`
+     * Trọng số thuần NumPy: `bc_policy_numpy.json`
+     * Mô hình chuẩn công nghiệp: `bc_policy.onnx`
 
 3. **Bước 4.3: Huấn luyện DAgger triệt tiêu lỗi trôi phân phối (Covariate Shift)**
    ```bash
-   python 07-imitation-learning/dagger_session.py --data 07-imitation-learning/data/expert_demonstrations.npz --save-dir 07-imitation-learning/models --iterations 5
+   python -m jetbot_il.training.dagger_session --data packages/jetbot_il/data/expert_demonstrations.npz --save-dir packages/jetbot_il/models --iterations 5
    ```
    * Chạy qua 5 vòng lặp DAgger với hệ số hòa trộn $\beta_k = 0.5^k$.
    * Robot tự điều khiển, chuyên gia gán nhãn trạng thái lạ, kéo giảm sai số tích lũy từ $O(T^2\epsilon) \to O(T\epsilon)$.
-   * Xuất mô hình tối ưu cuối cùng: `models/dagger_policy.onnx`.
+   * Xuất mô hình tối ưu cuối cùng: `packages/jetbot_il/models/dagger_policy.onnx`.
 
 4. **Bước 4.4: Kiểm định đồ thị ONNX & Đo đạc tốc độ suy luận (Benchmark)**
    ```bash
-   python 07-imitation-learning/benchmark_onnx.py --model 07-imitation-learning/models/dagger_policy.onnx --runs 5000
+   python -m jetbot_il.eval.benchmark_onnx --model packages/jetbot_il/models/dagger_policy.onnx --runs 5000
    ```
    * Đo đạc độ trễ suy luận ONNX Runtime: **$< 0.05\text{ ms}$ (đạt $> 40,000$ lượt suy luận/giây)**, đáp ứng vượt trội chu kỳ 10Hz của LiDAR.
 
 5. **Bước 4.5: Đánh giá định lượng hiệu năng né cản (Evaluation Benchmark)**
    ```bash
-   python 07-imitation-learning/evaluate_benchmark.py --model 07-imitation-learning/models/dagger_policy.onnx --episodes 30
+   python -m jetbot_il.eval.evaluate_benchmark --model packages/jetbot_il/models/dagger_policy.onnx
    ```
-   * Đánh giá tỷ lệ về đích thành công (Success Rate $> 80\%$), tỷ lệ va chạm (Collision Rate $< 5\%$), và xuất báo cáo JSON chi tiết tại `07-imitation-learning/logs/`.
+   * Đánh giá tỷ lệ về đích thành công (Success Rate $> 80\%$), tỷ lệ va chạm (Collision Rate $< 5\%$), và xuất báo cáo JSON chi tiết tại `packages/jetbot_il/logs/`.
 
 6. **Bước 4.6: Chạy hộp đen đánh giá trực tiếp (Live Flight Recorder)**
    Kết nối trực tiếp tới Backend đang chạy để điều khiển xe và ghi log viễn trắc telemetry:
    ```bash
-   python 07-imitation-learning/live_evaluator.py --host 127.0.0.1 --port 8000 --model 07-imitation-learning/models/dagger_policy.onnx --goal-x 1.8 --goal-y 0.0
+   python -m jetbot_il.eval.live_evaluator --host 127.0.0.1 --port 8000 --model packages/jetbot_il/models/dagger_policy.onnx --goal-x 1.8 --goal-y 0.0
    ```
 
 ---
 
-### 🎮 KỊCH BẢN 5: Điều Khiển Bằng Tay Cầm / Bàn Phím (`teleop_gamepad.py`)
+### 🎮 KỊCH BẢN 5: Điều Khiển Bằng Tay Cầm / Bàn Phím (`apps/teleop/teleop_gamepad.py`)
 
 Hỗ trợ điều khiển xe JetBot trực tiếp với cơ chế **Safety Watchdog** tự động phanh khi nhả cần hoặc mất kết nối:
 
 ```bash
 # 1. Chế độ tự động nhận diện tay cầm USB / Bluetooth (Xbox, PS4/PS5, Logitech F710):
-python teleop_gamepad.py
+python apps/teleop/teleop_gamepad.py
 
 # 2. Chế độ điều khiển dự phòng bằng bàn phím (không cần tay cầm):
-python teleop_gamepad.py --keyboard
+python apps/teleop/teleop_gamepad.py --keyboard
 ```
 * **Bảng phím điều khiển:**
   * `W` / `Mũi tên lên`: Tiến thẳng.
@@ -361,42 +357,40 @@ python scripts/verify_agent_integrity.py
 ```
 *(Quét cú pháp AST 100% các tệp Python và thẩm định 100% đường dẫn trong tài liệu kiến trúc. Yêu cầu: PASS 100%).*
 
-### 5.2. Module Thị Giác Máy Tính (`01-HieuMe/`)
+### 5.2. Module Thị Giác Máy Tính (`packages/jetbot_perception/`)
 ```bash
 # Chạy bộ Unit Test thị giác độc lập (5/5 PASS):
-python 01-HieuMe/test_cv_pipeline.py
+python tests/perception/test_cv_pipeline.py
 
 # Chạy thử nghiệm Pipeline với ảnh tĩnh mẫu:
-python 01-HieuMe/pipeline.py -s 01-HieuMe/sample_data/csi_floor_sample.jpg
+python -m jetbot_perception.pipeline -s packages/jetbot_perception/sample_data/csi_floor_sample.jpg
 
 # Chạy với luồng camera MJPEG từ JetBot thật:
-python 01-HieuMe/pipeline.py -s "http://192.168.1.11:8080/api/stream/mjpeg"
+python -m jetbot_perception.pipeline -s "http://192.168.1.11:8080/api/stream/mjpeg"
 ```
 
-### 5.3. Module Tìm Đường C-Core (`02-DuyHieu/`)
+### 5.3. Module Tìm Đường C-Core & Planning (`packages/jetbot_planning/`)
 ```bash
-cd 02-DuyHieu
-python test_planning_local.py   # Kiểm tra 4/4 tiêu chí kỹ thuật: Grid, 1D Jump, Plateau, Curvature Scaling
-python verify_step1_astar.py     # Đo đạc độ trễ thuật toán A* (P95 < 1.05ms)
-cd ..
+python tests/planning/test_planning_local.py
+python tests/planning/test_dde_cbf.py
+python tests/planning/test_lidar_odometry.py
 ```
 
-### 5.4. Module SLAM & DAgger Prototype (`05-d500lib-motion/`)
+### 5.4. Module Tích Hợp & Kiểm Chứng SLAM (`tests/integration/`)
 ```bash
-cd 05-d500lib-motion/planning/il
-python test_dagger_policy.py    # Kiểm tra chính sách DAgger 8/8 PASS
-cd ../../..
+python tests/integration/verify_fixes.py
+python tests/integration/test_slam_perception_fixes.py
 ```
 
-### 5.5. Module AI Imitation Learning (`07-imitation-learning/`)
+### 5.5. Module AI Imitation Learning (`packages/jetbot_il/`)
 ```bash
-python 07-imitation-learning/test_il_pipeline.py
+python tests/imitation_learning/test_il_pipeline.py
 ```
 
-### 5.6. Hiệu Chuẩn & Kiểm Tra Phần Cứng LiDAR (`setup/test_lidar.py`)
+### 5.6. Hiệu Chuẩn & Kiểm Tra Phần Cứng LiDAR (`hardware/setup/test_lidar.py`)
 Khi kết nối với LiDAR D500 qua cáp USB-UART trên Jetson Nano:
 ```bash
-python setup/test_lidar.py
+python hardware/setup/test_lidar.py
 ```
 * Menu kiểm tra:
   * `[1]` La bàn khoảng cách thời gian thực 4 hướng (Trước, Phải, Sau, Trái).
@@ -463,10 +457,10 @@ Các biến môi trường có thể cấu hình thông qua tệp `.env` hoặc 
 
 ## 🔒 8. Quy Ước Kỷ Luật Mã Nguồn (Repository Rules)
 
-1. **Ranh giới module:** Mỗi thành viên phát triển trong thư mục chuyên trách (`01-HieuMe/`, `02-DuyHieu/`, `03-MinhHieu/`, `05-d500lib-motion/`, `07-imitation-learning/`).
-2. **Kiểm tra trước khi commit:** Bắt buộc chạy pass bộ unit test của module và script `scripts/verify_agent_integrity.py`.
+1. **Ranh giới module:** Các thư viện dùng chung nằm trong `packages/` (`jetbot_perception/`, `jetbot_planning/`, `jetbot_hardware/`, `jetbot_il/`); ứng dụng chạy thực thi nằm trong `apps/` (`backend/`, `frontend/`, `edge_bridge/`, `teleop/`).
+2. **Kiểm tra trước khi commit:** Bắt buộc chạy pass bộ unit test trong `tests/` và script `scripts/verify_agent_integrity.py`.
 3. **Bảo mật & Tối ưu:** Tuyệt đối không commit tệp nhị phân nặng (`.engine`, `node_modules`, `__pycache__`) hoặc secret/API key.
-4. **Quy chuẩn điều khiển xe thật:** Mọi thuật toán phải tuân thủ nghiêm ngặt các giới hạn an toàn trong [setup/robot_dynamics.json](setup/robot_dynamics.json):
+4. **Quy chuẩn điều khiển xe thật:** Mọi thuật toán phải tuân thủ nghiêm ngặt các giới hạn an toàn trong [hardware/setup/robot_dynamics.json](hardware/setup/robot_dynamics.json):
    * Vận tốc dài an toàn: $v \le 0.14\text{ m/s}$ (Deadband tối thiểu: $v_{min} \ge 0.12\text{ m/s}$ để thắng ma sát tĩnh hộp số GA25).
    * Vận tốc góc an toàn: $|\omega| \le 0.35\text{ rad/s}$ ($\approx 20^\circ/\text{s}$, chống văng trượt bánh trên sàn gạch men bóng).
    * Gia tốc ly tâm giới hạn: $|v \cdot \omega| \le 0.176\text{ m/s}^2$.

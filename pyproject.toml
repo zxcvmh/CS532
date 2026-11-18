@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cs532-jetbot"
+version = "2.0.0"
+description = "CS532 Autonomous JetBot Navigation, Perception, SLAM & Imitation Learning System"
+readme = "README.md"
+requires-python = ">=3.8"
+
+[tool.setuptools.packages.find]
+where = ["packages"]
+include = ["jetbot_*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["packages", "apps/backend", "ros2/jetbot_cartographer"]
+testpaths = ["tests"]
