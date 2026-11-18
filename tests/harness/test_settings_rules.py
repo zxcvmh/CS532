@@ -9,6 +9,7 @@ SETTINGS = os.path.join(ROOT, ".claude", "settings.json")
 # `Edit(path)` / `Write(path)` = gitignore-style path relative to the project. Both forms appear in real configs.
 DENY_GIT = ["git add -u", "git add -A", "git add --all", "git add .", "git push", "git reset --hard"]
 ASK_REMOTE = ["ssh", "scp", "rsync"]
+LOCKED_ASK = ["tests/acceptance/**", "AGENTS.md", ".agents/**", "CLAUDE.md", ".claude/**", "agents-doc/LOCKED_PATHS.txt"]
 
 
 def rules():
@@ -32,6 +33,12 @@ class TestSettingsRules(unittest.TestCase):
             self.assertIn("Bash(%s *)" % cmd, ask)
         self.assertIn("Bash(*run_bridge*)", ask)
         self.assertIn("Bash(*jetbot_bridge*)", ask)
+
+    def test_ask_has_locked_paths(self):
+        ask = rules().get("ask", [])
+        for path in LOCKED_ASK:
+            for tool in ("Edit", "Write"):
+                self.assertIn("%s(%s)" % (tool, path), ask)
 
     def test_robot_dynamics_still_denied(self):
         deny = rules()["deny"]

@@ -21,7 +21,19 @@
       "Bash(scp *)",
       "Bash(rsync *)",
       "Bash(*run_bridge*)",
-      "Bash(*jetbot_bridge*)"
+      "Bash(*jetbot_bridge*)",
+      "Edit(tests/acceptance/**)",
+      "Write(tests/acceptance/**)",
+      "Edit(AGENTS.md)",
+      "Write(AGENTS.md)",
+      "Edit(.agents/**)",
+      "Write(.agents/**)",
+      "Edit(CLAUDE.md)",
+      "Write(CLAUDE.md)",
+      "Edit(.claude/**)",
+      "Write(.claude/**)",
+      "Edit(agents-doc/LOCKED_PATHS.txt)",
+      "Write(agents-doc/LOCKED_PATHS.txt)"
     ]
   }
 }

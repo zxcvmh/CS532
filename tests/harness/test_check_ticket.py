@@ -99,5 +99,49 @@ class TestCommands(unittest.TestCase):
         self.assertEqual(ct.run_commands(self.mk('`.venv/bin/python -c "print(1)"`'), Path(ROOT)), [])
 
 
+class TestReady(unittest.TestCase):
+    def mk(self, assumptions=None, tid="TK-NEW-01"):
+        t = "### %s: t\n- Role: il-policy\n- Status: READY\n" % tid
+        if assumptions is not None:
+            t += "- Assumptions: %s\n" % assumptions
+        return ticketlib.parse_tickets(t + "- Acceptance command: `x`\n")[0]
+
+    def test_ready_requires_human_approval(self):
+        with tempfile.TemporaryDirectory() as d:
+            f = ct.check_ready(self.mk("room is 5x5 m"), Path(d))
+            self.assertEqual(f, ["assumptions not approved by the human"])
+
+    def test_ready_passes_when_approved(self):
+        with tempfile.TemporaryDirectory() as d:
+            t = self.mk("room is 5x5 m\n  Human-approved: 2026-11-18")
+            self.assertEqual(ct.check_ready(t, Path(d)), [])
+
+    def test_new_ticket_without_assumptions_fails(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.assertEqual(ct.check_ready(self.mk(None), Path(d)), ["no Assumptions field"])
+
+    def test_open_needs_human_blocks(self):
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "TK-NEW-01.md").write_text("Question: which room?\nTried: x\nProposed default: y\n")
+            t = self.mk("a\n  Human-approved: 2026-11-18")
+            self.assertEqual(ct.check_ready(t, Path(d)), ["open needs-human question"])
+
+    def test_resolved_needs_human_passes(self):
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "TK-NEW-01.md").write_text("Question: q\nRESOLVED: 5x5\n")
+            t = self.mk("a\n  Human-approved: 2026-11-18")
+            self.assertEqual(ct.check_ready(t, Path(d)), [])
+
+    def test_legacy_ticket_warns_not_fails(self):
+        real = Path(ROOT, "agents-doc", "tickets", "TK-IL-04.md").read_text(encoding="utf-8")
+        t = ticketlib.parse_tickets(real)[0]
+        legacy = ct.legacy_ids(Path(ROOT))
+        self.assertIn("TK-IL-04", legacy)
+        with tempfile.TemporaryDirectory() as d:
+            f = ct.check_ready(t, Path(d), legacy)
+            self.assertEqual(len(f), 1)
+            self.assertTrue(f[0].startswith("WARN"), f)
+
+
 if __name__ == "__main__":
     unittest.main()

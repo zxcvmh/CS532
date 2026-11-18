@@ -119,6 +119,27 @@ def run_commands(ticket, root):
     return out
 
 
+def legacy_ids(root):
+    """Ticket ids that existed when the HITL gate was introduced (2026-11-16): warned, not failed."""
+    arch = Path(root) / "agents-doc" / "archive" / "TICKETS-monolith-2026-11-16.md"
+    return {t.id for t in ticketlib.parse_tickets(arch.read_text(encoding="utf-8"))}
+
+
+def check_ready(ticket, needs_human_dir, legacy=frozenset()):
+    """HITL gate: READY needs approved Assumptions and no open needs-human file. 'WARN ...' does not fail."""
+    out = []
+    assumptions = ticketlib.field(ticket, "Assumptions")
+    if not assumptions:
+        out.append("WARN legacy ticket: no Assumptions (not held to the gate)" if ticket.id in legacy
+                   else "no Assumptions field")
+    elif not re.search(r"Human-approved: \d{4}-\d{2}-\d{2}", assumptions):
+        out.append("assumptions not approved by the human")
+    nh = Path(needs_human_dir) / (ticket.slug + ".md")
+    if nh.is_file() and not re.search(r"^RESOLVED:", nh.read_text(encoding="utf-8"), re.M):
+        out.append("open needs-human question")
+    return out
+
+
 def _full_diff(root):
     d = subprocess.run(["git", "diff", "HEAD"], cwd=root, capture_output=True, text=True).stdout
     for p in subprocess.check_output(["git", "ls-files", "--others", "--exclude-standard"], cwd=root).decode().split("\n"):
@@ -140,15 +161,19 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("ticket")
     ap.add_argument("--only", choices=["scope", "hygiene", "commands"])
+    ap.add_argument("--ready", action="store_true", help="HITL gate for marking the ticket READY")
     a = ap.parse_args()
     t = _ticket(a.ticket)
     failed = False
     def report(name, findings):
         nonlocal failed
-        if findings:
-            failed = True
+        hard = [f for f in findings if not f.startswith("WARN")]
+        failed = failed or bool(hard)
         for f in findings or ["ok"]:
-            print("%s %s: %s" % ("FAIL" if findings else "PASS", name, f))
+            print("%s %s: %s" % ("WARN" if f.startswith("WARN") else ("FAIL" if findings else "PASS"), name, f[5:] if f.startswith("WARN ") else f))
+    if a.ready:
+        report("ready", check_ready(t, ROOT / "agents-doc" / "needs-human", legacy_ids(ROOT)))
+        sys.exit(1 if failed else 0)
     if a.only in (None, "scope"):
         allowed = ticketlib.backticked(ticketlib.field(t, "Allowed files"))
         locked = [ln.strip() for ln in (ROOT / "agents-doc" / "LOCKED_PATHS.txt").read_text().splitlines() if ln.strip()]

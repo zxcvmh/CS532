@@ -27,6 +27,12 @@ Reply to the human in **Vietnamese**. Code, comments and commit messages stay in
 8. **No hardware actions.** Never SSH to the Jetson, run motors, flash models or kill processes.
    Prepare the command; the Supervisor or the human runs it.
 
+## 0b. When the ticket is not enough (stop, do not guess)
+
+If you need a fact, a file outside `Allowed files`, or a decision the ticket does not give you: STOP. Write
+`agents-doc/needs-human/<ID>.md` with `Question:`, `Tried:` and `Proposed default:` and report that you stopped. Do not
+guess and do not widen scope. The Supervisor answers by adding a `RESOLVED:` line; until then the ticket stays blocked.
+
 ## 1. Repo map (verified 2026-11-15 — trust the disk over this list if they differ)
 
 | Path | What it is | Owner role |

@@ -17,6 +17,9 @@ Old v1 tickets: `agents-doc/archive/agents-v1/TICKETS-v1.md` (paths there are de
 - Threshold (numbers):
 - Regression commands:
 - Depends on:
+- Assumptions: (what the Supervisor filled in that the human did not say; end with an indented line
+  `Human-approved: YYYY-MM-DD` once the human OK'd them. READY needs it: `check_ticket.py <ID> --ready`)
+- Needs-human: (open questions; a coder who needs an answer writes agents-doc/needs-human/<ID>.md and stops)
 ```
 
 ---
