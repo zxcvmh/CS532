@@ -14,29 +14,21 @@ Input: a ticket id (and optionally the coder's report). Read the ticket file `ag
 
 ## Checks — run all, in order
 
-1. **Scope**
-   - `git status --short` and `git diff --name-only` (+ untracked files). Every changed path must be
-     in the ticket's `Allowed files`.
-   - `git diff --name-only | grep -Ef agents-doc/LOCKED_PATHS.txt` must print nothing.
-     Also check `git diff --stat -- setup/robot_dynamics.json tests/acceptance/` is empty.
-2. **Re-run, don't trust** — run every acceptance and regression command from the ticket yourself
-   with `.venv/bin/python`. Compare with the numbers in the report. Any mismatch = REJECT.
-3. **Read the metrics, not the banner** — grep the output for success/collision/drift/latency
-   values and compare to the ticket threshold. `[PASS]` text with a metric below threshold = REJECT.
-4. **Test integrity** — in the diff, look for: deleted/loosened asserts, new `skip`, widened
-   tolerances, `try/except: pass` around the thing being tested, mocked-out logic under test, test
-   seeds changed to cherry-pick.
-5. **Physics** — grep the diff for numeric literals near speed/pwm/turn/trim/omega/velocity.
-   Each must come from `setup/robot_dynamics.json` (or be a clearly-named non-physics constant).
-6. **Units & frames** — normalized [0,1] vs metres, degrees vs radians, LiDAR index ↔ robot front,
-   left/right halves, REP-103 sign of angles. Trace one value through the changed code.
-7. **Paths** — every path the diff or report mentions must exist (`ls`), and none may use the dead
-   folder names `0[1-7]-*` or import from `archive/`.
-8. **Runtime still boots** — `cd dashboard/backend && ../../.venv/bin/python -c "import app.main"`.
-   (Pre-existing failure as of 2026-11-15: `CartographerAdapter ... 'arena_bounds'` — report whether
-   it is still the first error or a new one.)
-9. **Research notes only** — open every cited arXiv/DOI locator (WebFetch). Claim not found at that
-   locator = mark FABRICATED.
+0. **Mechanical checks (script).** Run `.venv/bin/python scripts/check_ticket.py <ID>` and quote its output. It
+   covers scope (every changed or untracked path vs the ticket's Allowed files, plus `LOCKED_PATHS.txt`), the
+   test-integrity grep (removed asserts, new `skip`, `except: pass`), numeric literals near speed/pwm/turn/trim/
+   omega/velocity, dead-folder / `archive/` paths in code, and the ticket's acceptance + regression commands.
+   Every FAIL line is a candidate, not a verdict: you decide whether it blocks (e.g. a literal like `0.005` that is
+   a deadband needs judgment; files the Supervisor told you are foreign WIP are not the coder's). Also run
+   `git diff --stat -- setup/robot_dynamics.json tests/acceptance/` (must be empty).
+1. **Compare with the report** — the numbers the script printed vs the coder's REPORT. Any mismatch = REJECT.
+2. **Read the metrics, not the banner** — compare success/collision/drift/latency to the ticket threshold.
+   `[PASS]` text with a metric below threshold = REJECT.
+3. **Test integrity beyond grep** — mocked-out logic under test, widened tolerances, test seeds changed to cherry-pick.
+4. **Units & frames** — normalized [0,1] vs metres, degrees vs radians, LiDAR index <-> robot front, left/right
+   halves, REP-103 sign of angles. Trace one value through the changed code.
+5. **Runtime still boots** — `cd dashboard/backend && ../../.venv/bin/python -c "import app.main"`.
+6. **Research notes only** — open every cited arXiv/DOI locator (WebFetch). Claim not found there = FABRICATED.
 
 ## Verdict format
 
@@ -48,7 +40,7 @@ Blocking findings (each: file:line, what is wrong, minimal fix direction):
 Ledger entry (only on REJECT for fabrication/fake pass): | time | agent | type | evidence | fix |
 ```
 
-Never cite `scripts/verify_agent_integrity.py` as evidence: as of 2026-11-15 it scans only 5 files and
-prints "ZERO-HALLUCINATION" even when its target folder is missing.
+Never cite `scripts/verify_agent_integrity.py` as evidence: it scans only 5 files and prints
+"ZERO-HALLUCINATION" even when its target folder is missing. Use `scripts/check_ticket.py` instead.
 
 PASS only if every check passes with evidence you produced in this run. Never PASS on reasoning alone.

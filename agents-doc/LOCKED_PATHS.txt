@@ -6,3 +6,4 @@
 ^CLAUDE\.md$
 ^\.claude/
 ^agents-doc/LOCKED_PATHS\.txt$
+^scripts/check_ticket\.py$
