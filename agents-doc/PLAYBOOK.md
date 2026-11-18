@@ -1,7 +1,7 @@
 # PLAYBOOK — Bạn điều khiển, agent làm việc
 
 Bạn là người điều phối. Claude = trợ lý (viết ticket, viết test khóa, audit, commit, phân loại việc).
-Antigravity = người code (`/perception` `/slam` `/il-policy` `/integration`) và tóm tắt paper (`/researcher`).
+Antigravity = người code (`/perception` `/slam` `/il-policy` `/integration`) và tự tìm + tóm tắt tài liệu (`/researcher`).
 
 ---
 
@@ -34,7 +34,7 @@ Antigravity = người code (`/perception` `/slam` `/il-policy` `/integration`) 
 | **Test cũ ghi cứng số / test sai** | **Claude** | Coder không bao giờ tự sửa thước đo của mình |
 | `setup/robot_dynamics.json`, đo đạc xe | **Bạn** | Mở khóa: `chmod u+w setup/robot_dynamics.json`, sửa xong `chmod 444` |
 | Copy file lên Jetson, SSH, chạy motor | **Claude** (bạn duyệt) | Chỉ Supervisor được đụng phần cứng |
-| Đọc paper, hỏi "phương pháp X có hợp xe mình không" | Bạn tìm paper → `/researcher` → Claude kiểm trích dẫn | |
+| Cần tìm hiểu "phương pháp X có hợp xe mình không" | `/researcher` tự tìm nguồn → bạn kiểm sơ 3 fact nó liệt kê → `/audit` để Claude kiểm trích dẫn | |
 | Coder báo "file này ngoài Allowed files" | `/triage` | Thường thành ticket mới cho role sở hữu file đó |
 | Không biết | `/triage` | |
 
@@ -88,13 +88,14 @@ Rồi:
 /triage Xe thật: <triệu chứng, lúc nào xảy ra>. Log: ~/bridge-<ngày-giờ>.log trên Jetson.
 ```
 
-### 3.8 Gửi Antigravity — nhờ tóm tắt paper
+### 3.8 Gửi Antigravity — nhờ nghiên cứu (nó tự tìm nguồn)
 ```
 /researcher
-Câu hỏi: <ví dụ: deskew scan 2D LiDAR khi xe quay nhanh, không có encoder>.
-Nguồn: <link arXiv / PDF bạn tìm>.
-Ghi vào docs/research/<chủ-đề>.md đúng mẫu.
+Câu hỏi: <ví dụ: bù méo scan 2D LiDAR khi xe quay nhanh, không có encoder/IMU>.
+Bối cảnh: <1–2 câu, ví dụ: xe quay tại chỗ ~5.2 rad/s, LiDAR 10 Hz>.
+Tự tìm 3–6 nguồn, mở từng nguồn, ghi vào docs/research/<chủ-đề>.md đúng mẫu.
 ```
+Bạn chỉ cần mở 3 link trong mục "Human spot-check list" và xem con số có đúng chỗ không.
 Sau đó: `/audit research docs/research/<chủ-đề>.md` gửi Claude để kiểm trích dẫn.
 
 ---

@@ -37,8 +37,9 @@ class TestHectorAnchorSLAM(unittest.TestCase):
 
         # Robot position (ox, oy) must remain near origin (<= 0.05m) during in-place turn
         self.assertLess(math.hypot(ox, oy), 0.05)
-        # Heading must track angular turn
-        self.assertGreater(oth, 0.0)
+        # TK-SLAM-09 LiDAR-only spec: in a featureless circular room without command dead-reckoning,
+        # pure scan matching cannot observe rotation, so heading must NOT drift from w_cmd.
+        self.assertEqual(oth, 0.0)
         # Static anchor walls must remain identical in world frame
         np.testing.assert_array_equal(adapter.grid_map.static_anchor_walls, anchor_walls_before)
 

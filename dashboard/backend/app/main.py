@@ -28,12 +28,13 @@ mjpeg_streamer = MjpegStreamer()
 coordinator = NavigationCoordinator(bridge=bridge_client, streamer=mjpeg_streamer)
 ws_manager = WebSocketHub(coordinator)
 
-app = FastAPI(title="JetBot Dashboard API")
+from contextlib import asynccontextmanager
+
 bridge_process = None
 
 
-@app.on_event("startup")
-async def startup_event():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     global bridge_process
     asyncio.ensure_future(coordinator.update())
     asyncio.ensure_future(ws_manager.broadcaster_task())
@@ -64,10 +65,8 @@ async def startup_event():
                 except Exception as e:
                     print(f"[WARN] Could not auto-start bridge: {e}", flush=True)
 
+    yield
 
-@app.on_event("shutdown")
-async def shutdown_event():
-    global bridge_process
     coordinator.running = False
     await coordinator.stop()
     if bridge_process:
@@ -75,6 +74,9 @@ async def shutdown_event():
             bridge_process.terminate()
         except Exception:
             pass
+
+
+app = FastAPI(title="JetBot Dashboard API", lifespan=lifespan)
 
 
 app.add_middleware(
@@ -232,3 +234,16 @@ for dist_path in dist_candidates:
     if os.path.exists(dist_path) and os.path.isdir(dist_path):
         app.mount("/", StaticFiles(directory=dist_path, html=True), name="static")
         break
+
+
+if __name__ == "__main__":
+    import argparse
+    import uvicorn
+
+    parser = argparse.ArgumentParser(description="JetBot Dashboard FastAPI Server")
+    parser.add_argument("--host", default="0.0.0.0", help="Bind host (default: 0.0.0.0)")
+    parser.add_argument("--port", type=int, default=8000, help="Bind port (default: 8000)")
+    args = parser.parse_args()
+
+    uvicorn.run("app.main:app", host=args.host, port=args.port, reload=False)
+

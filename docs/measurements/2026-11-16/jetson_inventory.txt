@@ -1,0 +1,18 @@
+=== MEMORY (free -m) ===
+              total        used        free      shared  buff/cache   available
+Mem:           3964         422        2638          26         903        3350
+Swap:          6078           0        6078
+
+=== UPTIME ===
+ 05:23:20 up 2 min,  0 users,  load average: 0.83, 0.69, 0.29
+
+=== OPENCV & ARUCO ===
+OpenCV: 4.1.1 | cv2.aruco available: False
+
+=== MODELS & ENGINES ===
+-rw-rw-r-- 1 jetbot jetbot 9.1M Oct 12 09:20 /home/jetbot/yolo26n.engine
+-rw-r--r-- 1 jetbot jetbot 9.5M Oct 11 21:50 /home/jetbot/yolo26n.onnx
+-rw-rw-r-- 1 jetbot jetbot  13M Sep 24 09:11 /home/jetbot/yolov8n.engine
+-rw-r--r-- 1 jetbot jetbot  13M Sep 24 08:50 /home/jetbot/yolov8n.onnx
+
+=== PROCESS (bridge) ===

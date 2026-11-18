@@ -1,0 +1,33 @@
+{
+  "ping": {
+    "file": "ping_home_wifi.txt",
+    "n_sent": 200,
+    "n_lost": 0,
+    "mean_ms": 3.417,
+    "p95_ms": 7.044,
+    "p99_ms": 17.407
+  },
+  "jetson_inventory": {
+    "file": "jetson_inventory.txt"
+  },
+  "lidar": [
+    {
+      "file": "lidar_static_person.npz",
+      "scenario": "static_person",
+      "n_scans": 702,
+      "duration_s": 70.104
+    },
+    {
+      "file": "lidar_crossing.npz",
+      "scenario": "crossing",
+      "n_scans": 603,
+      "duration_s": 60.105
+    },
+    {
+      "file": "lidar_head_on.npz",
+      "scenario": "head_on",
+      "n_scans": 598,
+      "duration_s": 60.024
+    }
+  ]
+}

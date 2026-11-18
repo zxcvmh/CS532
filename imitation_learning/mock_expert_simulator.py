@@ -26,6 +26,10 @@ from config import (
     MAX_LINEAR_SPEED,
     MAX_ANGULAR_SPEED,
     MIN_DRIVE_SPEED,
+    ACTION_STOP,
+    ACTION_FORWARD,
+    ACTION_PIVOT_LEFT,
+    ACTION_PIVOT_RIGHT,
     LIDAR_MAX_RANGE_M,
     LIDAR_MIN_RANGE_M,
     GOAL_TOLERANCE_M,
@@ -224,15 +228,19 @@ class SimulationEnvironment:
             pass
 
     def step(self, cmd_v: float, cmd_w: float, dt: float = 1.0 / CONTROL_HZ) -> Tuple[bool, bool]:
-        """Steps forward kinematics with simulated slip and updates dynamic obstacles."""
+        """Steps forward kinematics with stop-turn-go dynamics matching the field robot."""
         self.step_count += 1
 
-        # Deadband handling
-        if 0.0 < cmd_v < MIN_DRIVE_SPEED:
+        # Stop-turn-go kinematics (mirrors dashboard/jetbot_bridge.py set_motor_speeds)
+        if abs(cmd_v) < 0.01 and abs(cmd_w) < 0.02:
             act_v = 0.0
+            act_w = 0.0
+        elif abs(cmd_v) < 0.01:
+            act_v = 0.0
+            act_w = math.copysign(MAX_ANGULAR_SPEED, cmd_w)
         else:
-            act_v = cmd_v * (1.0 - self.slip_ratio)
-        act_w = cmd_w
+            act_v = math.copysign(MAX_LINEAR_SPEED, cmd_v)
+            act_w = 0.0
 
         self.theta = (self.theta + act_w * dt + math.pi) % (2.0 * math.pi) - math.pi
         self.x += act_v * math.cos(self.theta) * dt
@@ -271,6 +279,24 @@ class SimulationEnvironment:
         reached = dist_goal <= GOAL_TOLERANCE_M
 
         return reached, collided
+
+    def step_action(self, action: int, dt: float = 1.0 / CONTROL_HZ) -> Tuple[bool, bool]:
+        """Maps discrete actions onto step() kinematics:
+        0: ACTION_STOP -> (0.0, 0.0)
+        1: ACTION_FORWARD -> (MAX_LINEAR_SPEED, 0.0)
+        2: ACTION_PIVOT_LEFT -> (0.0, 1.0)
+        3: ACTION_PIVOT_RIGHT -> (0.0, -1.0)
+        """
+        if action == ACTION_STOP:
+            return self.step(0.0, 0.0, dt)
+        elif action == ACTION_FORWARD:
+            return self.step(MAX_LINEAR_SPEED, 0.0, dt)
+        elif action == ACTION_PIVOT_LEFT:
+            return self.step(0.0, 1.0, dt)
+        elif action == ACTION_PIVOT_RIGHT:
+            return self.step(0.0, -1.0, dt)
+        else:
+            return self.step(0.0, 0.0, dt)
 
     def get_lidar_scan(self) -> List[float]:
         """Raycasts 360-degree LiDAR against arena walls and active obstacles."""
@@ -385,13 +411,12 @@ class GeometricExpertPolicy:
                 # Critical halt
                 return 0.0, 0.0
             
-            # Smooth terminal deceleration
-            v_term = max(self.min_v, min(self.max_v, 0.13 * (dist_goal / 0.40)))
-            w_term = max(-self.max_w, min(self.max_w, 1.8 * alpha))
-            return float(round(v_term, 3)), float(round(w_term, 3))
+            if abs(alpha) > math.radians(12.0):
+                return 0.0, float(round(math.copysign(self.max_w, alpha), 3))
+            return float(round(self.max_v, 3)), 0.0
 
-        # 3. PIVOT TURN IN PLACE: For large heading deviations (> 50 deg)
-        if abs(alpha) > math.radians(50.0):
+        # 3. PIVOT TURN IN PLACE: For heading deviations (> 12 deg)
+        if abs(alpha) > math.radians(12.0):
             self.reset_state()
             w_pivot = math.copysign(self.max_w, alpha)
             return 0.0, float(round(w_pivot, 3))

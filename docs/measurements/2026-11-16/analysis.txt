@@ -1,0 +1,45 @@
+================================================================================
+TK-MEAS-01: LiDAR Pedestrian Scan Characteristics Analysis
+Generated: 2026-11-16T22:13:14.459679
+================================================================================
+
+IMPORTANT GOVERNANCE INVARIANT:
+  This analysis measures raw LiDAR cluster and wall properties on the stationary robot.
+  It makes NO claim about SLAM pose estimation or trajectory accuracy.
+  (SLAM pose ablation with pedestrian beam-masking is strictly reserved for TK-CV-02).
+
+--------------------------------------------------------------------------------
+Scenario: static_person (lidar_static_person.npz)
+Scans: 702 | Duration: 70.1 s | Frequency: 10.0 Hz
+--------------------------------------------------------------------------------
+Person-like clusters / scan:  mean=7.83 (p50=8.0, p95=9.0, min=3, max=10)
+Person range (m):             mean=2.06 m (p50=1.81 m, p95=3.53 m, min=1.17 m, max=3.58 m)
+Estimated speed (m/s):        mean=0.48 m/s (p50=0.11 m/s, p95=2.33 m/s, max=15.10 m/s)
+Wall points / scan:           mean=309.5 pts (ratio to valid: 86.2%)
+Valid beam ratio / scan:      mean=99.8% (360-ray ring)
+
+--------------------------------------------------------------------------------
+Scenario: crossing (lidar_crossing.npz)
+Scans: 603 | Duration: 60.1 s | Frequency: 10.02 Hz
+--------------------------------------------------------------------------------
+Person-like clusters / scan:  mean=7.38 (p50=7.0, p95=10.0, min=3, max=12)
+Person range (m):             mean=2.00 m (p50=1.92 m, p95=2.63 m, min=1.25 m, max=2.64 m)
+Estimated speed (m/s):        mean=0.78 m/s (p50=0.23 m/s, p95=3.45 m/s, max=15.33 m/s)
+Wall points / scan:           mean=299.9 pts (ratio to valid: 83.4%)
+Valid beam ratio / scan:      mean=99.9% (360-ray ring)
+
+--------------------------------------------------------------------------------
+Scenario: head_on (lidar_head_on.npz)
+Scans: 598 | Duration: 60.02 s | Frequency: 9.95 Hz
+--------------------------------------------------------------------------------
+Person-like clusters / scan:  mean=7.04 (p50=7.0, p95=10.0, min=3, max=11)
+Person range (m):             mean=2.09 m (p50=2.24 m, p95=2.79 m, min=0.46 m, max=2.80 m)
+Estimated speed (m/s):        mean=0.81 m/s (p50=0.24 m/s, p95=3.66 m/s, max=15.11 m/s)
+Wall points / scan:           mean=299.2 pts (ratio to valid: 83.2%)
+Valid beam ratio / scan:      mean=99.8% (360-ray ring)
+
+================================================================================
+AGGREGATE MEASURED METRICS (COMPUTED):
+  - Mean pedestrian clusters per scan across scenarios: 7.42
+  - Mean wall points ratio across scenarios: 84.3%
+================================================================================

@@ -877,6 +877,7 @@ _last_slew_time = 0.0
 _active_cmd_v = 0.0
 _active_cmd_w = 0.0
 _current_spin_pwm = 0.0
+_fwd_pwm_mag = 0.0
 _last_vel_cmd_time = 0.0
 _current_mode = "MANUAL"
 _motor_i2c_lock = threading.Lock()
@@ -940,7 +941,9 @@ def set_motor_speeds(linear: float, angular: float):
       4. Differential Steering: Smooth curving without motor stall deadband.
       5. Trim Compensation: Keeps straight trajectory without lateral veer.
     """
-    global _active_cmd_v, _active_cmd_w, _current_spin_pwm, _last_vel_cmd_time
+    global _active_cmd_v, _active_cmd_w, _current_spin_pwm, _last_vel_cmd_time, _fwd_pwm_mag
+    if _last_vel_cmd_time == 0.0 or abs(_current_pwm_l) < 0.005:
+        _fwd_pwm_mag = 0.0
     now = time.time()
     dt = 0.05
     if _last_vel_cmd_time > 0:
@@ -948,54 +951,28 @@ def set_motor_speeds(linear: float, angular: float):
     _last_vel_cmd_time = now
 
     # 1. Full stop
-    if abs(linear) < 0.005 and abs(angular) < 0.02:
+    if abs(linear) < 0.01 and abs(angular) < 0.02:
         _active_cmd_v = 0.0
         _active_cmd_w = 0.0
         _current_spin_pwm = 0.0
+        _fwd_pwm_mag = 0.0
         set_raw_motor_speeds(0.0, 0.0)
         return
 
-    # When pure rotation is requested (linear == 0), immediately halt forward linear velocity
-    # to eliminate the 2.8cm coasting creep into frontal obstacles
-    if abs(linear) < 0.005 and abs(angular) >= 0.02:
-        _active_cmd_v = 0.0
-    else:
-        # Slew-Rate Limiting for Linear Speed (Acc: cruise_speed / soft_start_ramp_sec)
-        ramp_duration = max(0.1, SOFT_START_RAMP_SEC)  # 0.4s
-        max_accel = max(0.2, CRUISE_SPEED / ramp_duration)  # ~0.35 m/s^2
-        max_step_v = max_accel * dt
-        diff_v = linear - _active_cmd_v
-        if abs(diff_v) <= max_step_v:
-            _active_cmd_v = linear
-        else:
-            _active_cmd_v += math.copysign(max_step_v, diff_v)
-
-    # Slew-Rate Limiting for Angular Speed
-    # When transitioning from pivot turn (v=0) to linear drive (v>0), snap angular velocity immediately
-    # to prevent residual 3.14 rad/s pivot turn rate from jerking the robot into the wall
-    if abs(linear) > 0.01 and abs(_active_cmd_v) < 0.01:
-        _active_cmd_w = angular
-    else:
-        max_step_w = (1.5 / 0.25) * dt
-        diff_w = angular - _active_cmd_w
-        if abs(diff_w) <= max_step_w:
-            _active_cmd_w = angular
-        else:
-            _active_cmd_w += math.copysign(max_step_w, diff_w)
-
-    v = _active_cmd_v
-    w = _active_cmd_w
     # 2. In-place turn (Stop-Turn-Go / Pivot Spin calibrated 100% to robot_dynamics.json)
-    if abs(v) < 0.01 and abs(w) >= 0.02:
+    if abs(linear) < 0.01 and abs(angular) >= 0.02:
         # Single-rate pivot (TK-INT-09): only turn_speed was calibrated (setup/calibrate_motors.py test 4
         # measures turn_time_90_deg_sec at exactly this PWM). Any |w| spins at turn_speed; interpolating
         # from min_drive_speed inverted the speed once turn_speed < min_drive_speed.
+        _active_cmd_v = 0.0
+        _active_cmd_w = angular
+        _fwd_pwm_mag = 0.0
         spin_mag = TURN_SPEED
 
         # Signed target PWM:
         # Positive = Turn Left (CCW: left motor backward, right motor forward)
         # Negative = Turn Right (CW: left motor forward, right motor backward)
-        target_spin_signed = spin_mag if w > 0 else -spin_mag
+        target_spin_signed = spin_mag if angular > 0 else -spin_mag
 
         # Step, no ramp (TK-INT-07): turn_time_90_deg_sec was measured by setup/calibrate_motors.py
         # with a PWM step (drive_raw). turn_speed == min_drive_speed, so a ramp below it is dead
@@ -1008,30 +985,19 @@ def set_motor_speeds(linear: float, angular: float):
     else:
         _current_spin_pwm = 0.0
 
-    # 3. Linear drive (Forward or Backward) with True Differential Drive Kinematics
-    # Axle track width L = 0.115m (from physical JetBot dimensions)
-    half_track = 0.0575
-    vl = v - (w * half_track)
-    vr = v + (w * half_track)
+    # 3. Linear drive (Forward or Backward) — Stop-Turn-Go single PWM (TK-INT-10)
+    # Both logical wheel PWMs equal sign(linear) * cruise_speed after soft start.
+    # w is ignored while driving. Trim stays in set_raw_motor_speeds.
+    if (_active_cmd_v > 0 and linear < 0) or (_active_cmd_v < 0 and linear > 0):
+        _fwd_pwm_mag = 0.0
+    _active_cmd_v = linear
+    _active_cmd_w = 0.0
 
-    v_base = max(0.05, MAX_SAFE_SPEED_MPS)  # 0.14 m/s
-    delta_v_max = MAX_ANGULAR_SPEED_RADS * half_track  # ~0.020 m/s
-    span_v = 2.0 * delta_v_max  # 0.040 m/s
-
-    def velocity_to_pwm(wheel_v: float) -> float:
-        if abs(wheel_v) < 0.005:
-            return 0.0
-        sign = 1.0 if wheel_v >= 0 else -1.0
-        # Map wheel velocity range [v_base - delta_v_max, v_base + delta_v_max]
-        # strictly into calibrated PWM range [MIN_DRIVE_SPEED, CRUISE_SPEED] ([0.12, 0.17])
-        ratio = (abs(wheel_v) - (v_base - delta_v_max)) / span_v
-        pwm = MIN_DRIVE_SPEED + (CRUISE_SPEED - MIN_DRIVE_SPEED) * ratio
-        return sign * max(MIN_DRIVE_SPEED, min(CRUISE_SPEED, pwm))
-
-    target_l = max(-1.0, min(1.0, velocity_to_pwm(vl)))
-    target_r = max(-1.0, min(1.0, velocity_to_pwm(vr)))
-
-    set_raw_motor_speeds(target_l, target_r)
+    ramp_duration = max(0.01, SOFT_START_RAMP_SEC)
+    _fwd_pwm_mag = min(CRUISE_SPEED, _fwd_pwm_mag + (CRUISE_SPEED / ramp_duration) * dt)
+    sign = 1.0 if linear > 0 else -1.0
+    target_pwm = sign * _fwd_pwm_mag
+    set_raw_motor_speeds(target_pwm, target_pwm)
 
 def stop_motors():
     global _is_motor_moving, _current_pwm_l, _current_pwm_r, _last_slew_time

@@ -13,6 +13,8 @@ Standardizes:
   - Neural Network Hyperparameters
 """
 
+import os
+import json
 import math
 from typing import Tuple
 
@@ -33,11 +35,30 @@ OBSERVATION_DIM = LIDAR_NUM_BEAMS + 1 + 2 + 2  # 41
 # Action dimensions: [v, w]
 ACTION_DIM = 2
 
-# Physical hardware bounds (calibrated to robot_dynamics.json)
-MAX_LINEAR_SPEED = 0.16       # m/s (safe cruise on glossy ceramic tile)
-MIN_DRIVE_SPEED = 0.10        # m/s (motor deadband threshold to overcome gearbox stiction)
-MAX_ANGULAR_SPEED = 0.35      # rad/s (~20 deg/s, avoids wheel slip)
+# Discrete Action set (Stop-Turn-Go)
+ACTION_STOP = 0
+ACTION_FORWARD = 1
+ACTION_PIVOT_LEFT = 2
+ACTION_PIVOT_RIGHT = 3
+
+# Load physical hardware dynamics from configuration file (no hardcoded literals)
+_this_dir = os.path.dirname(os.path.abspath(__file__))
+_repo_root = os.path.abspath(os.path.join(_this_dir, ".."))
+_dyn_env = os.environ.get("ROBOT_DYNAMICS_FILE")
+if _dyn_env:
+    _dyn_file = os.path.abspath(_dyn_env)
+else:
+    _dyn_file = os.path.join(_repo_root, "setup", "robot_dynamics.json")
+
+with open(_dyn_file, "r", encoding="utf-8") as _f:
+    _dyn = json.load(_f)
+
+# Physical hardware bounds read directly from robot_dynamics.json
+MAX_LINEAR_SPEED = float(_dyn["actual_speed_mps"])
+MAX_ANGULAR_SPEED = (math.pi / 2.0) / float(_dyn["turn_time_90_deg_sec"])
+MIN_DRIVE_SPEED = float(_dyn["min_drive_speed"])
 ROBOT_RADIUS_M = 0.09         # m (JetBot physical chassis radius)
+
 
 
 # =============================================================================

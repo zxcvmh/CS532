@@ -32,6 +32,16 @@ except ImportError:
     except ImportError:
         HectorMatcher = None
 
+try:
+    from .slam.csm_tracker import CSMTracker
+except ImportError:
+    try:
+        from slam.csm_tracker import CSMTracker
+    except ImportError:
+        CSMTracker = None
+
+
+
 
 class Lidar2DOdometry:
     """
@@ -89,6 +99,15 @@ class Lidar2DOdometry:
         self.last_inlier_count: int = 0
         self.last_status: str = "INITIALIZING"
 
+        # Wide-window correlative scan matcher for turn tracking (TK-SLAM-09)
+        if CSMTracker is not None:
+            self.csm_tracker = CSMTracker(
+                lever_arm_m=self.lever_arm_x,
+                max_dth_step_rad=self.max_physical_yaw_rate * 0.1
+            )
+        else:
+            self.csm_tracker = None
+
     def load_dynamics_config(self, config_path: Optional[str] = None):
         """Loads physical motor dynamics and turn calibration from JSON config."""
         if config_path is None:
@@ -137,6 +156,8 @@ class Lidar2DOdometry:
         self.prev_valid_normals = None
         self.prev_kdtree = None
         self.last_status = "RESET"
+        if getattr(self, "csm_tracker", None) is not None:
+            self.csm_tracker.reset_pose(x, y, theta)
 
     def set_pose(self, x: float, y: float, theta: float):
         """
@@ -146,6 +167,8 @@ class Lidar2DOdometry:
         self.x = float(x)
         self.y = float(y)
         self.theta = float(theta)
+        if getattr(self, "csm_tracker", None) is not None:
+            self.csm_tracker.set_pose(x, y, theta)
 
     @staticmethod
     def _compute_point_cloud_normals(points: np.ndarray, max_tangent_len: float = 0.25) -> Tuple[np.ndarray, np.ndarray]:
@@ -533,30 +556,38 @@ class Lidar2DOdometry:
         t0 = time.time()
         dt = max(0.001, min(0.5, dt))
 
-        # Kinematic Motion Prior (Dead-reckoning guess for local step)
-        # Check if in pivot turn mode: negligible linear speed, active angular command
-        is_pivot = (abs(v_cmd) < 0.02 and abs(w_cmd) > 0.05)
-        if is_pivot:
-            eff_w = math.copysign(self.calibrated_pivot_yaw_rate, w_cmd)
-            dth_res = (eff_w * dt + math.pi) % (2.0 * math.pi) - math.pi
-            self.theta = (self.theta + dth_res + math.pi) % (2.0 * math.pi) - math.pi
-            self.last_status = "PIVOT_DEAD_RECKONING"
+        # TK-SLAM-09: Wide-window correlative scan matcher tracks pose from LiDAR alone
+        if getattr(self, "csm_tracker", None) is not None:
+            csm_x, csm_y, csm_th, csm_still, csm_can_write = self.csm_tracker.update(ranges)
+            csm_x, csm_y, csm_th = float(csm_x), float(csm_y), float(csm_th)
+            dx = float(csm_x - self.x)
+            dy = float(csm_y - self.y)
+            dth = float((csm_th - self.theta + math.pi) % (2.0 * math.pi) - math.pi)
+            self.x, self.y, self.theta = csm_x, csm_y, csm_th
+            self.last_status = "STILL" if csm_still else "TRACKING"
             self.last_computation_time_ms = (time.time() - t0) * 1000.0
             return self.x, self.y, self.theta, {
                 "status": self.last_status,
                 "latency_ms": round(self.last_computation_time_ms, 2),
-                "is_reliable": False,
-                "dx": 0.0,
-                "dy": 0.0,
-                "dtheta": dth_res,
+                "is_reliable": csm_still or csm_can_write,
+                "is_still": csm_still,
+                "can_write_map": csm_can_write,
+                "dx": dx,
+                "dy": dy,
+                "dtheta": dth,
+                "dx_body": 0.0,
+                "dy_body": 0.0,
+                "dtheta_rad": dth,
             }
 
-        eff_w = max(-self.max_physical_yaw_rate, min(self.max_physical_yaw_rate, w_cmd))
-
-        prior_dx = v_cmd * dt * math.cos(0.5 * eff_w * dt)
-        prior_dy = v_cmd * dt * math.sin(0.5 * eff_w * dt)
-        prior_dtheta = (eff_w * dt + math.pi) % (2.0 * math.pi) - math.pi
-        is_stationary = (abs(v_cmd) < 0.005 and abs(w_cmd) < 0.01)
+        # TK-SLAM-09 fallback: Pose priors must never come from w_cmd/v_cmd commands.
+        # Fallback uses zero prior (pose hold) and disables map writing.
+        prior_dx = 0.0
+        prior_dy = 0.0
+        prior_dtheta = 0.0
+        is_still = False
+        is_translating = False
+        is_pivot = False
 
         # 1. Convert scan to 2D cloud
         curr_cloud = self.scan_to_point_cloud(ranges)
@@ -577,23 +608,25 @@ class Lidar2DOdometry:
                 "status": self.last_status,
                 "latency_ms": round(self.last_computation_time_ms, 2),
                 "is_reliable": False if self.last_status == "INITIALIZING" else True,
+                "is_still": is_still,
+                "can_write_map": False,
                 "dx": 0.0, "dy": 0.0, "dtheta": 0.0
             }
         elif len(curr_cloud) < 10:
-            # Degraded or blocked LiDAR: DEAD-RECKON the kinematic prior and apply it.
-            # The pose is flagged POSE_STALE, and the backend warns and holds position (Phase 4.4).
-            dx_res = prior_dx
-            dy_res = prior_dy
-            dth_res = prior_dtheta
-            is_reliable = False
+            # Degraded or blocked LiDAR: hold pose (zero prior), do not dead-reckon from commands
             match_info = {"reason": "NO_POINTS"}
             self.last_status = "POSE_STALE"
-
-            c_stale = math.cos(self.theta)
-            s_stale = math.sin(self.theta)
-            self.x += c_stale * dx_res - s_stale * dy_res
-            self.y += s_stale * dx_res + c_stale * dy_res
-            self.theta = (self.theta + dth_res + math.pi) % (2.0 * math.pi) - math.pi
+            self.last_computation_time_ms = (time.time() - t0) * 1000.0
+            return self.x, self.y, self.theta, {
+                "status": self.last_status,
+                "latency_ms": round(self.last_computation_time_ms, 2),
+                "is_reliable": False,
+                "is_still": False,
+                "can_write_map": False,
+                "dx": 0.0, "dy": 0.0, "dtheta": 0.0,
+                "dx_body": 0.0, "dy_body": 0.0, "dtheta_rad": 0.0,
+                "residual_m": 99.0, "inliers": 0, "match_info": match_info
+            }
         else:
             # 2. Tier 1 Primary Localizer: Hector SLAM Gauss-Newton (Scan-to-Map against Anchor Field)
             has_map_geometry = (
@@ -688,12 +721,13 @@ class Lidar2DOdometry:
                     if HAS_CKDTREE:
                         self.prev_kdtree = cKDTree(curr_cloud)
                 else:
-                    dx_res = prior_dx
-                    dy_res = prior_dy
-                    dth_res = prior_dtheta
-                    self.last_status = f"FALLBACK_KINEMATIC_{icp_info.get('reason', 'UNKNOWN')}"
+                    dx_res = 0.0
+                    dy_res = 0.0
+                    dth_res = 0.0
+                    self.last_status = f"FALLBACK_HOLD_{icp_info.get('reason', 'UNKNOWN')}"
                     match_info = icp_info
-                    # Triệt tiêu kẹt reference frame trong quá khứ: làm mới keyframe nếu scan hiện tại có đủ điểm
+                    is_reliable = False
+                    # Update reference frame if current scan has sufficient points
                     if len(curr_cloud) >= 10:
                         self.prev_points_2d = curr_cloud
                         self.prev_normals, self.prev_valid_normals = self._compute_point_cloud_normals(curr_cloud)
@@ -719,10 +753,16 @@ class Lidar2DOdometry:
         self.last_fitness_score = match_info.get("residual_m", 0.0)
         self.last_inlier_count = match_info.get("inliers", 0)
 
+        if getattr(self, "csm_tracker", None) is not None:
+            self.csm_tracker.prev_pose = self.csm_tracker.curr_pose
+            self.csm_tracker.curr_pose = (self.x, self.y, self.theta)
+
         diag = {
             "status": self.last_status,
             "latency_ms": round(self.last_computation_time_ms, 2),
             "is_reliable": is_reliable,
+            "is_still": is_still,
+            "can_write_map": (is_still or is_translating),
             "dx_body": round(dx_res, 4),
             "dy_body": round(dy_res, 4),
             "dtheta_rad": round(dth_res, 4),

@@ -247,8 +247,9 @@ class TelemetryParser:
             coord.bridge.last_lidar_time = time.time()
             coord.bridge.lidar_connected = True
 
-        # High-rate kinematic odometry extrapolation between LiDAR sweeps (22-50 Hz smooth pose)
-        if tick is None and (abs(coord.linear_vel) > 0.005 or abs(coord.angular_vel) > 0.01):
+        # High-rate kinematic odometry extrapolation between LiDAR sweeps (gate on confirmed pose, default False)
+        can_extrapolate = bool(getattr(getattr(coord, "motion", None), "can_write_map", False))
+        if tick is None and can_extrapolate and (abs(coord.linear_vel) > 0.005 or abs(coord.angular_vel) > 0.01):
             now_inter = time.time()
             last_inter = getattr(coord, "_last_inter_tick_time", now_inter)
             dt_inter = max(0.001, min(0.1, now_inter - last_inter))
@@ -421,7 +422,8 @@ class TelemetryParser:
         if hasattr(coord, "scan_gate") and coord.scan_gate:
             tick = coord.scan_gate.accept(fake_data)
 
-        if tick is None and (abs(coord.linear_vel) > 0.005 or abs(coord.angular_vel) > 0.01):
+        can_extrapolate = bool(getattr(getattr(coord, "motion", None), "can_write_map", False))
+        if tick is None and can_extrapolate and (abs(coord.linear_vel) > 0.005 or abs(coord.angular_vel) > 0.01):
             now_inter = now_t
             last_inter = getattr(coord, "_last_inter_tick_time", now_inter)
             dt_inter = max(0.001, min(0.1, now_inter - last_inter))

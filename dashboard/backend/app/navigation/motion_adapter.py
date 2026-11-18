@@ -78,6 +78,7 @@ class MotionAdapter:
         )
         self.anchor_initialized: bool = False
         self.static_map_locked: bool = False
+        self.can_write_map: bool = True
         self._initial_scan_count: int = 0
 
     def reset(self):
@@ -94,7 +95,7 @@ class MotionAdapter:
     def set_pose(self, x: float, y: float, theta: float):
         """Sets odometry pose without resetting map or reference keyframes."""
         if hasattr(self.lidar_odometry, "set_pose"):
-            self.lidar_odometry.set_pose(x, y, theta)
+            self.lidar_odometry.set_pose(float(x), float(y), float(theta))
         if hasattr(self, "cartographer") and self.cartographer:
             self.cartographer.current_pose = (float(x), float(y), float(theta))
 
@@ -105,11 +106,13 @@ class MotionAdapter:
         ox, oy, oth, info = self.lidar_odometry.update(
             ranges, dt=dt, v_cmd=v_cmd, w_cmd=w_cmd, grid_map=self.grid_map
         )
+        ox, oy, oth = float(ox), float(oy), float(oth)
 
-        is_spinning = (abs(w_cmd) > 0.05 and abs(v_cmd) < 0.02)
+        can_write = bool(info.get("can_write_map", info.get("is_still", False)))
+        self.can_write_map = can_write
 
         # 2. Track scan count for initial pristine anchor locking
-        if not is_spinning and not self.anchor_initialized:
+        if can_write and not self.anchor_initialized:
             self._initial_scan_count = getattr(self, "_initial_scan_count", 0) + 1
             if self._initial_scan_count >= 5:
                 # Lock physical static walls from initial sweeps
@@ -125,7 +128,7 @@ class MotionAdapter:
                     self.static_map_locked = True
 
         # 3. Update occupancy grid with current scan in stationary World Frame
-        if not is_spinning:
+        if can_write:
             self.grid_map.update_scan(
                 ox, oy, oth, ranges=ranges, max_valid_range=min(6.0, Config.MAX_RANGE), defer_costmap=False
             )
@@ -167,6 +170,8 @@ class MotionAdapter:
 
     def insert_obstacle_clusters(self, clusters: List[Any], robot_x: float, robot_y: float, robot_th: float, defer_costmap: bool = False):
         """Ingest dynamic obstacle clusters into decoupled costmap layer."""
+        if not getattr(self, "can_write_map", True):
+            return
         if hasattr(self.grid_map, "insert_obstacle_clusters"):
             self.grid_map.insert_obstacle_clusters(clusters, robot_x=robot_x, robot_y=robot_y, robot_theta=robot_th, defer_costmap=defer_costmap)
         if hasattr(self, "cartographer") and self.cartographer:
@@ -174,6 +179,8 @@ class MotionAdapter:
 
     def insert_low_obstacles(self, low_obstacles: List[Any], robot_x: float, robot_y: float, robot_th: float, defer_costmap: bool = False, ttl_sec: Optional[float] = None):
         """Ingest floor IPM low obstacles into short-TTL costmap layer."""
+        if not getattr(self, "can_write_map", True):
+            return
         if hasattr(self.grid_map, "insert_low_obstacles"):
             self.grid_map.insert_low_obstacles(low_obstacles, robot_x=robot_x, robot_y=robot_y, robot_theta=robot_th, defer_costmap=defer_costmap, ttl_sec=ttl_sec)
         if hasattr(self, "cartographer") and self.cartographer:
@@ -200,6 +207,8 @@ class MotionAdapter:
     def process_clusters(self, ranges: List[float], pose_x: float, pose_y: float,
                          pose_theta: float) -> Tuple[List[Any], List[Dict[str, Any]]]:
         """Cluster obstacles and filter perimeter walls."""
+        if not getattr(self, "can_write_map", True):
+            return [], []
         if not ranges or len(ranges) < 180:
             return [], []
         raw_clusters = cluster_lidar_obstacles(ranges, min_dist=Config.LIDAR_MIN_RANGE, max_dist=min(6.0, Config.MAX_RANGE))

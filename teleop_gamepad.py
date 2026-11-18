@@ -22,6 +22,9 @@ import time
 import math
 import json
 import signal
+import urllib.request
+import urllib.error
+import urllib.parse
 
 # Đảm bảo in tiếng Việt không bị lỗi encoding trên Windows console
 if hasattr(sys.stdout, "reconfigure"):
@@ -32,65 +35,224 @@ if hasattr(sys.stdout, "reconfigure"):
         pass
 
 # -----------------------------------------------------------------------------
-# 1. KHỞI TẠO ROBOT (Hardware JetBot hoặc Mock Robot trên PC)
+# 1. KHỞI TẠO ROBOT (Hardware JetBot, Mock Robot hoặc Remote Backend Robot)
 # -----------------------------------------------------------------------------
 HAS_HARDWARE = False
 robot = None
 
-try:
-    from jetbot import Robot
-    robot = Robot()
-    HAS_HARDWARE = True
-    print("[OK] Kết nối phần cứng NVIDIA JetBot (jetbot.Robot) thành công.")
-except Exception as e:
-    HAS_HARDWARE = False
-    print(f"[THÔNG BÁO] Không tìm thấy thư viện/phần cứng JetBot ({e}).")
-    print("[CHẾ ĐỘ GIẢ LẬP] Chạy ở chế độ MOCK Robot để kiểm thử thuật toán trên máy tính.")
 
-    class MockMotor:
-        def __init__(self, name):
-            self.name = name
-            self._value = 0.0
+class MockMotor:
+    def __init__(self, name):
+        self.name = name
+        self._value = 0.0
 
-        @property
-        def value(self):
-            return self._value
+    @property
+    def value(self):
+        return self._value
 
-        @value.setter
-        def value(self, val):
-            self._value = max(-1.0, min(1.0, float(val)))
+    @value.setter
+    def value(self, val):
+        self._value = max(-1.0, min(1.0, float(val)))
 
-    class MockRobot:
-        """Lớp mô phỏng Robot tương thích 100% với jetbot.Robot trong basic_motion.ipynb"""
-        def __init__(self):
-            self.left_motor = MockMotor("left")
-            self.right_motor = MockMotor("right")
 
-        def forward(self, speed=0.3):
-            self.left_motor.value = speed
-            self.right_motor.value = speed
+class MockRobot:
+    """Lớp mô phỏng Robot tương thích 100% với jetbot.Robot trong basic_motion.ipynb"""
+    def __init__(self):
+        self.left_motor = MockMotor("left")
+        self.right_motor = MockMotor("right")
 
-        def backward(self, speed=0.3):
-            self.left_motor.value = -speed
-            self.right_motor.value = -speed
+    def forward(self, speed=0.3):
+        self.left_motor.value = speed
+        self.right_motor.value = speed
 
-        def left(self, speed=0.3):
-            self.left_motor.value = -speed
-            self.right_motor.value = speed
+    def backward(self, speed=0.3):
+        self.left_motor.value = -speed
+        self.right_motor.value = -speed
 
-        def right(self, speed=0.3):
-            self.left_motor.value = speed
-            self.right_motor.value = -speed
+    def left(self, speed=0.3):
+        self.left_motor.value = -speed
+        self.right_motor.value = speed
 
-        def stop(self):
-            self.left_motor.value = 0.0
-            self.right_motor.value = 0.0
+    def right(self, speed=0.3):
+        self.left_motor.value = speed
+        self.right_motor.value = -speed
 
-        def set_motors(self, left_speed, right_speed):
-            self.left_motor.value = left_speed
-            self.right_motor.value = right_speed
+    def stop(self):
+        self.left_motor.value = 0.0
+        self.right_motor.value = 0.0
 
-    robot = MockRobot()
+    def set_motors(self, left_speed, right_speed):
+        self.left_motor.value = left_speed
+        self.right_motor.value = right_speed
+
+
+class RemoteBackendRobot:
+    """
+    Adapter cho phép điều khiển JetBot từ xa qua FastAPI Backend REST API.
+    Cung cấp giao diện tương thích 100% với jetbot.Robot và MockRobot:
+      - set_motors(left_speed, right_speed) -> HTTP POST /drive {"left": l, "right": r}
+      - forward(speed) -> HTTP POST /drive {"left": speed, "right": speed}
+      - backward(speed) -> HTTP POST /drive {"left": -speed, "right": -speed}
+      - left(speed) -> HTTP POST /drive {"left": -speed, "right": speed}
+      - right(speed) -> HTTP POST /drive {"left": speed, "right": -speed}
+      - stop() -> HTTP POST /stop (hoặc /api/robot/stop)
+    """
+    def __init__(self, base_url="http://127.0.0.1:8000", timeout=0.08, heartbeat_sec=0.20):
+        self.base_url = base_url.rstrip("/")
+        self.timeout = float(timeout)
+        self.heartbeat_sec = float(heartbeat_sec)
+        self.left_motor = MockMotor("left")
+        self.right_motor = MockMotor("right")
+        self._drive_url = f"{self.base_url}/drive"
+        self._stop_url = f"{self.base_url}/stop"
+        self._opener = urllib.request.build_opener()
+        self._last_left = None
+        self._last_right = None
+        self._last_send_time = 0.0
+        self._is_stopped = True
+
+    def _send_post(self, path: str, payload: dict) -> bool:
+        url = f"{self.base_url}{path}" if path.startswith("/") else f"{self.base_url}/{path}"
+        try:
+            data = json.dumps(payload).encode("utf-8")
+            req = urllib.request.Request(
+                url,
+                data=data,
+                headers={"Content-Type": "application/json"},
+                method="POST"
+            )
+            with self._opener.open(req, timeout=self.timeout) as resp:
+                return resp.status in (200, 201, 204)
+        except Exception:
+            return False
+
+    def set_motors(self, left_speed: float, right_speed: float, force: bool = False) -> bool:
+        l = max(-1.0, min(1.0, float(left_speed)))
+        r = max(-1.0, min(1.0, float(right_speed)))
+        self.left_motor.value = l
+        self.right_motor.value = r
+
+        now = time.time()
+
+        # Stale command latch: Khi buông cần về 0 -> chuyển sang stop() ngay lập tức
+        if abs(l) < 1e-3 and abs(r) < 1e-3:
+            return self.stop()
+
+        # Bộ lọc nén tần số (Frequency Compression):
+        # Chỉ gửi lệnh nếu vận tốc thay đổi đáng kể (> 0.01) hoặc chuyển từ trạng thái dừng
+        # hoặc đã tới chu kỳ heartbeat (0.2s)
+        speed_changed = (
+            self._last_left is None
+            or self._last_right is None
+            or self._is_stopped
+            or abs(l - self._last_left) >= 0.01
+            or abs(r - self._last_right) >= 0.01
+        )
+        heartbeat_due = (now - self._last_send_time) >= self.heartbeat_sec
+
+        if force or speed_changed or heartbeat_due:
+            payload = {"left": l, "right": r}
+            ok = self._send_post("/drive", payload)
+            if ok:
+                self._last_left = l
+                self._last_right = r
+                self._last_send_time = now
+                self._is_stopped = False
+            return ok
+
+        return True
+
+    def forward(self, speed: float = 0.3) -> bool:
+        return self.set_motors(speed, speed)
+
+    def backward(self, speed: float = 0.3) -> bool:
+        return self.set_motors(-speed, -speed)
+
+    def left(self, speed: float = 0.3) -> bool:
+        return self.set_motors(-speed, speed)
+
+    def right(self, speed: float = 0.3) -> bool:
+        return self.set_motors(speed, -speed)
+
+    def stop(self) -> bool:
+        self.left_motor.value = 0.0
+        self.right_motor.value = 0.0
+        now = time.time()
+
+        # Nếu robot đang di chuyển hoặc đã quá heartbeat kể từ lệnh stop trước:
+        # Gửi lệnh stop ngay lập tức (E-stop priority & latch prevention)
+        if not self._is_stopped or (now - self._last_send_time) >= self.heartbeat_sec:
+            ok = self._send_post("/stop", {})
+            if ok:
+                self._is_stopped = True
+                self._last_left = 0.0
+                self._last_right = 0.0
+                self._last_send_time = now
+            return ok
+
+        return True
+
+
+def parse_cli_args(args=None):
+    """
+    Phân giải tham số dòng lệnh CLI:
+      --keyboard, -k : Chế độ điều khiển bàn phím
+      --remote, -r [URL] : Chế độ điều khiển từ xa qua Backend REST API (mặc định http://127.0.0.1:8000)
+    """
+    if args is None:
+        args = sys.argv[1:]
+
+    is_keyboard = False
+    remote_url = None
+
+    idx = 0
+    while idx < len(args):
+        arg = args[idx].strip()
+        if arg in ("--keyboard", "-k"):
+            is_keyboard = True
+            idx += 1
+        elif arg in ("--remote", "-r"):
+            if idx + 1 < len(args) and not args[idx + 1].startswith("-"):
+                remote_url = args[idx + 1].strip()
+                idx += 2
+            else:
+                remote_url = "http://127.0.0.1:8000"
+                idx += 1
+        elif arg.startswith("--remote="):
+            remote_url = arg.split("=", 1)[1].strip() or "http://127.0.0.1:8000"
+            idx += 1
+        elif arg.startswith("-r="):
+            remote_url = arg.split("=", 1)[1].strip() or "http://127.0.0.1:8000"
+            idx += 1
+        else:
+            idx += 1
+
+    return remote_url, is_keyboard
+
+
+def init_robot(remote_url=None):
+    """Khởi tạo robot: RemoteBackendRobot (nếu có remote_url), jetbot.Robot hoặc MockRobot."""
+    global HAS_HARDWARE
+    if remote_url:
+        HAS_HARDWARE = False
+        print(f"[CHẾ ĐỘ TỪ XA] Kết nối Backend JetBot tại: {remote_url}")
+        return RemoteBackendRobot(base_url=remote_url)
+
+    try:
+        from jetbot import Robot
+        r = Robot()
+        HAS_HARDWARE = True
+        print("[OK] Kết nối phần cứng NVIDIA JetBot (jetbot.Robot) thành công.")
+        return r
+    except Exception as e:
+        HAS_HARDWARE = False
+        print(f"[THÔNG BÁO] Không tìm thấy thư viện/phần cứng JetBot ({e}).")
+        print("[CHẾ ĐỘ GIẢ LẬP] Chạy ở chế độ MOCK Robot để kiểm thử thuật toán trên máy tính.")
+        return MockRobot()
+
+
+# Robot mặc định khi import module (sẽ được cấu hình lại theo CLI khi chạy main)
+robot = MockRobot()
 
 
 # -----------------------------------------------------------------------------
@@ -118,8 +280,10 @@ for cfg_path in CONFIG_PATHS:
                 trim_factor = float(dyn.get("trim_factor", 1.0))
                 min_drive_speed = float(dyn.get("min_drive_speed", 0.12))
                 cruise_speed = float(dyn.get("cruise_speed", 0.30))
+                motor_left_polarity = int(dyn.get("motor_left_polarity", 1))
+                motor_right_polarity = int(dyn.get("motor_right_polarity", 1))
                 print(f"[OK] Đã nạp thông số động học từ: {cfg_path}")
-                print(f"     Trim factor: {trim_factor:.3f} | Min speed: {min_drive_speed:.2f}")
+                print(f"     Trim: {trim_factor:.3f} | Min speed: {min_drive_speed:.2f} | Polarity: ({motor_left_polarity}, {motor_right_polarity})")
                 break
         except Exception:
             pass
@@ -129,9 +293,12 @@ for cfg_path in CONFIG_PATHS:
 # 3. THIẾT LẬP THAM SỐ ĐIỀU KHIỂN TAY CẦM
 # -----------------------------------------------------------------------------
 DEADZONE = 0.10          # Vùng chết cần gạt chống trôi (drift)
-SPEED_LEVELS = [0.20, 0.35, 0.50, 0.75]  # Các mức tốc độ (Gear 1 -> 4)
-current_gear_idx = 1     # Mặc định Gear 2 (35% tốc độ, an toàn)
-current_speed_limit = SPEED_LEVELS[current_gear_idx]
+
+# Tuân thủ Rule 3 (AGENTS.md): Mọi vận tốc phải gắn với robot_dynamics.json
+# cruise_speed=0.2, min_drive_speed=0.08 (setup/robot_dynamics.json)
+current_speed_limit = cruise_speed
+SPEED_LEVELS = [min_drive_speed, cruise_speed, round(cruise_speed * 1.5, 2), round(cruise_speed * 2.0, 2)]
+current_gear_idx = 1     # Mặc định Gear 2: cruise_speed (0.20) an toàn theo robot_dynamics.json
 
 # Trạng thái an toàn
 is_running = True
@@ -184,26 +351,45 @@ def drive_arcade(throttle, steering, speed_scale):
         robot.stop()
         return 0.0, 0.0
 
-    # Tính tốc độ 2 bánh vi sai
-    left_raw = throttle - steering
-    right_raw = throttle + steering
+    # Tính tốc độ 2 bánh vi sai logic:
+    # Rẽ phải (steering > 0): bánh trái quay nhanh hơn bánh phải (left > right)
+    # Rẽ trái (steering < 0): bánh phải quay nhanh hơn bánh trái (right > left)
+    left_raw = throttle + steering
+    right_raw = throttle - steering
 
     # Chuẩn hóa về khoảng [-1.0, 1.0] nếu vượt quá biên
     max_mag = max(abs(left_raw), abs(right_raw), 1.0)
     left_norm = left_raw / max_mag
     right_norm = right_raw / max_mag
 
-    # Áp dụng tỉ lệ tốc độ và hệ số cân bằng động cơ
-    left_cmd = left_norm * speed_scale
-    right_cmd = right_norm * speed_scale * trim_factor
+    # Áp dụng tỉ lệ tốc độ logic chuẩn (tiến là dương, lùi là âm)
+    left_cmd = max(-1.0, min(1.0, left_norm * speed_scale))
+    right_cmd = max(-1.0, min(1.0, right_norm * speed_scale))
 
-    # Giới hạn an toàn trong [-1.0, 1.0]
-    left_cmd = max(-1.0, min(1.0, left_cmd))
-    right_cmd = max(-1.0, min(1.0, right_cmd))
+    if HAS_HARDWARE:
+        # Khi chạy phần cứng trực tiếp trên Jetson Nano: áp dụng polarity và trim cho PCA9685
+        hw_left = max(-1.0, min(1.0, left_cmd * motor_left_polarity))
+        hw_right = max(-1.0, min(1.0, right_cmd * motor_right_polarity * trim_factor))
+        robot.set_motors(hw_left, hw_right)
+    else:
+        # Khi chạy qua RemoteBackendRobot hoặc Mock: gửi vận tốc logic chuẩn
+        # Backend /drive và jetbot_bridge.py trên Jetson đã tự động xử lý polarity & trim
+        robot.set_motors(left_cmd, right_cmd)
 
-    # Đưa lệnh xuống động cơ (sử dụng method set_motors từ basic_motion.ipynb)
-    robot.set_motors(left_cmd, right_cmd)
     return left_cmd, right_cmd
+
+
+def drive_direct(left_cmd, right_cmd):
+    """Gửi lệnh vận tốc đến 2 bánh."""
+    left_c = max(-1.0, min(1.0, left_cmd))
+    right_c = max(-1.0, min(1.0, right_cmd))
+
+    if HAS_HARDWARE:
+        hw_left = max(-1.0, min(1.0, left_c * motor_left_polarity))
+        hw_right = max(-1.0, min(1.0, right_c * motor_right_polarity * trim_factor))
+        robot.set_motors(hw_left, hw_right)
+    else:
+        robot.set_motors(left_c, right_c)
 
 
 # -----------------------------------------------------------------------------
@@ -268,7 +454,7 @@ def run_gamepad_teleop():
     last_print_time = 0.0
 
     while is_running:
-        clock.tick(50)  # Tần số quét 50Hz đảm bảo độ nhạy cao
+        clock.tick(30)  # Tần số quét 30Hz đảm bảo độ nhạy cao và tối ưu băng thông mạng
         pygame.event.pump()
 
         # 1. Đọc các nút bấm sự kiện
@@ -300,19 +486,19 @@ def run_gamepad_teleop():
         if num_hats > 0:
             hat_x, hat_y = js.get_hat(0)
             if hat_y == 1:       # D-Pad UP
-                robot.forward(current_speed_limit)
+                drive_direct(current_speed_limit, current_speed_limit)
                 dpad_active = True
                 cmd_name = "TIẾN THẲNG (D-Pad)"
             elif hat_y == -1:    # D-Pad DOWN
-                robot.backward(current_speed_limit)
+                drive_direct(-current_speed_limit, -current_speed_limit)
                 dpad_active = True
                 cmd_name = "LÙI XE (D-Pad)"
             elif hat_x == -1:    # D-Pad LEFT
-                robot.left(current_speed_limit * 0.8)
+                drive_direct(-current_speed_limit * 0.8, current_speed_limit * 0.8)
                 dpad_active = True
                 cmd_name = "QUAY TRÁI (D-Pad)"
             elif hat_x == 1:     # D-Pad RIGHT
-                robot.right(current_speed_limit * 0.8)
+                drive_direct(current_speed_limit * 0.8, -current_speed_limit * 0.8)
                 dpad_active = True
                 cmd_name = "QUAY PHẢI (D-Pad)"
 
@@ -385,6 +571,9 @@ def run_keyboard_teleop():
         import tty
         import termios
         def get_char():
+            if not sys.stdin.isatty():
+                ch = sys.stdin.read(1)
+                return ch.lower() if ch else 'q'
             fd = sys.stdin.fileno()
             old_settings = termios.tcgetattr(fd)
             try:
@@ -407,20 +596,20 @@ def run_keyboard_teleop():
                 continue
 
             if k == 'w':
-                robot.forward(current_speed_limit)
-                print(f"\r[BÀN PHÍM] TIẾN THẲNG   (Speed: {current_speed_limit:.2f})", end="", flush=True)
+                drive_direct(current_speed_limit, current_speed_limit)
+                print(f"\r[BÀN PHÍM] TIẾN THẲNG   (Speed: {current_speed_limit:.2f})       ", end="", flush=True)
             elif k == 's':
-                robot.backward(current_speed_limit)
-                print(f"\r[BÀN PHÍM] LÙI XE       (Speed: {current_speed_limit:.2f})", end="", flush=True)
+                drive_direct(-current_speed_limit, -current_speed_limit)
+                print(f"\r[BÀN PHÍM] LÙI XE       (Speed: {current_speed_limit:.2f})       ", end="", flush=True)
             elif k == 'a':
-                robot.left(current_speed_limit * 0.8)
-                print(f"\r[BÀN PHÍM] QUAY TRÁI    (Speed: {current_speed_limit * 0.8:.2f})", end="", flush=True)
+                drive_direct(-current_speed_limit * 0.8, current_speed_limit * 0.8)
+                print(f"\r[BÀN PHÍM] QUAY TRÁI    (Speed: {current_speed_limit * 0.8:.2f})       ", end="", flush=True)
             elif k == 'd':
-                robot.right(current_speed_limit * 0.8)
-                print(f"\r[BÀN PHÍM] QUAY PHẢI   (Speed: {current_speed_limit * 0.8:.2f})", end="", flush=True)
+                drive_direct(current_speed_limit * 0.8, -current_speed_limit * 0.8)
+                print(f"\r[BÀN PHÍM] QUAY PHẢI   (Speed: {current_speed_limit * 0.8:.2f})       ", end="", flush=True)
             elif k in (' ', 'x'):
                 robot.stop()
-                print("\r[BÀN PHÍM] DỪNG XE      (robot.stop())          ", end="", flush=True)
+                print("\r[BÀN PHÍM] DỪNG XE      (robot.stop())                         ", end="", flush=True)
             elif k in ('+', '='):
                 if current_gear_idx < len(SPEED_LEVELS) - 1:
                     current_gear_idx += 1
@@ -449,8 +638,11 @@ if __name__ == "__main__":
     print("   CS532 - Hệ Thống Robot Tự Hành Thông Minh")
     print("=" * 68)
 
-    # Kiểm tra tham số dòng lệnh nếu người dùng muốn chạy trực tiếp chế độ bàn phím
-    if len(sys.argv) > 1 and sys.argv[1].lower() in ("--keyboard", "-k"):
+    # Phân giải tham số dòng lệnh (--remote, -r, --keyboard, -k)
+    cli_remote_url, cli_is_keyboard = parse_cli_args(sys.argv[1:])
+    robot = init_robot(cli_remote_url)
+
+    if cli_is_keyboard:
         run_keyboard_teleop()
     else:
         run_gamepad_teleop()
