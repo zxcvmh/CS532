@@ -2,7 +2,26 @@
   "permissions": {
     "deny": [
       "Edit(setup/robot_dynamics.json)",
-      "Write(setup/robot_dynamics.json)"
+      "Write(setup/robot_dynamics.json)",
+      "Bash(git add -u)",
+      "Bash(git add -u *)",
+      "Bash(git add -A)",
+      "Bash(git add -A *)",
+      "Bash(git add --all)",
+      "Bash(git add --all *)",
+      "Bash(git add .)",
+      "Bash(git add . *)",
+      "Bash(git push)",
+      "Bash(git push *)",
+      "Bash(git reset --hard)",
+      "Bash(git reset --hard *)"
+    ],
+    "ask": [
+      "Bash(ssh *)",
+      "Bash(scp *)",
+      "Bash(rsync *)",
+      "Bash(*run_bridge*)",
+      "Bash(*jetbot_bridge*)"
     ]
   }
 }
