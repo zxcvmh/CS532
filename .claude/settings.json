@@ -14,7 +14,20 @@
       "Bash(git push)",
       "Bash(git push *)",
       "Bash(git reset --hard)",
-      "Bash(git reset --hard *)"
+      "Bash(git reset --hard *)",
+      "Bash(git commit -a)",
+      "Bash(git commit -a *)",
+      "Bash(git commit -am *)",
+      "Bash(git add --update)",
+      "Bash(git add --update *)",
+      "Bash(git add :/ *)",
+      "Bash(git checkout -- .)",
+      "Bash(git restore .)",
+      "Bash(git restore . *)",
+      "Bash(git clean -fd)",
+      "Bash(git clean -fd *)",
+      "Bash(git stash)",
+      "Bash(git stash *)"
     ],
     "ask": [
       "Bash(ssh *)",
