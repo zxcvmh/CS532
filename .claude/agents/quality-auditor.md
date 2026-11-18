@@ -14,11 +14,11 @@ Input: a ticket id (and optionally the coder's report). Read the ticket file `ag
 
 ## Checks — run all, in order
 
-0. **Mechanical checks (script).** Run `.venv/bin/python scripts/check_ticket.py <ID>` and quote its output. It
+0. **Mechanical checks (script).** Run `.venv/bin/python scripts/check_ticket.py <ID> --base <SHA at hand-off>` (the SHA stops a coder commit from hiding changes) and quote its output. It
    covers scope (every changed or untracked path vs the ticket's Allowed files, plus `LOCKED_PATHS.txt`), the
    test-integrity grep (removed asserts, new `skip`, `except: pass`), numeric literals near speed/pwm/turn/trim/
    omega/velocity, dead-folder / `archive/` paths in code, and the ticket's acceptance + regression commands.
-   Every FAIL line is a candidate, not a verdict: you decide whether it blocks (e.g. a literal like `0.005` that is
+   Every `WARN not run` line is a regression command YOU must run yourself. Every FAIL line is a candidate, not a verdict: you decide whether it blocks (e.g. a literal like `0.005` that is
    a deadband needs judgment; files the Supervisor told you are foreign WIP are not the coder's). Also run
    `git diff --stat -- setup/robot_dynamics.json tests/acceptance/` (must be empty).
 1. **Compare with the report** — the numbers the script printed vs the coder's REPORT. Any mismatch = REJECT.

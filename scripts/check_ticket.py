@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Mechanical half of the audit: scope, locked paths, diff hygiene, acceptance commands.
 
-Usage: check_ticket.py TK-ID [--only scope|hygiene|commands]. Exit 1 if any check FAILs.
+Usage: check_ticket.py TK-ID [--only scope|hygiene|commands] [--base SHA] [--ready]. Exit 1 if any check FAILs.
 The auditor reads this output and spends tokens only on judgment (units/frames, citations).
 """
 import argparse
@@ -18,25 +18,24 @@ import ticketlib  # noqa: E402
 ROOT = Path(__file__).resolve().parent.parent
 _PHYSICS = re.compile(r"(speed|pwm|turn|trim|omega|velocity)", re.I)
 _NUMBER = re.compile(r"\b(?!(?:0|1|2)\.0\b)\d+\.\d+\b")
-_SKIP = re.compile(r"@unittest\.skip|pytest\.mark\.skip|pytest\.skip\(|\.skipTest\(")
+_SKIP = re.compile(r"@unittest\.skip|pytest\.mark\.(skip|xfail)|pytest\.skip\(|\.skipTest\(|SkipTest\(")
+_EXCEPT_PASS = re.compile(r"\bexcept\b.*:\s*pass\b")
+_TRIVIAL_ASSERT = re.compile(r"assert\w*\(?\s*True\b")
 _DEAD = re.compile(r"\b0[1-7]-[A-Za-z]|archive/")
 _METRIC = re.compile(r"\[METRIC\]|^Ran \d+ tests|^OK|^FAILED")
 
 
-def changed_paths(root):
-    out = subprocess.check_output(["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"],
-                                  cwd=root).decode("utf-8", "replace")
-    parts = out.split("\0")
-    paths, i = [], 0
-    while i < len(parts):
-        e = parts[i]
-        i += 1
-        if len(e) < 4:
-            continue
-        paths.append(e[3:])
-        if e[0] in "RC":  # rename/copy: next entry is the source path
-            i += 1
-    return paths
+def changed_paths(root, base="HEAD"):
+    """Every path that differs from `base` (rename = both paths, deletions, committed changes) plus untracked files."""
+    def z(*cmd):
+        return [x for x in subprocess.check_output(cmd, cwd=root).decode("utf-8", "replace").split("\0") if x]
+    return sorted(set(z("git", "diff", "--no-renames", "--name-only", "-z", base)
+                      + z("git", "ls-files", "--others", "--exclude-standard", "-z")))
+
+
+def _glob(a):
+    return re.compile("".join(".*" if t == "**" else "[^/]*" if t == "*" else "[^/]" if t == "?" else re.escape(t)
+                              for t in re.split(r"(\*\*|\*|\?)", a)))
 
 
 def in_scope(path, allowed):
@@ -46,10 +45,10 @@ def in_scope(path, allowed):
         if a.endswith("/"):
             if path.startswith(a):
                 return True
-        elif "*" in a:
-            if fnmatch.fnmatch(path, a):
+        elif re.search(r"[*?]", a):
+            if _glob(a).fullmatch(path):
                 return True
-        elif path == a:
+        elif path == a or path.startswith(a + "/"):
             return True
     return False
 
@@ -84,12 +83,12 @@ def check_diff_hygiene(diff):
         if not ln.startswith("+"):
             prev_added = ""
             continue
-        if "assert" in body:
+        if "assert" in body and not _TRIVIAL_ASSERT.search(body):
             added += 1
         code = not path.endswith((".md", ".txt", ".json"))
         if _SKIP.search(body):
             out.append("skip added in %s: %s" % (path, body.strip()))
-        if prev_added.startswith("except") and body.strip() == "pass":
+        if _EXCEPT_PASS.search(body) or (prev_added.startswith("except") and body.strip() == "pass"):
             out.append("except/pass added in %s" % path)
         if code and not path.startswith(("tests/", "docs/")) and path != "setup/robot_dynamics.json":
             if _PHYSICS.search(body) and _NUMBER.search(body) and not body.strip().startswith("#"):
@@ -109,9 +108,12 @@ def run_commands(ticket, root):
     out = []
     for c in cmds:
         if not c.startswith(".venv/bin/python"):
+            out.append("WARN not run (not a `.venv/bin/python` command): %s" % c)
             continue
         r = subprocess.run(shlex.split(c), cwd=root, capture_output=True, text=True, timeout=900)
         text = (r.stdout + r.stderr).splitlines()
+        if any(re.match(r"Ran 0 tests", x) for x in text):
+            out.append("`%s`: Ran 0 tests (nothing was tested)" % c)
         for ln in [x for x in text if _METRIC.search(x)][-6:]:
             print("    | " + ln)
         if r.returncode != 0:
@@ -140,8 +142,8 @@ def check_ready(ticket, needs_human_dir, legacy=frozenset()):
     return out
 
 
-def _full_diff(root):
-    d = subprocess.run(["git", "diff", "HEAD"], cwd=root, capture_output=True, text=True).stdout
+def _full_diff(root, base="HEAD"):
+    d = subprocess.run(["git", "diff", base], cwd=root, capture_output=True, text=True).stdout
     for p in subprocess.check_output(["git", "ls-files", "--others", "--exclude-standard"], cwd=root).decode().split("\n"):
         f = root / p
         if p and f.is_file() and f.stat().st_size < 200_000:
@@ -150,17 +152,25 @@ def _full_diff(root):
     return d
 
 
+def load_ticket(path):
+    ts = ticketlib.parse_tickets(Path(path).read_text(encoding="utf-8"))
+    if not ts:
+        sys.exit("cannot parse a `### TK-AREA-NN: title` heading in %s" % path)
+    return ts[0]
+
+
 def _ticket(tid):
     f = ROOT / "agents-doc" / "tickets" / (tid + ".md")
     if not f.is_file():
         sys.exit("no ticket file %s" % f)
-    return ticketlib.parse_tickets(f.read_text(encoding="utf-8"))[0]
+    return load_ticket(f)
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("ticket")
     ap.add_argument("--only", choices=["scope", "hygiene", "commands"])
+    ap.add_argument("--base", default="HEAD", help="compare against this commit (the SHA at hand-off); catches coder commits")
     ap.add_argument("--ready", action="store_true", help="HITL gate for marking the ticket READY")
     a = ap.parse_args()
     t = _ticket(a.ticket)
@@ -177,9 +187,9 @@ def main():
     if a.only in (None, "scope"):
         allowed = ticketlib.backticked(ticketlib.field(t, "Allowed files"))
         locked = [ln.strip() for ln in (ROOT / "agents-doc" / "LOCKED_PATHS.txt").read_text().splitlines() if ln.strip()]
-        report("scope", check_scope(changed_paths(ROOT), allowed, locked))
+        report("scope", check_scope(changed_paths(ROOT, a.base), allowed, locked))
     if a.only in (None, "hygiene"):
-        report("hygiene", check_diff_hygiene(_full_diff(ROOT)))
+        report("hygiene", check_diff_hygiene(_full_diff(ROOT, a.base)))
     if a.only in (None, "commands"):
         report("commands", run_commands(t, ROOT))
     sys.exit(1 if failed else 0)

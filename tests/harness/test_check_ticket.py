@@ -143,5 +143,73 @@ class TestReady(unittest.TestCase):
             self.assertTrue(f[0].startswith("WARN"), f)
 
 
+class TestReviewFixes(unittest.TestCase):
+    def repo(self, d):
+        git(d, "init", "-q")
+        Path(d, "tests", "acceptance").mkdir(parents=True)
+        Path(d, "tests/acceptance/t.py").write_text("x\n")
+        Path(d, "a.py").write_text("a\n")
+        git(d, "add", "-A")
+        git(d, "commit", "-qm", "i")
+
+    def test_regression_field_with_parenthetical_is_parsed(self):
+        t = ticketlib.parse_tickets("### TK-X-03: t\n- Regression commands (all green): `.venv/bin/python a.py`\n- Depends on: x\n")[0]
+        self.assertEqual(ticketlib.backticked(ticketlib.field(t, "Regression commands")), [".venv/bin/python a.py"])
+
+    def test_unrunnable_commands_are_reported_not_dropped(self):
+        t = ticketlib.parse_tickets("### TK-X-04: t\n- Acceptance command: `.venv/bin/python -c 1`\n- Regression commands: `test_foo.py`\n")[0]
+        f = ct.run_commands(t, Path(ROOT))
+        self.assertEqual(len(f), 1)
+        self.assertTrue(f[0].startswith("WARN") and "test_foo.py" in f[0], f)
+
+    def test_ran_zero_tests_fails(self):
+        t = ticketlib.parse_tickets("### TK-X-05: t\n- Acceptance command: `.venv/bin/python -c \"print('Ran 0 tests')\"`\n")[0]
+        f = ct.run_commands(t, Path(ROOT))
+        self.assertTrue(any("Ran 0 tests" in x for x in f), f)
+
+    def test_rename_out_of_locked_path_is_flagged(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.repo(d)
+            git(d, "mv", "tests/acceptance/t.py", "moved.py")
+            ch = ct.changed_paths(Path(d))
+            self.assertIn("tests/acceptance/t.py", ch)
+            self.assertIn("moved.py", ch)
+            f = ct.check_scope(ch, ["moved.py"], [r"^tests/acceptance/"])
+            self.assertTrue(any("LOCKED" in x for x in f), f)
+
+    def test_committed_changes_are_seen_with_base(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.repo(d)
+            base = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=d).decode().strip()
+            Path(d, "a.py").write_text("changed\n")
+            git(d, "commit", "-qam", "coder committed")
+            self.assertEqual(ct.changed_paths(Path(d)), [])
+            self.assertEqual(ct.changed_paths(Path(d), base), ["a.py"])
+
+    def test_more_fake_pass_shapes(self):
+        for line in ["@pytest.mark.xfail", "raise unittest.SkipTest('x')", "    except Exception: pass"]:
+            self.assertTrue(ct.check_diff_hygiene(diff_of("t.py", added=[line])), line)
+
+    def test_assert_true_replacement_is_not_balanced(self):
+        d = diff_of("t.py", removed=["    assert err < 0.05"], added=["    assert True"])
+        self.assertTrue(ct.check_diff_hygiene(d))
+
+    def test_unparseable_heading_exits_cleanly(self):
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d, "TK-IL-09.md")
+            f.write_text("### TK-IL-09 - no colon\n- Role: x\n")
+            with self.assertRaises(SystemExit):
+                ct.load_ticket(f)
+
+    def test_area_code_with_digit_parses(self):
+        self.assertEqual(ticketlib.parse_tickets("### TK-CV2-01: t\n- Status: READY\n")[0].id, "TK-CV2-01")
+
+    def test_scope_star_does_not_cross_slash_and_bare_dir_matches(self):
+        self.assertTrue(ct.in_scope("dashboard/a.py", ["dashboard/*.py"]))
+        self.assertFalse(ct.in_scope("dashboard/sub/deep.py", ["dashboard/*.py"]))
+        self.assertTrue(ct.in_scope("dashboard/sub/deep.py", ["dashboard/**"]))
+        self.assertTrue(ct.in_scope("motion/planning/a.py", ["motion/planning"]))
+
+
 if __name__ == "__main__":
     unittest.main()

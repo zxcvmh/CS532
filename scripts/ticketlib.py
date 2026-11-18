@@ -2,8 +2,8 @@
 import re
 from dataclasses import dataclass
 
-_HEAD = re.compile(r"^### (TK-[A-Z]+-\d+)(?: \(([^)]*)\))?: (.*)$")
-_FIELD = re.compile(r"^- ([A-Z][A-Za-z -]*):")
+_HEAD = re.compile(r"^### (TK-[A-Z0-9]+-\d+)(?: \(([^)]*)\))?: (.*)$")
+_FIELD = re.compile(r"^- ([A-Z][A-Za-z -]*)(?: \([^)]*\))?:")
 
 
 @dataclass
@@ -36,8 +36,9 @@ def field(ticket, name):
     """Text after '- <name>:' up to the next '- <Capitalised>:' line, '' if absent."""
     lines = ticket.body.splitlines()
     for i, ln in enumerate(lines):
-        if ln.startswith("- %s:" % name):
-            parts = [ln.split(":", 1)[1].strip()]
+        m = re.match(r"^- %s(?: \([^)]*\))?:" % re.escape(name), ln)
+        if m:
+            parts = [ln[m.end():].strip()]
             for nxt in lines[i + 1:]:
                 if _FIELD.match(nxt) or nxt.startswith("###"):
                     break
