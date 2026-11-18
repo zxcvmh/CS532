@@ -5,10 +5,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 
-# What each role loads today (phase-1 Task 3 shrinks these).
+# What each role loads at start (STATE.md is a ledger: read the digest; a coder reads one ticket file).
 ROLES = {
-    "supervisor": ["CLAUDE.md", ".claude/supervisor.md", "agents-doc/STATE.md", "agents-doc/TICKETS.md"],
-    "coder": ["AGENTS.md", ".agents/rules/slam.md", "agents-doc/TICKETS.md"],
+    "supervisor": ["CLAUDE.md", ".claude/supervisor.md", "agents-doc/STATE_DIGEST.md", "agents-doc/TICKETS.md"],
+    "coder": ["AGENTS.md", ".agents/rules/slam.md", "agents-doc/tickets/TK-SLAM-09.md"],
     "auditor": [".claude/agents/quality-auditor.md", "agents-doc/TICKETS.md", "agents-doc/LOCKED_PATHS.txt"],
 }
 

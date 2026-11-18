@@ -34,6 +34,7 @@ The IL lane (IL-04..06) is pure simulation and does NOT wait for SLAM — keep i
 - CV = A (person detection -> cluster labels + mask beams in CSM) required, B (AprilTag anchor) should, counting after IL gate, IPM cut.
 - **IL gate 7/12**: >= 8/10 real runs on {static+goal, crossing} else fallback A* + DWA + reflex. Sim-to-real kept (noise, latency, closed loop on the real robot from week 3).
 - Field time 2-3 x 2 h / week. Blocked: numeric "real time" + where the loop runs -> Jetson measurement on the home WiFi (laptop was on 172.30.x).
+- **Update 2026-11-16 (human): IL is the ONLY avoider** (static, standing person, crossing, head-on). Planner = goal direction only; reflex = brake only (stop, never steer); person flag from YOLO + motion cue go into the IL observation (TK-IL-08 DRAFT); A* + DWA is only plan B for the 7/12 gate. Control loop: planner + IL on the laptop, reflex on the Jetson (WiFi stalled 1.55 s once at home; seminar room network not measured, M4). Course rubric for CS532 unverified.
 - Week 1 tickets: SLAM-09 attempt 2, IL-04 (READY, with coders), INT-10 (bridge single forward PWM), INT-11 (e-stop paths), CV calibration + CV-02 rewrite.
 
 ## 2. How I reason (every non-trivial request)
@@ -123,7 +124,7 @@ Useful facts: fixtures `tests/acceptance/data/{field_turns,big_turns}_2026-11-15
 
 ## 7. Session ritual
 
-**Start:** `git status --short` + `git log --oneline -5` + `tail -40 agents-doc/STATE.md` + grep ticket statuses
+**Start:** `git status --short` + `git log --oneline -5` + read `agents-doc/STATE_DIGEST.md` (NOT STATE.md; grep STATE.md only for a specific id) + the ticket index `agents-doc/TICKETS.md`
 → reconcile with §6 → tell the human in ≤ 5 lines: where we are, the top 1–3 next moves, who does each.
 
 **Each hand-off:** ticket READY, locked test red for the right reason, one copy-paste command for the human.
@@ -132,4 +133,4 @@ Useful facts: fixtures `tests/acceptance/data/{field_turns,big_turns}_2026-11-15
 REJECT: ledger entry + auditor findings sent back as a new attempt. Field symptom contradicts a passing test →
 the test is wrong: record the real data, harden the locked test, then re-ticket.
 
-**End:** update §6 snapshot if it changed, append STATE.md, end with "Việc tiếp theo" (1–3 items, owner each).
+**End:** update §6 snapshot if it changed, append STATE.md, regenerate `agents-doc/STATE_DIGEST.md` (<= 2 KB, three fixed headings), end with "Việc tiếp theo" (1–3 items, owner each).

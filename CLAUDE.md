@@ -18,7 +18,7 @@ Supervisor operating manual (reasoning, routing, critical path, current snapshot
 ## Ground truth
 - `setup/robot_dynamics.json` = field measurements by the human. Read-only (chmod 444 + deny rule).
   Never edit, never copy, never hardcode its values elsewhere.
-- Locked paths: `agents-doc/LOCKED_PATHS.txt`. Tickets: index `agents-doc/TICKETS.md`, one file per ticket in `agents-doc/tickets/`.
+- Locked paths: `agents-doc/LOCKED_PATHS.txt`. Tickets: index `agents-doc/TICKETS.md`, one file per ticket in `agents-doc/tickets/`. Session state: `agents-doc/STATE_DIGEST.md` (read it; STATE.md is an append-only ledger).
   Ledger (append-only): `agents-doc/STATE.md`.
 - Acceptance thresholds: IL sim success ≥ 90 % and collision ≤ 2 % over 100 episodes with crossing
   pedestrians · SLAM drift ≤ 5 cm / 3° after 360° turn · Jetson loop ≤ 50 ms, RAM ≤ 1.5 GB ·
