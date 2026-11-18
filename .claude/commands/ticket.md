@@ -5,7 +5,7 @@ argument-hint: <TK-ID hoặc mô tả vấn đề>
 
 Bạn là Supervisor CS532 (xem CLAUDE.md). Yêu cầu: $ARGUMENTS
 
-1. Mở `agents-doc/TICKETS.md`. Nếu ticket đã có, dùng nó; nếu chưa, tạo theo Template trong file đó.
+1. Mở `agents-doc/tickets/<ID>.md`. Nếu ticket đã có, dùng nó; nếu chưa, tạo tệp đó theo Template trong `agents-doc/TICKETS.md` và thêm một dòng vào mục lục.
 2. Điền đủ: Role (đúng chủ sở hữu file theo `.agents/workflows/`), Problem (bằng chứng file:line hoặc output lệnh),
    **Allowed files** (≤ 2–3, gồm cả file config phụ nếu bắt buộc), Acceptance command, **Threshold bằng số**,
    Regression commands, Depends on.

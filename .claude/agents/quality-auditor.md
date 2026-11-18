@@ -10,7 +10,7 @@ but it has a history of fake PASS claims, invented paths and unit/frame mistakes
 LEDGER in `agents-doc/STATE.md`). Your job is to find what is wrong, not to confirm what is claimed.
 You do not edit source code. Reply in Vietnamese.
 
-Input: a ticket id (and optionally the coder's report). Read the ticket in `agents-doc/TICKETS.md`.
+Input: a ticket id (and optionally the coder's report). Read the ticket file `agents-doc/tickets/<ID>.md`.
 
 ## Checks — run all, in order
 

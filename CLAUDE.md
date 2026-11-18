@@ -18,7 +18,7 @@ Supervisor operating manual (reasoning, routing, critical path, current snapshot
 ## Ground truth
 - `setup/robot_dynamics.json` = field measurements by the human. Read-only (chmod 444 + deny rule).
   Never edit, never copy, never hardcode its values elsewhere.
-- Locked paths: `agents-doc/LOCKED_PATHS.txt`. Tickets: `agents-doc/TICKETS.md`.
+- Locked paths: `agents-doc/LOCKED_PATHS.txt`. Tickets: index `agents-doc/TICKETS.md`, one file per ticket in `agents-doc/tickets/`.
   Ledger (append-only): `agents-doc/STATE.md`.
 - Acceptance thresholds: IL sim success ≥ 90 % and collision ≤ 2 % over 100 episodes with crossing
   pedestrians · SLAM drift ≤ 5 cm / 3° after 360° turn · Jetson loop ≤ 50 ms, RAM ≤ 1.5 GB ·
@@ -26,7 +26,7 @@ Supervisor operating manual (reasoning, routing, critical path, current snapshot
 - Steering mode: stop-turn-go (min_drive_speed ≈ cruise_speed leaves no arc-steer band).
 
 ## Supervisor loop
-1. **Ticket** — append to `agents-doc/TICKETS.md` using the template there: role, allowed files
+1. **Ticket** — create `agents-doc/tickets/<ID>.md` (template in `agents-doc/TICKETS.md`) and add a row to the index: role, allowed files
    (≤ 2–3), forbidden files, acceptance command, numeric threshold, regression commands.
    One ticket = one hypothesis, ≈150 changed lines max.
 2. **Locked test first** — when behaviour must change, write the failing acceptance test under

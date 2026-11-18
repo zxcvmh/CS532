@@ -12,7 +12,7 @@ runtime wiring.
 **Never edit:** model internals in `imitation_learning/`, SLAM algorithms in
 `motion/planning/slam/`, `perception/core/`.
 
-1. Take the `READY` ticket assigned to `integration` in `agents-doc/TICKETS.md`.
+1. Take the `READY` ticket assigned to `integration` in the index `agents-doc/TICKETS.md`, then read ONLY `agents-doc/tickets/<ID>.md`.
 2. First command of every ticket — prove the backend imports:
    `cd dashboard/backend && ../../.venv/bin/python -c "import app.main"` and paste the output.
 3. Follow the Coder loop in `AGENTS.md`.

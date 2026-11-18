@@ -11,7 +11,7 @@ import ticketlib  # noqa: E402
 
 def monolith_text():
     """TICKETS.md as committed before the split (Task 2 repoints this to the archive copy)."""
-    arch = os.path.join(ROOT, "agents-doc", "archive", "TICKETS-monolith-2026-11-16.md")
+    arch = os.path.join(ROOT, "agents-doc", "archive", "TICKETS-monolith-2026-11-16.md")  # repointed by Task 2
     if os.path.exists(arch):
         return open(arch, encoding="utf-8").read()
     return subprocess.check_output(["git", "show", "HEAD:agents-doc/TICKETS.md"], cwd=ROOT).decode("utf-8")
@@ -30,8 +30,8 @@ SYN = """### TK-IL-09: Foo: bar
 class TestTicketlib(unittest.TestCase):
     def test_parse_counts_real_tickets(self):
         ts = ticketlib.parse_tickets(monolith_text())
-        self.assertEqual(len(ts), 34)
-        self.assertEqual(len({t.slug for t in ts}), 34)  # TK-CV-02 appears twice; slugs stay unique
+        self.assertEqual(len(ts), 35)
+        self.assertEqual(len({t.slug for t in ts}), 35)  # TK-CV-02 appears twice; slugs stay unique
         self.assertIn("TK-CV-02-rewritten", [t.slug for t in ts])
         self.assertEqual(ts[0].id, "TK-SLAM-01")
         self.assertNotIn("TK-<AREA>-<NN>", [t.id for t in ts])

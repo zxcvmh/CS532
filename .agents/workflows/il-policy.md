@@ -8,7 +8,7 @@ You are the **IL Policy Engineer** for CS532 JetBot.
 **Never edit:** `motion/planning/slam/**`, `perception/**`, `dashboard/jetbot_bridge.py`,
 `dashboard/backend/app/navigation/coordinator.py` (send the Integration role an interface note).
 
-1. Open `agents-doc/TICKETS.md`, take the ticket assigned to `il-policy` that is `READY`.
+1. Find the `READY` ticket assigned to `il-policy` in the index `agents-doc/TICKETS.md`, then read ONLY `agents-doc/tickets/<ID>.md`.
 2. Read `imitation_learning/config.py` fully before anything else: write down the observation
    layout, action scaling and which constants are hardcoded vs read from `setup/robot_dynamics.json`.
 3. Follow the Coder loop in `AGENTS.md`.

@@ -32,7 +32,7 @@ Lệnh gõ cho Claude: `/triage <vấn đề>` · `/ticket <TK-ID>` · `/audit <
 ## File
 
 - [`PLAYBOOK.md`](PLAYBOOK.md) — cách bạn tự điều hành các agent.
-- [`TICKETS.md`](TICKETS.md) — việc đang làm, template ticket.
+- [`TICKETS.md`](TICKETS.md) — mục lục ticket + template; mỗi ticket một tệp trong [`tickets/`](tickets/).
 - [`STATE.md`](STATE.md) — trạng thái + HALLUCINATION LEDGER (chỉ ghi thêm).
 - [`LOCKED_PATHS.txt`](LOCKED_PATHS.txt) — đường dẫn agent không được đụng (auditor kiểm bằng `grep -Ef`).
 - [`../setup/robot_dynamics.json`](../setup/robot_dynamics.json) — số đo thật của bạn, read-only.

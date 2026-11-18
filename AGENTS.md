@@ -99,4 +99,4 @@ Two failed attempts on the same hypothesis → stop and report what you learned.
 Start a role with its workflow: `/researcher`, `/perception`, `/slam`, `/il-policy`, `/integration`.
 Each workflow lists the files that role owns. Only the Integration role edits
 `dashboard/backend/app/navigation/coordinator.py`; other roles hand it an interface note instead.
-Tickets live in `agents-doc/TICKETS.md`.
+Tickets: the index is `agents-doc/TICKETS.md`; read ONLY your own ticket file `agents-doc/tickets/<ID>.md`.

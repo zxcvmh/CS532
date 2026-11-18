@@ -55,7 +55,7 @@ Antigravity = người code (`/perception` `/slam` `/il-policy` `/integration`) 
 ### 3.3 Gửi Antigravity — giao việc
 ```
 /slam TK-SLAM-03
-Đọc ticket trong agents-doc/TICKETS.md. Làm đúng Coder loop trong AGENTS.md.
+Đọc đúng tệp ticket của bạn: agents-doc/tickets/<ID>.md (TICKETS.md chỉ là mục lục). Làm đúng Coder loop trong AGENTS.md.
 Chạy lệnh nghiệm thu TRƯỚC khi sửa và dán output thô. Kết thúc bằng khối ## REPORT.
 ```
 
