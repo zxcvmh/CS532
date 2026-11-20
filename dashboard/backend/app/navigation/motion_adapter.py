@@ -79,6 +79,9 @@ class MotionAdapter:
         self.anchor_initialized: bool = False
         self.static_map_locked: bool = False
         self.can_write_map: bool = True
+        self.match_status: str = "TRACKING"
+        self.match_score: float = 0.0
+        self.reinit_requested: bool = False
         self._initial_scan_count: int = 0
 
     def reset(self):
@@ -86,6 +89,9 @@ class MotionAdapter:
         self.grid_map.reset()
         self.anchor_initialized = False
         self.static_map_locked = False
+        self.match_status = "TRACKING"
+        self.match_score = 0.0
+        self.reinit_requested = False
         self._initial_scan_count = 0
         self.lidar_odometry.reset_pose(0.0, 0.0, 0.0)
         self.controller.clear_path()
@@ -94,6 +100,8 @@ class MotionAdapter:
 
     def set_pose(self, x: float, y: float, theta: float):
         """Sets odometry pose without resetting map or reference keyframes."""
+        self.reinit_requested = False
+        self.match_status = "TRACKING"
         if hasattr(self.lidar_odometry, "set_pose"):
             self.lidar_odometry.set_pose(float(x), float(y), float(theta))
         if hasattr(self, "cartographer") and self.cartographer:
@@ -108,7 +116,13 @@ class MotionAdapter:
         )
         ox, oy, oth = float(ox), float(oy), float(oth)
 
+        self.match_status = str(info.get("match_status", "TRACKING"))
+        self.match_score = float(info.get("match_score", 0.0))
+        self.reinit_requested = bool(info.get("reinit_requested", False))
         can_write = bool(info.get("can_write_map", info.get("is_still", False)))
+        if self.match_status in ("WEAK", "LOST"):
+            can_write = False
+            info["can_write_map"] = False
         self.can_write_map = can_write
 
         # 2. Track scan count for initial pristine anchor locking

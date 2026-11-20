@@ -26,6 +26,10 @@ class CSMTracker:
     Fine search: +-1.5 deg (0.25 deg step), +-2 cm (1 cm step).
     """
 
+    SCORE_WEAK = 0.64
+    SCORE_LOST = 0.10
+    LOST_AFTER = 5
+
     def __init__(
         self,
         resolution: float = 0.05,
@@ -60,6 +64,11 @@ class CSMTracker:
         self.still_counter = 0
         self.clean_trans_count = 0
 
+        self.last_score: float = 0.0
+        self.match_status: str = "TRACKING"
+        self.lost_streak: int = 0
+        self.reinit_requested: bool = False
+
         self.offset_x: float = 0.0
         self.offset_y: float = 0.0
         self.offset_th: float = 0.0
@@ -93,6 +102,9 @@ class CSMTracker:
         s = math.sin(self.offset_th)
         self.offset_x = float(float(x) - (c * float(x_int) - s * float(y_int)))
         self.offset_y = float(float(y) - (s * float(x_int) + c * float(y_int)))
+        self.reinit_requested = False
+        self.lost_streak = 0
+        self.match_status = "TRACKING"
 
     def reset_pose(self, x: float = 0.0, y: float = 0.0, theta: float = 0.0):
         """Reset tracker pose and clear history."""
@@ -102,6 +114,10 @@ class CSMTracker:
         self.last_insert_pose = (0.0, 0.0, 0.0)
         self.still_counter = 0
         self.clean_trans_count = 0
+        self.last_score = 0.0
+        self.match_status = "TRACKING"
+        self.lost_streak = 0
+        self.reinit_requested = False
         self.offset_x = float(x)
         self.offset_y = float(y)
         self.offset_th = float(theta)
@@ -145,6 +161,9 @@ class CSMTracker:
         if not self.submaps_mgr.submaps:
             self.submaps_mgr.insert_range_data(self.curr_pose, local_pts)
             self.last_insert_pose = self.curr_pose
+            self.last_score = 0.0
+            self.match_status = "TRACKING"
+            self.lost_streak = 0
             pub_x, pub_y, pub_th = self.internal_to_published(
                 self.curr_pose[0], self.curr_pose[1], self.curr_pose[2]
             )
@@ -233,6 +252,25 @@ class CSMTracker:
         self.prev_pose = self.curr_pose
         self.curr_pose = (final_x, final_y, final_th)
 
+        # Per-point scan-match quality score and TRACKING / WEAK / LOST status (TK-SLAM-10)
+        self.last_score = float(best_fine_score / len(pts_match)) if len(pts_match) > 0 else 0.0
+        if self.submaps_mgr.submaps[0].num_range_data < 2:
+            self.lost_streak = 0
+            self.match_status = "TRACKING"
+        elif self.last_score < self.SCORE_LOST:
+            self.lost_streak += 1
+            if self.lost_streak >= self.LOST_AFTER:
+                self.match_status = "LOST"
+                self.reinit_requested = True
+            else:
+                self.match_status = "WEAK"
+        elif self.last_score < self.SCORE_WEAK:
+            self.lost_streak = 0
+            self.match_status = "WEAK"
+        else:
+            self.lost_streak = 0
+            self.match_status = "TRACKING"
+
         # 3. Submap insertion & map gating (LiDAR-only, no command reliance)
         step_p = math.hypot(final_x - self.prev_pose[0], final_y - self.prev_pose[1])
         step_rot = abs(wrap_angle_rad(final_th - self.prev_pose[2]))
@@ -253,7 +291,7 @@ class CSMTracker:
         else:
             self.clean_trans_count = 0
 
-        can_write_map = is_still or (self.clean_trans_count >= 2)
+        can_write_map = (is_still or (self.clean_trans_count >= 2)) and (self.match_status == "TRACKING")
 
         # Submaps only populated with stationary sweeps (skip unchanged view)
         should_insert = False

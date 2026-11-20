@@ -49,6 +49,9 @@ class Lidar2DOdometry:
     Solves relative displacement (dx, dy, dtheta) between successive 360-degree scans
     using environmental wall geometry and landmarks, eliminating dead-reckoning drift.
     """
+    # Audited LiDAR-only CSM step clamp (TK-SLAM-09 / TK-SLAM-10): independent of robot_dynamics.json
+    CSM_MAX_DTH_STEP_RAD = (math.pi / 2.0) / 0.53 * 1.25 * 0.1
+
     def __init__(
         self,
         min_range_m: float = 0.15,
@@ -98,12 +101,15 @@ class Lidar2DOdometry:
         self.last_fitness_score: float = 0.0
         self.last_inlier_count: int = 0
         self.last_status: str = "INITIALIZING"
+        self.last_match_score: float = 0.0
+        self.last_match_status: str = "TRACKING"
+        self.reinit_requested: bool = False
 
         # Wide-window correlative scan matcher for turn tracking (TK-SLAM-09)
         if CSMTracker is not None:
             self.csm_tracker = CSMTracker(
                 lever_arm_m=self.lever_arm_x,
-                max_dth_step_rad=self.max_physical_yaw_rate * 0.1
+                max_dth_step_rad=self.CSM_MAX_DTH_STEP_RAD
             )
         else:
             self.csm_tracker = None
@@ -156,6 +162,9 @@ class Lidar2DOdometry:
         self.prev_valid_normals = None
         self.prev_kdtree = None
         self.last_status = "RESET"
+        self.last_match_score = 0.0
+        self.last_match_status = "TRACKING"
+        self.reinit_requested = False
         if getattr(self, "csm_tracker", None) is not None:
             self.csm_tracker.reset_pose(x, y, theta)
 
@@ -167,6 +176,8 @@ class Lidar2DOdometry:
         self.x = float(x)
         self.y = float(y)
         self.theta = float(theta)
+        self.reinit_requested = False
+        self.last_match_status = "TRACKING"
         if getattr(self, "csm_tracker", None) is not None:
             self.csm_tracker.set_pose(x, y, theta)
 
@@ -565,9 +576,15 @@ class Lidar2DOdometry:
             dth = float((csm_th - self.theta + math.pi) % (2.0 * math.pi) - math.pi)
             self.x, self.y, self.theta = csm_x, csm_y, csm_th
             self.last_status = "STILL" if csm_still else "TRACKING"
+            self.last_match_score = float(self.csm_tracker.last_score)
+            self.last_match_status = str(self.csm_tracker.match_status)
+            self.reinit_requested = bool(self.csm_tracker.reinit_requested)
             self.last_computation_time_ms = (time.time() - t0) * 1000.0
             return self.x, self.y, self.theta, {
                 "status": self.last_status,
+                "match_status": self.last_match_status,
+                "match_score": self.last_match_score,
+                "reinit_requested": self.reinit_requested,
                 "latency_ms": round(self.last_computation_time_ms, 2),
                 "is_reliable": csm_still or csm_can_write,
                 "is_still": csm_still,
