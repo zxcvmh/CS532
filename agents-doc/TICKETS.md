@@ -63,5 +63,5 @@ Old v1 tickets: `agents-doc/archive/agents-v1/TICKETS-v1.md` (paths there are de
 | TK-CV-05 | perception | DRAFT | agents-doc/tickets/TK-CV-05.md |
 | TK-CV-06 | perception | DRAFT | agents-doc/tickets/TK-CV-06.md |
 | TK-MEAS-01 | supervisor-assistant | READY | agents-doc/tickets/TK-MEAS-01.md |
-| TK-INT-12 | supervisor | READY | agents-doc/tickets/TK-INT-12.md |
+| TK-INT-12 | supervisor | DONE | agents-doc/tickets/TK-INT-12.md |
 | TK-SLAM-10 | slam | DONE | agents-doc/tickets/TK-SLAM-10.md |
