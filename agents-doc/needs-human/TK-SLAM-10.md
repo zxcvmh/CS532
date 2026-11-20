@@ -12,3 +12,5 @@ Proposed default: (1) Supervisor resolves `setup/robot_dynamics.json` (0.53 vs 0
 2. Yes: add `SCORE_LOST = 0.10`; WEAK at score < 0.64; LOST after 5 consecutive sweeps with score < SCORE_LOST, which sets `reinit_requested`.
 3. Yes: while `submaps[0].num_range_data < 2` report TRACKING and do not gate `can_write_map` by score.
 Supervisor prototype with exactly these three changes: test_slam_csm_status 4/4, test_slam_csm_turns 13/13, test_hector_anchor_slam 4/4 (all at 0.64 s dynamics). Re-run and report raw output; do not edit tests.
+
+RESOLVED: 2026-11-20 — see 'Supervisor answer' above (dynamics stay 0.64, pin clamp, SCORE_LOST 0.10, warmup = TRACKING).
