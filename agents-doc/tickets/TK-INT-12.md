@@ -1,6 +1,7 @@
 ### TK-INT-12: Limit the pivot rate to <= 15 deg per LiDAR sweep (human setting + field check)
 - Role: supervisor (the human measures and edits `setup/robot_dynamics.json`; no coder edits)
-- Status: READY (2026-11-20) — human-owned: the locked test `tests/acceptance/test_pivot_rate_vs_sweep.py` is RED on today's file (17.4 deg/sweep at 0.53 s) and goes green once the human applies the new dynamics (0.64 s -> ~14.4 deg/sweep). No coder.
+- Status: READY (2026-11-20) — acceptance 2/2 GREEN with the human's 0.64 s file (14.4 deg/sweep); field check on a NEW recording still open, so not DONE.
+- (earlier) Status: READY (2026-11-20) — human-owned: the locked test `tests/acceptance/test_pivot_rate_vs_sweep.py` is RED on today's file (17.4 deg/sweep at 0.53 s) and goes green once the human applies the new dynamics (0.64 s -> ~14.4 deg/sweep). No coder.
 - Human decision 2026-11-20: "turn fast so the robot reacts to obstacles"; pivot `turn_speed` 0.12, 90 deg in 0.64 s, 180 deg in 1.28 s accepted. This is ABOVE the clean 8 deg/sweep limit (the ceiling is therefore 15 deg/sweep, a human trade-off, not a physical limit). Expected cost from the recordings: bin 10-17 deg/sweep -> max error 9.5 deg, ~2.8 % sweeps above 6 deg; TK-SLAM-10 flags those. The tracker's own map-write gate (`step_rot <= 14 deg`) sits right at 14.4 deg/sweep, so the map is mostly NOT written during pivots (acceptable; map is written when still).
 - Problem: heading error of the CSM tracker (TK-SLAM-09) during a pivot grows with the rotation inside ONE LiDAR sweep.
   Measured by the Supervisor on the two real recordings `tests/acceptance/data/{field,big}_turns_2026-11-15.npz`
