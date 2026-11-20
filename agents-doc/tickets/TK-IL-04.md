@@ -1,6 +1,6 @@
 ### TK-IL-04: IL sim must use the field dynamics and a stop-turn-go action set
 - Role: il-policy
-- Status: READY (2026-11-16) — locked test `tests/acceptance/test_il_sim_dynamics.py` FAILS 14/14 on HEAD for the
+- Status: DONE 2026-11-20 — auditor PASS reported by the human (re-run by the Supervisor 2026-11-20: acceptance green on HEAD e15a8e1). Earlier note: READY (2026-11-16) — locked test `tests/acceptance/test_il_sim_dynamics.py` FAILS 14/14 on HEAD for the
   ticket's reasons (forward 0.152 m/s vs field 0.294 after deadband + 5 % slip, v = 0.02 -> 0 m/s, w steers a moving
   robot, pivot turns at the commanded 0.5 rad/s instead of the field rate, no ACTION_* / step_action) and PASSES 7/7
   on a Supervisor prototype (scratchpad, not in repo) for both the real file and a synthetic one (0.41 m/s, 0.54 s).

@@ -1,6 +1,6 @@
 ### TK-INT-10: Bridge forward drive must be ONE PWM (cruise_speed), not a v-dependent window
 - Role: integration
-- Status: READY (2026-11-16) — locked test `tests/acceptance/test_bridge_forward_single_pwm.py` fails on HEAD for the
+- Status: DONE 2026-11-20 — auditor PASS reported by the human (re-run by the Supervisor 2026-11-20: acceptance green on HEAD e15a8e1). Earlier note: READY (2026-11-16) — locked test `tests/acceptance/test_bridge_forward_single_pwm.py` fails on HEAD for the
   ticket's reasons (steady PWM 0.112 / 0.122 / 0.140 for v = 0.02 / 0.05 / 0.10 instead of cruise 0.2; w steers the
   wheels, w = 3 even reverses the left one; after a pivot the forward PWM sticks at 0.14) and a Supervisor reference
   (in memory, not in the repo) passes 6/6, and keeps `tests/test_bridge_spin_step.py` 4/4.
