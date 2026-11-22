@@ -1,8 +1,8 @@
 ### TK-IL-08: Observation v2 for the student — person flag + ego-compensated motion (IL is the ONLY avoider)
 - Role: il-policy (the Supervisor wrote the locked test first)
-- Status: DRAFT (2026-11-22) — locked test `tests/acceptance/test_il_observation.py` (11 tests) is RED on HEAD for the right
+- Status: READY (2026-11-22) — hand off ONLY after TK-IL-05 is audited and committed (same file `mock_expert_simulator.py` is in the working tree with unaudited IL-05 edits) — locked test `tests/acceptance/test_il_observation.py` (11 tests) is RED on HEAD for the right
   reason (11/11: no `extract_observation_vector_v2`, `mirror_sample_v2`, `get_person_mask360`, `OBSERVATION_DIM_V2`) and GREEN
-  (11/11) on a Supervisor reference in the scratchpad. Becomes READY when the human approves the Assumptions below.
+  (11/11) on a Supervisor reference in the scratchpad. Assumptions approved by the human 2026-11-22.
 - Human decision 2026-11-16: IL does ALL avoidance (static obstacle, standing person, crossing, head-on); the planner only
   gives the goal direction; reflex = brake only; the person flag comes from the camera (YOLO), plus a motion cue.
 - Problem: the student sees ONE LiDAR frame: `OBSERVATION_DIM` = 41 (36 beams, goal, v/w forced to 0). A person walking at the
@@ -38,5 +38,5 @@
   (c) on the robot the ego-motion comes from the CSM pose of consecutive sweeps (TK-SLAM-09/10), not from commands; its error in
   pivots makes the motion block noisy (measured above) and is handled in TK-IL-07; (d) one-step (0.1 s) motion is enough: a
   longer history is not needed until a test shows it; (e) 0.10 m per step is the normaliser (a 1 m/s person saturates at +-1).
-  Human-approved: PENDING
+  Human-approved: 2026-11-22
 - Needs-human: none open.
