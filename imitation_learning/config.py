@@ -31,6 +31,8 @@ GOAL_TOLERANCE_M = 0.15       # Goal arrival threshold
 # Total observation dimensions:
 # 36 (LiDAR beams) + 1 (d_goal) + 2 (sin/cos alpha_goal) + 2 (curr_v, curr_w) = 41
 OBSERVATION_DIM = LIDAR_NUM_BEAMS + 1 + 2 + 2  # 41
+OBSERVATION_DIM_V2 = OBSERVATION_DIM + 2 * LIDAR_NUM_BEAMS  # 113 (+36 person flags +36 ego-compensated motion)
+MOTION_NORM_M = 0.10          # Normaliser for ego-compensated range delta (m per 0.1s step)
 
 # Action dimensions: [v, w]
 ACTION_DIM = 2

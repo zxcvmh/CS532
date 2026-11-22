@@ -360,6 +360,89 @@ class SimulationEnvironment:
 
         return ranges
 
+    def get_person_mask360(
+        self,
+        persons: List[Tuple[float, float, float]],
+        miss_rate: float = 0.0,
+        false_alarm_rate: float = 0.0,
+        rng: Optional[random.Random] = None
+    ) -> np.ndarray:
+        """Returns bool array (360,) flagging rays whose first hit is a detected person."""
+        mask = np.zeros(360, dtype=bool)
+        rgen = rng if rng is not None else random
+
+        detected = [p for p in persons if not (miss_rate > 0.0 and rgen.random() < miss_rate)]
+        if detected:
+            r_max = float(self.lidar_range_max)
+            th_rays = self.theta + np.deg2rad(np.arange(360, dtype=np.float64))
+            cos_th = np.cos(th_rays)
+            sin_th = np.sin(th_rays)
+
+            d_person = np.full(360, np.inf, dtype=np.float64)
+            for px, py, pr in detected:
+                dx = self.x - px
+                dy = self.y - py
+                b = 2.0 * (dx * cos_th + dy * sin_th)
+                c = dx * dx + dy * dy - pr * pr
+                disc = b * b - 4.0 * c
+                hit = disc >= 0.0
+                if hit.any():
+                    t1 = (-b[hit] - np.sqrt(disc[hit])) * 0.5
+                    idx = np.flatnonzero(hit)
+                    pos = t1 > 0.0
+                    if pos.any():
+                        d_person[idx[pos]] = np.minimum(d_person[idx[pos]], t1[pos])
+
+            cand = d_person <= r_max
+            if cand.any():
+                # Occlusion check against walls and all active obstacles
+                half_h = self.arena_h / 2.0
+                d_block = np.full(360, r_max, dtype=np.float64)
+                c_neg = cos_th < -1e-4
+                c_pos = cos_th > 1e-4
+                s_neg = sin_th < -1e-4
+                s_pos = sin_th > 1e-4
+                if c_neg.any():
+                    d = (0.0 - self.x) / cos_th[c_neg]
+                    d_block[c_neg] = np.minimum(d_block[c_neg], np.where(d > 0.0, d, r_max))
+                if c_pos.any():
+                    d = (self.arena_w - self.x) / cos_th[c_pos]
+                    d_block[c_pos] = np.minimum(d_block[c_pos], np.where(d > 0.0, d, r_max))
+                if s_neg.any():
+                    d = (-half_h - self.y) / sin_th[s_neg]
+                    d_block[s_neg] = np.minimum(d_block[s_neg], np.where(d > 0.0, d, r_max))
+                if s_pos.any():
+                    d = (half_h - self.y) / sin_th[s_pos]
+                    d_block[s_pos] = np.minimum(d_block[s_pos], np.where(d > 0.0, d, r_max))
+
+                for obs in self.obstacles:
+                    if isinstance(obs, tuple):
+                        ox, oy, orad, active = obs[0], obs[1], obs[2], True
+                    else:
+                        ox, oy, orad, active = obs.x, obs.y, obs.radius, obs.active
+                    if not active:
+                        continue
+                    dx = self.x - ox
+                    dy = self.y - oy
+                    b = 2.0 * (dx * cos_th + dy * sin_th)
+                    c = dx * dx + dy * dy - orad * orad
+                    disc = b * b - 4.0 * c
+                    hit = disc >= 0.0
+                    if hit.any():
+                        t1 = (-b[hit] - np.sqrt(disc[hit])) * 0.5
+                        idx = np.flatnonzero(hit)
+                        pos = t1 > 0.0
+                        if pos.any():
+                            d_block[idx[pos]] = np.minimum(d_block[idx[pos]], t1[pos])
+
+                mask = cand & (d_block >= d_person - 1e-6)
+
+        if false_alarm_rate > 0.0 and rgen.random() < false_alarm_rate:
+            start_deg = rgen.randrange(360)
+            mask[(start_deg + np.arange(20)) % 360] = True
+
+        return mask
+
 
 class GeometricExpertPolicy:
     """

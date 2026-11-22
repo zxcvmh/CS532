@@ -1,6 +1,7 @@
 ### TK-IL-08: Observation v2 for the student — person flag + ego-compensated motion (IL is the ONLY avoider)
 - Role: il-policy (the Supervisor wrote the locked test first)
-- Status: READY (2026-11-22) — hand off ONLY after TK-IL-05 is audited and committed (same file `mock_expert_simulator.py` is in the working tree with unaudited IL-05 edits) — locked test `tests/acceptance/test_il_observation.py` (11 tests) is RED on HEAD for the right
+- Status: DONE 2026-11-22 (auditor PASS). Evidence: `test_il_observation.py` 11/11, `test_il_expert.py` 4/4, `test_il_sim_dynamics.py` 7/7; static scene beams >= 0.3 = 0.000 (limit 0.01); person motion +0.50 / -0.50 incl. while pivoting (+0.53); unseen seeds 1000-1049: static 100/0, standing 100/0, crossing 98/2, head-on 100/0; 0 invalid v2 obs; diff +169 lines (budget ~150). Carried forward: IL-06 must require an explicit `rng` when miss/false-alarm rate > 0 (`mock_expert_simulator.py:372` falls back to global `random`); `get_person_mask360` raycast duplicates `get_lidar_scan` (drift risk); false-alarm window is a fixed 20 rays.
+- (history) READY (2026-11-22) — hand off ONLY after TK-IL-05 is audited and committed (same file `mock_expert_simulator.py` is in the working tree with unaudited IL-05 edits) — locked test `tests/acceptance/test_il_observation.py` (11 tests) is RED on HEAD for the right
   reason (11/11: no `extract_observation_vector_v2`, `mirror_sample_v2`, `get_person_mask360`, `OBSERVATION_DIM_V2`) and GREEN
   (11/11) on a Supervisor reference in the scratchpad. Assumptions approved by the human 2026-11-22.
 - Human decision 2026-11-16: IL does ALL avoidance (static obstacle, standing person, crossing, head-on); the planner only

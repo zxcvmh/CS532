@@ -97,8 +97,7 @@ When the human asks "why should I trust your test?" — answer with evidence, in
 
 | Item | State | My next move |
 |---|---|---|
-| TK-SLAM-09/10, TK-INT-12, TK-IL-04/05, TK-INT-10 | DONE (commits `2bb93a2`, `b351eea`, `71fa939` ...) | none |
-| TK-IL-08 observation v2 (person flag + ego-compensated motion, 113-D) | READY, locked test `test_il_observation.py` red 11/11 on HEAD, green on a reference | human runs `/il-policy TK-IL-08`; `/audit`, `/close` on PASS |
+| TK-SLAM-09/10, TK-INT-12, TK-IL-04/05/08, TK-INT-10 | DONE (commits `2bb93a2`, `b351eea`, `71fa939`, IL-08 see git log ...) | none |
 | TK-IL-06 BC -> DAgger classifier | DRAFT (IL-05 audit notes appended: pass `privileged` in `dagger_session.py` / `data_collector.py`, 4-class cross-entropy, fixed seeds) | human confirms the student model, then I write `test_il_student.py` (needed before the IL gate 2026-12-07) |
 | TK-IL-09 teacher clearance 0.30 m + head-on <= 2 % | DRAFT | human decides the person-speed protocol, then locked test after IL-08 |
 | TK-IL-07 sim-to-real | DRAFT (inject the real motion-block noise: 5 % false beams while pivoting) | after IL-06 |

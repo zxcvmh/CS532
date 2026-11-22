@@ -35,8 +35,15 @@ from config import (
     MAX_LINEAR_SPEED,
     MAX_ANGULAR_SPEED,
     OBSERVATION_DIM,
+    OBSERVATION_DIM_V2,
+    MOTION_NORM_M,
     ACTION_DIM
 )
+
+_DEGS_360 = np.arange(360, dtype=np.float64)
+_RADS_360 = np.deg2rad(_DEGS_360)
+_COS_360 = np.cos(_RADS_360)
+_SIN_360 = np.sin(_RADS_360)
 
 
 def extract_observation_vector(
@@ -126,6 +133,83 @@ def mirror_sample(obs: np.ndarray, act: np.ndarray) -> Tuple[np.ndarray, np.ndar
     mirrored_act[0] = act[0]
     mirrored_act[1] = -act[1]
 
+    return mirrored_obs, mirrored_act
+
+
+def extract_observation_vector_v2(
+    raw_ranges_360: List[float],
+    goal_x: float,
+    goal_y: float,
+    robot_x: float,
+    robot_y: float,
+    robot_theta: float,
+    prev_ranges_360: Optional[List[float]] = None,
+    ego_dpose: Optional[Tuple[float, float, float]] = None,
+    person_mask_360: Optional[Any] = None,
+    curr_v: float = 0.0,
+    curr_w: float = 0.0,
+    max_range: float = LIDAR_MAX_RANGE_M,
+    max_goal_dist: float = GOAL_MAX_DIST_M
+) -> np.ndarray:
+    """
+    Extracts the 113-D observation v2:
+      [0:41]   legacy 41-D observation (unchanged)
+      [41:77]  per-beam person flag (0.0/1.0, OR-pooled over 10-deg sector [10b-5, 10b+4])
+      [77:113] per-beam ego-compensated motion in [-1, 1] (median delta / MOTION_NORM_M)
+    """
+    obs = np.zeros(OBSERVATION_DIM_V2, dtype=np.float32)
+    obs[:OBSERVATION_DIM] = extract_observation_vector(
+        raw_ranges_360, goal_x, goal_y, robot_x, robot_y, robot_theta,
+        curr_v=curr_v, curr_w=curr_w, max_range=max_range, max_goal_dist=max_goal_dist
+    )
+
+    step = 360 // LIDAR_NUM_BEAMS
+    half_step = step // 2
+
+    if person_mask_360 is not None:
+        mask = np.asarray(person_mask_360, dtype=bool)
+        if mask.size == 360:
+            sectors = np.roll(mask, half_step).reshape(LIDAR_NUM_BEAMS, step)
+            obs[OBSERVATION_DIM:OBSERVATION_DIM + LIDAR_NUM_BEAMS] = sectors.any(axis=1).astype(np.float32)
+
+    if prev_ranges_360 is not None and ego_dpose is not None:
+        r_prev = np.asarray(prev_ranges_360, dtype=np.float64)
+        r_cur = np.asarray(raw_ranges_360, dtype=np.float64)
+        if r_prev.size == 360 and r_cur.size == 360:
+            dx, dy, dth = float(ego_dpose[0]), float(ego_dpose[1]), float(ego_dpose[2])
+            c, s = math.cos(dth), math.sin(dth)
+            vx = r_prev * _COS_360 - dx
+            vy = r_prev * _SIN_360 - dy
+            p1_x = c * vx + s * vy
+            p1_y = -s * vx + c * vy
+            r_comp = np.hypot(p1_x, p1_y)
+            ang_deg = np.rad2deg(np.arctan2(p1_y, p1_x)) % 360.0
+
+            order = np.argsort(ang_deg)
+            ang_s = ang_deg[order]
+            r_s = r_comp[order]
+            ang_ext = np.concatenate(([ang_s[-1] - 360.0], ang_s, [ang_s[0] + 360.0]))
+            r_ext = np.concatenate(([r_s[-1]], r_s, [r_s[0]]))
+            prev_in_cur = np.interp(_DEGS_360, ang_ext, r_ext)
+
+            diff = prev_in_cur - r_cur
+            diff_sectors = np.roll(diff, half_step).reshape(LIDAR_NUM_BEAMS, step)
+            med_delta = np.median(diff_sectors, axis=1)
+            motion = np.clip(med_delta / MOTION_NORM_M, -1.0, 1.0)
+            motion = np.where(np.isfinite(motion), motion, 0.0)
+            obs[OBSERVATION_DIM + LIDAR_NUM_BEAMS:] = motion.astype(np.float32)
+
+    return obs
+
+
+def mirror_sample_v2(obs: np.ndarray, act: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """Mirrors a 113-D observation v2 and action across the robot centerline."""
+    mirrored_obs = np.copy(obs)
+    mirrored_obs[:OBSERVATION_DIM], mirrored_act = mirror_sample(obs[:OBSERVATION_DIM], act)
+    for off in (OBSERVATION_DIM, OBSERVATION_DIM + LIDAR_NUM_BEAMS):
+        for i in range(1, LIDAR_NUM_BEAMS // 2 + 1):
+            j = (LIDAR_NUM_BEAMS - i) % LIDAR_NUM_BEAMS
+            mirrored_obs[off + i], mirrored_obs[off + j] = obs[off + j], obs[off + i]
     return mirrored_obs, mirrored_act
 
 
