@@ -26,6 +26,7 @@ from config import (
     MAX_LINEAR_SPEED,
     MAX_ANGULAR_SPEED,
     MIN_DRIVE_SPEED,
+    ROBOT_RADIUS_M,
     ACTION_STOP,
     ACTION_FORWARD,
     ACTION_PIVOT_LEFT,
@@ -362,22 +363,183 @@ class SimulationEnvironment:
 
 class GeometricExpertPolicy:
     """
-    Enhanced Oracle Policy (pi* v2):
-      - Handles Static & Dynamic Cross-Cutting Obstacles
-      - Dedicated Terminal Approach Mode (prevents false evasions near destination)
-      - Dynamic Yielding for sudden moving objects
-      - In-place pivot for wide orientation errors
+    Stop-Turn-Go Lookahead Expert Policy (teacher oracle).
+    Evaluates discrete stop-turn-go motion plans (pivot n steps then forward, or
+    wait k steps then forward) against predicted constant-velocity obstacles and
+    LiDAR-sensed walls/static obstacles. Never emits arc commands.
     """
-    def __init__(self):
+    def __init__(self, forward_steps: int = 18, static_steps: int = 10, clearance_margin: float = 0.10):
         self.max_v = MAX_LINEAR_SPEED
         self.max_w = MAX_ANGULAR_SPEED
         self.min_v = MIN_DRIVE_SPEED
-        self.latched_evade = 0
-        self.yield_counter = 0
+        self.dt = 1.0 / CONTROL_HZ
+        self.robot_radius = ROBOT_RADIUS_M
+        self.forward_steps = forward_steps
+        self.static_steps = static_steps
+        self.clearance_margin = clearance_margin
+        self._last_turn_dir = 0
+        self._pivot_origin: Optional[Tuple[float, float]] = None
 
     def reset_state(self):
-        self.latched_evade = 0
-        self.yield_counter = 0
+        self._last_turn_dir = 0
+        self._pivot_origin = None
+
+    def _extract_static_points(
+        self,
+        lidar_ranges: List[float],
+        robot_x: float,
+        robot_y: float,
+        robot_theta: float,
+        max_reach: float,
+        privileged: Optional[List[Tuple[float, float, float, float, float]]]
+    ) -> List[Tuple[float, float]]:
+        """Extracts nearby static/wall surface points from 360-deg LiDAR (5-deg bins)."""
+        pts: List[Tuple[float, float]] = []
+        r_ceil = min(LIDAR_MAX_RANGE_M - 0.02, max_reach)
+        n_rays = len(lidar_ranges)
+        if n_rays == 0:
+            return pts
+
+        bin_step = 2
+        for base_deg in range(0, 360, bin_step):
+            best_r = r_ceil
+            best_deg = -1
+            for offset in range(bin_step):
+                deg = (base_deg + offset) % n_rays
+                r = lidar_ranges[deg]
+                if LIDAR_MIN_RANGE_M <= r < best_r:
+                    best_r = r
+                    best_deg = deg
+            if best_deg < 0:
+                continue
+            ang = robot_theta + math.radians(best_deg)
+            wx = robot_x + best_r * math.cos(ang)
+            wy = robot_y + best_r * math.sin(ang)
+            if privileged is not None:
+                # Skip LiDAR hits belonging to privileged obstacles (handled analytically with velocity)
+                on_priv = False
+                for ox, oy, orad, _, _ in privileged:
+                    if math.hypot(wx - ox, wy - oy) <= orad + 0.06:
+                        on_priv = True
+                        break
+                if on_priv:
+                    continue
+            pts.append((wx, wy))
+        return pts
+
+    def _evaluate_plan(
+        self,
+        n_pivot: int,
+        k_wait: int,
+        robot_x: float,
+        robot_y: float,
+        robot_theta: float,
+        goal_x: float,
+        goal_y: float,
+        dyn_obs: List[Tuple[float, float, float, float, float]],
+        static_obs: List[Tuple[float, float, float]],
+        static_pts: List[Tuple[float, float]],
+        margin: float
+    ) -> Tuple[bool, int, float, float, bool]:
+        """Simulates (pivot n_pivot or wait k_wait) then forward up to horizon.
+        Returns (is_safe, first_fail_step, min_clearance, end_dist_to_goal, reached_goal).
+        """
+        dt = self.dt
+        ds = self.max_v * dt
+        dth = self.max_w * dt
+        r_bot = self.robot_radius
+        idle_steps = abs(n_pivot) + k_wait
+        # Fixed forward rollout length keeps static feasibility identical across adjacent headings (prevents pivot chatter).
+        # Use shorter static horizon so narrow corridors near walls stay navigable while keeping full horizon for moving obstacles.
+        fwd_len = self.forward_steps if dyn_obs else self.static_steps
+        total_steps = idle_steps + (0 if k_wait >= self.forward_steps else fwd_len)
+        static_end_step = idle_steps + self.static_steps
+        pt_lim = r_bot + margin
+        pt_lim_sq = pt_lim * pt_lim
+        goal_tol_sq = GOAL_TOLERANCE_M * GOAL_TOLERANCE_M
+
+        th = robot_theta + n_pivot * dth
+        cth = math.cos(th)
+        sth = math.sin(th)
+
+        min_clear = 1e9
+        first_fail = total_steps + 1
+
+        # 1. Check moving obstacles during stationary pivot/wait steps
+        if dyn_obs and idle_steps > 0:
+            for t in range(1, idle_steps + 1):
+                tt = t * dt
+                for ox, oy, orad, vx, vy in dyn_obs:
+                    dx = robot_x - (ox + vx * tt)
+                    dy = robot_y - (oy + vy * tt)
+                    d_sq = dx * dx + dy * dy
+                    lim = r_bot + orad + margin
+                    if d_sq < lim * lim:
+                        c = math.sqrt(d_sq) - (r_bot + orad)
+                        if c < min_clear:
+                            min_clear = c
+                        if t < first_fail:
+                            first_fail = t
+
+        # 2. Simulate forward motion after idle_steps
+        px, py = robot_x, robot_y
+        reached = False
+        reach_step = total_steps
+        for t in range(idle_steps + 1, total_steps + 1):
+            if not reached:
+                px += ds * cth
+                py += ds * sth
+                gdx = goal_x - px
+                gdy = goal_y - py
+                if gdx * gdx + gdy * gdy <= goal_tol_sq:
+                    reached = True
+                    reach_step = t
+
+            tt = t * dt
+            # Dynamic obstacles (checked every step)
+            for ox, oy, orad, vx, vy in dyn_obs:
+                dx = px - (ox + vx * tt)
+                dy = py - (oy + vy * tt)
+                d_sq = dx * dx + dy * dy
+                lim = r_bot + orad + margin
+                if d_sq < lim * lim:
+                    c = math.sqrt(d_sq) - (r_bot + orad)
+                    if c < min_clear:
+                        min_clear = c
+                    if t < first_fail:
+                        first_fail = t
+
+            # Static obstacles & LiDAR wall/surface points (within static_steps while moving, or at arrival step)
+            if t <= static_end_step and (not reached or t == reach_step):
+                for ox, oy, orad in static_obs:
+                    dx = px - ox
+                    dy = py - oy
+                    d_sq = dx * dx + dy * dy
+                    lim = r_bot + orad + margin
+                    if d_sq < lim * lim:
+                        c = math.sqrt(d_sq) - (r_bot + orad)
+                        if c < min_clear:
+                            min_clear = c
+                        if t < first_fail:
+                            first_fail = t
+                for wx, wy in static_pts:
+                    dx = px - wx
+                    dy = py - wy
+                    d_sq = dx * dx + dy * dy
+                    if d_sq < pt_lim_sq:
+                        c = math.sqrt(d_sq) - r_bot
+                        if c < min_clear:
+                            min_clear = c
+                        if t < first_fail:
+                            first_fail = t
+
+            if first_fail <= total_steps and reached:
+                break
+
+        end_dist = math.hypot(goal_x - px, goal_y - py)
+        if reached:
+            end_dist = -1.0 + 0.01 * reach_step
+        return (first_fail > total_steps), first_fail, min_clear, end_dist, reached
 
     def get_action(
         self,
@@ -387,104 +549,117 @@ class GeometricExpertPolicy:
         robot_x: float,
         robot_y: float,
         robot_theta: float,
-        apply_dart_noise: bool = False
+        apply_dart_noise: bool = False,
+        privileged: Optional[List[Tuple[float, float, float, float, float]]] = None
     ) -> Tuple[float, float]:
         dx = goal_x - robot_x
         dy = goal_y - robot_y
         dist_goal = math.hypot(dx, dy)
 
-        # 1. Goal Reached
         if dist_goal <= GOAL_TOLERANCE_M:
             self.reset_state()
             return 0.0, 0.0
 
-        angle_world = math.atan2(dy, dx)
-        alpha = (angle_world - robot_theta + math.pi) % (2.0 * math.pi) - math.pi
-
-        # 2. Terminal Approach Zone (dist_goal <= 0.40m):
-        # Smoothly slow down and align straight to goal without triggering false obstacle bypass
-        if dist_goal <= 0.40:
-            self.latched_evade = 0
-            # Check immediate collision bubble (< 0.14m directly ahead)
-            front_crit = [lidar_ranges[d % 360] for d in range(-25, 26) if 0.05 <= lidar_ranges[d % 360] < 0.14]
-            if front_crit:
-                # Critical halt
-                return 0.0, 0.0
-            
-            if abs(alpha) > math.radians(12.0):
-                return 0.0, float(round(math.copysign(self.max_w, alpha), 3))
-            return float(round(self.max_v, 3)), 0.0
-
-        # 3. PIVOT TURN IN PLACE: For heading deviations (> 12 deg)
-        if abs(alpha) > math.radians(12.0):
-            self.reset_state()
-            w_pivot = math.copysign(self.max_w, alpha)
-            return 0.0, float(round(w_pivot, 3))
-
-        # 4. Forward Corridor Perception
-        # Only consider obstacles BETWEEN robot and goal (xr < dist_goal - 0.06)
-        closest_xr = 999.0
-        closest_yr = 0.0
-        has_front_obs = False
-        max_fwd_check = min(0.68, dist_goal - 0.06)
-
-        for d in range(-80, 81):
-            idx = (d + 360) % 360
-            r = lidar_ranges[idx]
-            if 0.05 <= r < max_fwd_check:
-                ang_r = math.radians(d)
-                xr = r * math.cos(ang_r)
-                yr = r * math.sin(ang_r)
-                # Frontal corridor: xr in [0.0, max_fwd_check], |yr| < 0.22m
-                if -0.04 <= xr <= max_fwd_check and abs(yr) < 0.22:
-                    has_front_obs = True
-                    if xr < closest_xr:
-                        closest_xr = xr
-                        closest_yr = yr
-
-        left_clear = sum(lidar_ranges[d] for d in range(20, 80)) / 60.0
-        right_clear = sum(lidar_ranges[(360 - d) % 360] for d in range(20, 80)) / 60.0
-
-        if has_front_obs:
-            # A. Sudden Impending Collision (< 0.20m): Dynamic Yield
-            if closest_xr < 0.20:
-                if self.yield_counter < 6:  # Yield for up to ~0.6s
-                    self.yield_counter += 1
-                    return 0.0, 0.0
-                # If still blocked after yield, proceed to active evasive steering
-
-            self.yield_counter = 0
-
-            # B. Safe Contour Bypass
-            if self.latched_evade == 0:
-                if alpha > 0.08:
-                    self.latched_evade = +1
-                elif alpha < -0.08:
-                    self.latched_evade = -1
+        # Separate privileged obstacles into dynamic vs static
+        dyn_obs: List[Tuple[float, float, float, float, float]] = []
+        static_obs: List[Tuple[float, float, float]] = []
+        if privileged is not None:
+            for ox, oy, orad, vx, vy in privileged:
+                if abs(vx) > 1e-4 or abs(vy) > 1e-4:
+                    dyn_obs.append((ox, oy, orad, vx, vy))
                 else:
-                    self.latched_evade = +1 if left_clear >= right_clear else -1
+                    static_obs.append((ox, oy, orad))
 
-            # Desired lateral clearance: 0.24m
-            target_lat = -0.24 if self.latched_evade > 0 else +0.24
-            lat_err = target_lat - closest_yr
+        max_reach = self.static_steps * self.max_v * self.dt + self.robot_radius + self.clearance_margin + 0.08
+        static_pts = self._extract_static_points(
+            lidar_ranges, robot_x, robot_y, robot_theta, max_reach, privileged
+        )
 
-            w_cmd = -2.8 * lat_err
-            v_cmd = max(self.min_v + 0.01, self.max_v * min(0.75, max(0.40, closest_xr / 0.65)))
-        else:
-            self.latched_evade = 0
-            self.yield_counter = 0
-            w_cmd = 1.8 * alpha
-            v_cmd = self.max_v * max(0.65, math.cos(alpha / 2.0) ** 2)
+        # If still pivoting in place at the same position, block reversing turn direction to prevent 2-cycle chatter
+        in_place_pivot = (
+            self._pivot_origin is not None
+            and self._last_turn_dir != 0
+            and math.hypot(robot_x - self._pivot_origin[0], robot_y - self._pivot_origin[1]) < 1e-4
+        )
+        if not in_place_pivot:
+            self._pivot_origin = None
 
-        # Enforce bounds
-        v_cmd = max(self.min_v + 0.01, min(self.max_v, v_cmd))
-        w_cmd = max(-self.max_w, min(self.max_w, w_cmd))
+        # Candidate active stop-turn-go plans: (n_pivot, k_wait)
+        # Pure STOP is a safety fallback only, never competing against active navigation.
+        stop_plan = (0, self.forward_steps)
+        candidates: List[Tuple[int, int]] = [(0, 0)]
+        for n in range(1, 13):
+            if not (in_place_pivot and self._last_turn_dir < 0):
+                candidates.append((n, 0))
+            if not (in_place_pivot and self._last_turn_dir > 0):
+                candidates.append((-n, 0))
+        if dyn_obs:
+            for k in (2, 4, 8):
+                candidates.append((0, k))
 
-        # DART Perturbation
-        if apply_dart_noise and DART_ENABLED and not has_front_obs and random.random() < DART_PROBABILITY:
-            noise_v = random.gauss(0.0, DART_NOISE_STD_V)
-            noise_w = random.gauss(0.0, DART_NOISE_STD_W)
-            v_cmd = max(self.min_v + 0.01, min(self.max_v, v_cmd + noise_v))
-            w_cmd = max(-self.max_w, min(self.max_w, w_cmd + noise_w))
+        def _pick_best(margin: float):
+            best_plan = None
+            best_score = 1e18
+            fallback_plan = stop_plan
+            fallback_key = (-1, -1e9, -1e9)
+            for n_piv, k_wait in candidates:
+                safe, fail_step, min_c, end_d, _ = self._evaluate_plan(
+                    n_piv, k_wait, robot_x, robot_y, robot_theta,
+                    goal_x, goal_y, dyn_obs, static_obs, static_pts, margin
+                )
+                if safe:
+                    # Slight tie-break for smaller turn, consistency with last turn dir, and not waiting needlessly
+                    turn_dir = 1 if n_piv > 0 else (-1 if n_piv < 0 else 0)
+                    dir_pen = 0.0 if (turn_dir == 0 or turn_dir == self._last_turn_dir) else 0.005
+                    score = end_d + 0.002 * abs(n_piv) + 0.003 * k_wait + dir_pen
+                    if score < best_score:
+                        best_score = score
+                        best_plan = (n_piv, k_wait)
+                else:
+                    # Prefer plans that survive longer and maintain larger clearance
+                    key = (fail_step, round(min_c, 3), -end_d)
+                    if key > fallback_key:
+                        fallback_key = key
+                        fallback_plan = (n_piv, k_wait)
+            return best_plan, fallback_plan
 
-        return float(round(v_cmd, 3)), float(round(w_cmd, 3))
+        chosen, _ = _pick_best(self.clearance_margin)
+        if chosen is None:
+            # Relaxed margin pass before giving up
+            chosen, fallback = _pick_best(0.02)
+            if chosen is None:
+                # Check if pure STOP is safe; otherwise pick best survival escape against moving obstacle
+                if dyn_obs:
+                    stop_safe, _, _, _, _ = self._evaluate_plan(
+                        0, self.forward_steps, robot_x, robot_y, robot_theta,
+                        goal_x, goal_y, dyn_obs, static_obs, static_pts, 0.02
+                    )
+                    chosen = stop_plan if stop_safe else fallback
+                else:
+                    chosen = stop_plan
+
+        n_piv, k_wait = chosen
+        if k_wait > 0:
+            self._pivot_origin = None
+            return 0.0, 0.0
+        if n_piv > 0:
+            self._last_turn_dir = 1
+            self._pivot_origin = (robot_x, robot_y)
+            w_cmd = self.max_w
+            if apply_dart_noise and DART_ENABLED and random.random() < DART_PROBABILITY:
+                w_cmd = max(0.05, min(self.max_w, w_cmd + random.gauss(0.0, DART_NOISE_STD_W)))
+            return 0.0, float(round(w_cmd, 3))
+        if n_piv < 0:
+            self._last_turn_dir = -1
+            self._pivot_origin = (robot_x, robot_y)
+            w_cmd = -self.max_w
+            if apply_dart_noise and DART_ENABLED and random.random() < DART_PROBABILITY:
+                w_cmd = min(-0.05, max(-self.max_w, w_cmd + random.gauss(0.0, DART_NOISE_STD_W)))
+            return 0.0, float(round(w_cmd, 3))
+
+        # Forward
+        self._pivot_origin = None
+        v_cmd = self.max_v
+        if apply_dart_noise and DART_ENABLED and random.random() < DART_PROBABILITY:
+            v_cmd = max(self.min_v + 0.01, min(self.max_v, v_cmd + random.gauss(0.0, DART_NOISE_STD_V)))
+        return float(round(v_cmd, 3)), 0.0

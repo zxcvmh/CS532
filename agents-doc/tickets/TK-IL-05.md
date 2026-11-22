@@ -1,6 +1,6 @@
 ### TK-IL-05: Teacher must emit stop-turn-go commands and reach >= 95 % on the new sim (root cause: arcs the sim drops)
 - Role: il-policy
-- Status: READY (2026-11-22) — locked test `tests/acceptance/test_il_expert.py` written, RED on HEAD for the right reasons
+- Status: DONE (2026-11-22) — auditor PASS (no blocking finding), Supervisor re-ran: `test_il_expert.py` 4/4 (A 97/0, B1 99/1, B2 100/0, 0 arcs), `test_il_sim_dynamics.py` 7/7; auditor on unseen seeds A 97.5/0, B1 98.5/1.5, B2 99.5/0.5; `privileged=None` path A 98/0 but B2 15/85 (no hidden channel). Diff 274+/99- in the expert class only (over the 150-line guide, accepted: one rewritten class, `SimulationEnvironment` untouched). Earlier note: READY (2026-11-22) — locked test `tests/acceptance/test_il_expert.py` written, RED on HEAD for the right reasons
   (4/4 fail: no `privileged` parameter; 4221 / 4507 / 3113 arc commands; group A 47 % success / 52 % collision, B1 72/28,
   B2 3/97) and GREEN (4/4) on a Supervisor reference expert in the scratchpad (A 99/0, B1 85/15, B2 93/7). Assumptions approved by the human 2026-11-22.
 - Problem (evidence): the sim (TK-IL-04) is stop-turn-go: `SimulationEnvironment.step` executes "forward" OR "pivot" and
