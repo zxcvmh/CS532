@@ -51,7 +51,7 @@ Old v1 tickets: `agents-doc/archive/agents-v1/TICKETS-v1.md` (paths there are de
 | TK-INT-05 | supervisor | DONE | agents-doc/tickets/TK-INT-05.md |
 | TK-INT-06 | supervisor | DEFERRED | agents-doc/tickets/TK-INT-06.md |
 | TK-IL-04 | il-policy | DONE | agents-doc/tickets/TK-IL-04.md |
-| TK-IL-05 | il-policy | DRAFT | agents-doc/tickets/TK-IL-05.md |
+| TK-IL-05 | il-policy | READY | agents-doc/tickets/TK-IL-05.md |
 | TK-IL-06 | il-policy | DRAFT | agents-doc/tickets/TK-IL-06.md |
 | TK-IL-07 | il-policy | DRAFT | agents-doc/tickets/TK-IL-07.md |
 | TK-IL-08 | il-policy | DRAFT | agents-doc/tickets/TK-IL-08.md |

@@ -1,9 +1,8 @@
 ### TK-IL-05: Teacher must emit stop-turn-go commands and reach >= 95 % on the new sim (root cause: arcs the sim drops)
 - Role: il-policy
-- Status: DRAFT (2026-11-21) — locked test `tests/acceptance/test_il_expert.py` written, RED on HEAD for the right reasons
+- Status: READY (2026-11-22) — locked test `tests/acceptance/test_il_expert.py` written, RED on HEAD for the right reasons
   (4/4 fail: no `privileged` parameter; 4221 / 4507 / 3113 arc commands; group A 47 % success / 52 % collision, B1 72/28,
-  B2 3/97) and GREEN (4/4) on a Supervisor reference expert in the scratchpad (A 99/0, B1 85/15, B2 93/7). Becomes READY
-  when the human approves the Assumptions below.
+  B2 3/97) and GREEN (4/4) on a Supervisor reference expert in the scratchpad (A 99/0, B1 85/15, B2 93/7). Assumptions approved by the human 2026-11-22.
 - Problem (evidence): the sim (TK-IL-04) is stop-turn-go: `SimulationEnvironment.step` executes "forward" OR "pivot" and
   ignores `w` while `v` > 0.01 (`imitation_learning/mock_expert_simulator.py` step()). `GeometricExpertPolicy.get_action`
   still steers with arcs (`w_cmd = -2.8 * lat_err` together with `v_cmd`), so every evasive steer is silently dropped.
@@ -35,5 +34,5 @@
   measured; (c) the pedestrian models of groups A and B are the Supervisor's (cooperative person for A, constant-velocity
   non-stopping person for B), not real human data; (d) a clearance of 0.10 m is accepted in sim for the teacher, the 0.3 m
   demo clearance is enforced in TK-IL-08.
-  Human-approved: PENDING
+  Human-approved: 2026-11-22
 - Needs-human: none open.
