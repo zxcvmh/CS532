@@ -93,34 +93,22 @@ Hand-off message to the human = exactly one copy-paste line, e.g. `/slam TK-SLAM
 
 When the human asks "why should I trust your test?" — answer with evidence, including my own past errors.
 
-## 6. Snapshot 2026-11-16 (verify against TICKETS/STATE/git before acting)
+## 6. Snapshot 2026-11-22 (verify against TICKETS/STATE/git before acting)
 
 | Item | State | My next move |
 |---|---|---|
-| TK-SLAM-09 CSM tracker | READY attempt 2 (2026-11-16): locked test 13 tests, attempt 1 fails 11-13 (float32 theta, `set_pose` snaps); pose_hold gate aligned to 20 deg | human gives `/slam TK-SLAM-09` to the next coder; then `/audit`, `/close` on PASS |
-| TK-IL-03 fake-PASS pipeline test | audit 1: code PASS, scope REJECT; docs fixed by me, ledgered (2026-11-16) | human decides: close (commit only `test_il_pipeline.py`) or resend; follow-up: seed DAgger (16.7 vs 66.7 %) |
-| TK-INT-07 spin step, TK-INT-09 single-rate pivot | in repo, NOT deployed | after human sets turn 0.14 / 0.53 / 1.06 and Jetson online: diff `~/03-MinhHieu/jetbot_bridge.py`, deploy bridge + dynamics |
-| TK-IL-04 sim uses field dynamics | READY (2026-11-16): locked test 14/14 red on HEAD, prototype green; uncommitted test + ticket | human runs `/il-policy TK-IL-04`; expect `test_il_pipeline.py::test_05` RED afterwards (accepted, ledgered) |
-| TK-INT-08 low-obstacle TypeError | DRAFT | locked test, then `/integration` |
-| TK-INT-10 bridge single forward PWM | READY (2026-11-16): locked test red on HEAD, reference passes 6/6 + spin 4/4; uncommitted | human runs `/integration TK-INT-10`; deploy bridge + dynamics TOGETHER after audit (Jetson must NOT get the new dynamics file before) |
-| TK-INT-11 e-stop paths, TK-CV-03/04/05/06, TK-CV-02 (rewritten) | DRAFT (week-1/2 plan, ordering in TICKETS.md) | Jetson measurement on the home WiFi first; then calibration -> detection measurement -> person-aware layer |
-| TK-MEAS-01 measurements | attempt 1 REJECT (assistant ran sudo/WiFi/bridge on the Jetson; static_person has 12 s hole); validator now checks gaps; placement decision provisional | check Jetson state read-only when robot is on; attempt 2 = re-record static_person only; see docs/handoffs/2026-11-16-supervisor.md |
-| TK-IL-05, TK-IL-06, TK-IL-07 | DRAFT | IL-05 locked test next (needed before 30/11 for the 7/12 IL gate) |
-| TK-SLAM-05, INT-04, INT-06, CV-01 | DEFERRED / CANCELLED (human-approved cut) | none |
-| De-skew | not ticketed | after SLAM-09 field check, measured against moving-sweep error |
+| TK-SLAM-09/10, TK-INT-12, TK-IL-04/05, TK-INT-10 | DONE (commits `2bb93a2`, `b351eea`, `71fa939` ...) | none |
+| TK-IL-08 observation v2 (person flag + ego-compensated motion, 113-D) | READY, locked test `test_il_observation.py` red 11/11 on HEAD, green on a reference | human runs `/il-policy TK-IL-08`; `/audit`, `/close` on PASS |
+| TK-IL-06 BC -> DAgger classifier | DRAFT (IL-05 audit notes appended: pass `privileged` in `dagger_session.py` / `data_collector.py`, 4-class cross-entropy, fixed seeds) | human confirms the student model, then I write `test_il_student.py` (needed before the IL gate 2026-12-07) |
+| TK-IL-09 teacher clearance 0.30 m + head-on <= 2 % | DRAFT | human decides the person-speed protocol, then locked test after IL-08 |
+| TK-IL-07 sim-to-real | DRAFT (inject the real motion-block noise: 5 % false beams while pivoting) | after IL-06 |
+| TK-INT-11, TK-CV-02..06, TK-INT-08 | DRAFT | frozen/low priority until the IL gate |
 
-Open risks / questions:
-- `min_drive_speed` 0.19 in the file was a misread (human, 2026-11-16): the robot rolls from ~0.08 PWM. `actual_speed_mps` 0.286 holds only at cruise 0.2; slower is possible → needs a measured speed-vs-PWM table. Bridge maps forward v onto [min_drive, cruise] PWM — with 0.08 that is a speed band the single-speed sim (IL-04) does not model → future INT ticket. Still field-check that pivot at 0.14 starts from rest on a low battery.
-- Trim: human said 1.0471234, file shows 1.045 — where was it saved? (bridge reads Jetson `~/setup/`). Ask, don't touch.
-- Unanswered: deploy new bridge when dynamics edited + Jetson online?
-- `run_laptop.sh` points to missing `dashboard/backend/.venv` (workaround PLAYBOOK §5).
-- Jetson budget: SLAM runs on the laptop; the ≤ 50 ms / 1.5 GB budget applies to what runs on the Jetson
-  (bridge, reflex, later IL policy) — measure it there before IL-07.
-- Untracked `.agents/workflows/supervisor.md` is a generic template that conflicts with this setup
-  (says Supervisor never writes code, lists agents that don't exist) — Antigravity could load it as `/supervisor`.
-
-Useful facts: fixtures `tests/acceptance/data/{field_turns,big_turns}_2026-11-15.npz`; SLAM-09 acceptance
-`.venv/bin/python tests/acceptance/test_slam_csm_turns.py -v`; IL baseline 89.0 % / 2.0 % collision / NN 37.1 %.
+Frozen by the human 2026-11-22: WiFi/M4, `needs-human/TK-TEST-01.md`, low-battery pivot start, `chmod 444` on dynamics, Jetson bridge RAM (~1.55 GB RSS vs 1.5 GB budget).
+Deployment (as of 2026-11-21, re-verify with md5sum over ssh): Jetson bridge == repo bridge (INT-10), Jetson dynamics == repo (0.12 / 0.64 / 1.28).
+Useful facts: new turn recording `docs/measurements/2026-11-21/lidar_turns_064s_21_11_dedup.npz` (the raw file repeats each sweep ~2.3x: dedupe by `seq`);
+tests run as scripts (`.venv/bin/python tests/acceptance/<name>.py`); expert baseline on the new sim 98 % (A), clearance always ~0.10 m.
+Handoff: `docs/handoffs/2026-11-22-supervisor.md`.
 
 ## 7. Session ritual
 
