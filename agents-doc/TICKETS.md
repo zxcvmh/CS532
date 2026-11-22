@@ -65,3 +65,4 @@ Old v1 tickets: `agents-doc/archive/agents-v1/TICKETS-v1.md` (paths there are de
 | TK-MEAS-01 | supervisor-assistant | READY | agents-doc/tickets/TK-MEAS-01.md |
 | TK-INT-12 | supervisor | DONE | agents-doc/tickets/TK-INT-12.md |
 | TK-SLAM-10 | slam | DONE | agents-doc/tickets/TK-SLAM-10.md |
+| TK-IL-09 | il-policy | DRAFT | agents-doc/tickets/TK-IL-09.md |
