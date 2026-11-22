@@ -14,5 +14,10 @@
 - Allowed files: `imitation_learning/mock_expert_simulator.py` (expert class only).
 - Depends on: TK-IL-05 DONE, TK-IL-08 (classes and metrics).
 - Assumptions: pending (to be written with the locked test).
-- Needs-human: demo protocol for people who walk at the robot: max speed 0.6 m/s? or the robot stops early and the person steers
-  around? (decide before the final thresholds).
+- Needs-human: RESOLVED 2026-11-22 (human chose the Supervisor recommendation after the feasibility research; numbers are COMPUTED
+  with ASSUMED r_robot 0.10 m, r_person 0.27 m, detect+latency 0.5-0.8 s, stop distance 0.05 m, none measured on the robot):
+  (1) crossing person 1.0-1.1 m/s: robot brakes, no contact, clearance >= 0.30 m if the crossing point is >= ~1.0 m ahead;
+  (2) head-on person <= 0.6 m/s: robot dodges, d_start >= 3.5 m, clearance ~0.3-0.5 m;
+  (3) head-on person 1.0-1.1 m/s: only "robot stops, no contact" is scored, the person steps aside; 0.30 m is NOT promised.
+  Physically unavoidable starts (d_start below the d_min table: 0.6 m/s 2.45 m, 0.8 m/s 3.14 m, 1.0 m/s 3.83 m, 1.1 m/s 4.18 m for
+  gap 0.30 at t_dl 0.5 s) are excluded from the metric. Open measurement: stopping distance from 0.284 m/s (5 runs), detect-to-pivot latency.
