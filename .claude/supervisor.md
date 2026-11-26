@@ -93,13 +93,13 @@ Hand-off message to the human = exactly one copy-paste line, e.g. `/slam TK-SLAM
 
 When the human asks "why should I trust your test?" — answer with evidence, including my own past errors.
 
-## 6. Snapshot 2026-11-22 (verify against TICKETS/STATE/git before acting)
+## 6. Snapshot 2026-11-26 (verify against TICKETS/STATE/git before acting)
 
 | Item | State | My next move |
 |---|---|---|
 | TK-SLAM-09/10, TK-INT-12, TK-IL-04/05/08, TK-INT-10 | DONE (commits `2bb93a2`, `b351eea`, `71fa939`, IL-08 see git log ...) | none |
-| TK-IL-06 BC -> DAgger classifier | DRAFT (IL-05 audit notes appended: pass `privileged` in `dagger_session.py` / `data_collector.py`, 4-class cross-entropy, fixed seeds) | human confirms the student model, then I write `test_il_student.py` (needed before the IL gate 2026-12-07) |
-| TK-IL-09 teacher clearance 0.30 m + head-on <= 2 % | DRAFT | human decides the person-speed protocol, then locked test after IL-08 |
+| TK-IL-06 BC -> DAgger classifier | DRAFT. Student confirmed (4-class MLP, 117-D). Locked test committed, RED. Prototype A/B (2026-11-26): best 128x3 fails class A 87 % + crossing 9 % coll; size is not the lever (`docs/measurements/2026-11-26/`) | (1) teacher baseline on same eval seeds, (2) teacher hysteresis-sync hook + DAgger beta floor, (3) harden test, then rewrite ticket |
+| TK-IL-09 teacher clearance 0.30 m + head-on <= 2 % | DRAFT, person-speed protocol decided by human | locked test after IL-06; teacher baseline from IL-06 step (1) feeds it |
 | TK-IL-07 sim-to-real | DRAFT (inject the real motion-block noise: 5 % false beams while pivoting) | after IL-06 |
 | TK-INT-11, TK-CV-02..06, TK-INT-08 | DRAFT | frozen/low priority until the IL gate |
 

@@ -12,3 +12,5 @@
   `imitation_learning/data_collector.py` to the allowed files. (b) Train a 4-class classifier (cross-entropy) on observation v2
   (TK-IL-08), not MSE on (v, w) (`train_bc.py:111`): MSE averages left and right detours into "straight". (c) DART is nearly a no-op in
   this sim; do not count it as data diversity. (d) `test_il_pipeline.py::test_02` is unseeded; the locked IL-06 test must fix seeds.
+
+- Evidence 2026-11-26 (prototype, one seed; `docs/measurements/2026-11-26/il06_reference_student_AB.md`): 128x3 = static 95, standing 98, head-on 92/8 pass; class A 87 % (12 % timeout) and crossing 91 % / 9 % coll fail. 256x2 worse (timeouts 19-30 %). Size is not the lever; DAgger loss rises. Ticket thresholds NOT yet shown reachable; still DRAFT. Rewrite after the teacher baseline and hysteresis-sync experiments. Locked test: `tests/acceptance/test_il_student.py` (committed, contract in its header).
