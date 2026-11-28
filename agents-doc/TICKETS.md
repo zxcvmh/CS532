@@ -33,7 +33,7 @@ Old v1 tickets: `agents-doc/archive/agents-v1/TICKETS-v1.md` (paths there are de
 | TK-IL-02 | il-policy | SUPERSEDED | agents-doc/tickets/TK-IL-02.md |
 | TK-IL-03 | il-policy | DONE | agents-doc/tickets/TK-IL-03.md |
 | TK-CV-01 | perception | DEFERRED | agents-doc/tickets/TK-CV-01.md |
-| TK-CV-02 | perception | DRAFT | agents-doc/tickets/TK-CV-02.md |
+| TK-CV-02 | perception | SUPERSEDED | agents-doc/tickets/TK-CV-02.md |
 | TK-INT-01 | supervisor | DONE | agents-doc/tickets/TK-INT-01.md |
 | TK-INT-03 | supervisor | DONE | agents-doc/tickets/TK-INT-03.md |
 | TK-INT-02 | integration | DRAFT | agents-doc/tickets/TK-INT-02.md |
@@ -60,7 +60,7 @@ Old v1 tickets: `agents-doc/archive/agents-v1/TICKETS-v1.md` (paths there are de
 | TK-CV-03 | perception | DRAFT | agents-doc/tickets/TK-CV-03.md |
 | TK-CV-04 | perception | DRAFT | agents-doc/tickets/TK-CV-04.md |
 | TK-CV-02 | perception | DRAFT | agents-doc/tickets/TK-CV-02-rewritten.md |
-| TK-CV-05 | perception | DRAFT | agents-doc/tickets/TK-CV-05.md |
+| TK-CV-05 | perception | CANCELLED | agents-doc/tickets/TK-CV-05.md |
 | TK-CV-06 | perception | DRAFT | agents-doc/tickets/TK-CV-06.md |
 | TK-MEAS-01 | supervisor-assistant | READY | agents-doc/tickets/TK-MEAS-01.md |
 | TK-INT-12 | supervisor | DONE | agents-doc/tickets/TK-INT-12.md |
