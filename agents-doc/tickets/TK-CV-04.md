@@ -5,8 +5,9 @@
 - Allowed files: `scripts/record_cv_session.py`, `docs/measurements/<date>/` (raw session + `cv04_results.json`), evaluation script (TBD by Supervisor when locking acceptance test).
 - Forbidden files: everything else + `agents-doc/LOCKED_PATHS.txt`.
 - Acceptance command: TBD (Supervisor locks evaluator against the human-labelled ~200-frame dataset recorded with `scripts/record_cv_session.py`).
-- Threshold (numbers): proposed (to confirm after the first measurement): `recall >= 0.90` and `precision >= 0.90` for persons in the camera FOV at `0.5-3.0 m`; Jetson detection loop `>= 8 FPS` with the bridge running; RAM budget TBD — must be re-baselined (earlier `<= 1.5 GB` draft cap is already exceeded by baseline Jetson bridge RSS `~1.55 GB` on 2026-11-21 and `~1.9 GB` streaming on 2026-11-16 per `agents-doc/STATE.md`, currently FROZEN).
+- Threshold (numbers): proposed (to confirm after the first measurement): `recall >= 0.90` and `precision >= 0.90` for persons in the camera FOV at `0.5-3.0 m`; Jetson detection loop `>= 8 FPS` with the bridge running; bridge RAM `<= 2.0 GB` (`2048 MB`) with `swap_max == 0 MB`.
 - Regression commands: none (measurement-only ticket).
 - Depends on: `TK-CV-03` (same field session can capture both checkerboard poses and the person recording).
-- Assumptions: (a) one synchronized session (`scripts/record_cv_session.py`) captures JPEG frames + YOLO detections + LiDAR sweeps so the same recording serves both `TK-CV-04` and `TK-CV-02-rewritten` ablation; (b) YOLO inference stays on Jetson TensorRT (`yolo26n.engine`); (c) RAM cap will be set from measured baseline + margin rather than the obsolete `1.5 GB` draft figure.
-- Needs-human: confirm revised Jetson bridge RAM cap (e.g., `<= 2.0 GB` with 0 swap) and schedule field session to record ~200 frames + checkerboard, then approve Assumptions.
+- Assumptions: (a) one synchronized session (`scripts/record_cv_session.py`) captures JPEG frames + YOLO detections + LiDAR sweeps so the same recording serves both `TK-CV-04` and `TK-CV-02-rewritten` ablation; (b) YOLO inference stays on Jetson TensorRT (`yolo26n.engine`); (c) Jetson bridge RAM cap is set to `<= 2.0 GB` (`2048 MB`) with `swap == 0` (superseding the obsolete `1.5 GB` draft figure).
+  Human-approved: 2026-11-28
+- Needs-human: schedule the field session to record ~200 frames + checkerboard.
