@@ -29,6 +29,7 @@ class CSMTracker:
     SCORE_WEAK = 0.64
     SCORE_LOST = 0.10
     LOST_AFTER = 5
+    MIN_UNMASKED_RAYS = 20
 
     def __init__(
         self,
@@ -68,6 +69,7 @@ class CSMTracker:
         self.match_status: str = "TRACKING"
         self.lost_streak: int = 0
         self.reinit_requested: bool = False
+        self.last_masked_rays: int = 0
 
         self.offset_x: float = 0.0
         self.offset_y: float = 0.0
@@ -118,6 +120,7 @@ class CSMTracker:
         self.match_status = "TRACKING"
         self.lost_streak = 0
         self.reinit_requested = False
+        self.last_masked_rays = 0
         self.offset_x = float(x)
         self.offset_y = float(y)
         self.offset_th = float(theta)
@@ -141,14 +144,28 @@ class CSMTracker:
 
     def update(
         self,
-        ranges: List[float]
+        ranges: List[float],
+        person_mask: Optional[np.ndarray] = None,
     ) -> Tuple[float, float, float, bool, bool]:
         """
         Process a new scan through Correlative Scan Matching.
+        If person_mask (bool[360]) is provided, person beams are excluded from
+        matching and submap insertion unless fewer than MIN_UNMASKED_RAYS remain.
         Returns: (x, y, theta, is_still, can_write_map)
         """
         curr_ranges = np.asarray(ranges, dtype=np.float32)
         valid = (curr_ranges >= 0.05) & (curr_ranges <= 6.0)
+        self.last_masked_rays = 0
+        if person_mask is not None:
+            mask = np.asarray(person_mask, dtype=bool).ravel()
+            if mask.size == curr_ranges.size and mask.any():
+                masked_ranges = curr_ranges.copy()
+                masked_ranges[mask] = 0.0
+                valid_masked = (masked_ranges >= 0.05) & (masked_ranges <= 6.0)
+                if int(np.count_nonzero(valid_masked)) >= self.MIN_UNMASKED_RAYS:
+                    self.last_masked_rays = int(np.count_nonzero(valid & mask))
+                    curr_ranges = masked_ranges
+                    valid = valid_masked
         is_still = self.detect_stillness(curr_ranges)
         self.prev_ranges = curr_ranges
 

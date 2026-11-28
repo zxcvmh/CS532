@@ -555,7 +555,8 @@ class Lidar2DOdometry:
         dt: float = 0.1,
         v_cmd: float = 0.0,
         w_cmd: float = 0.0,
-        grid_map: Optional[Any] = None
+        grid_map: Optional[Any] = None,
+        person_mask: Optional[Any] = None,
     ) -> Tuple[float, float, float, Dict[str, Any]]:
         """
         Processes an incoming 360-degree LiDAR scan at 10Hz.
@@ -569,7 +570,9 @@ class Lidar2DOdometry:
 
         # TK-SLAM-09: Wide-window correlative scan matcher tracks pose from LiDAR alone
         if getattr(self, "csm_tracker", None) is not None:
-            csm_x, csm_y, csm_th, csm_still, csm_can_write = self.csm_tracker.update(ranges)
+            csm_x, csm_y, csm_th, csm_still, csm_can_write = self.csm_tracker.update(
+                ranges, person_mask=person_mask
+            )
             csm_x, csm_y, csm_th = float(csm_x), float(csm_y), float(csm_th)
             dx = float(csm_x - self.x)
             dy = float(csm_y - self.y)
@@ -595,6 +598,7 @@ class Lidar2DOdometry:
                 "dx_body": 0.0,
                 "dy_body": 0.0,
                 "dtheta_rad": dth,
+                "masked_person_rays": int(getattr(self.csm_tracker, "last_masked_rays", 0)),
             }
 
         # TK-SLAM-09 fallback: Pose priors must never come from w_cmd/v_cmd commands.

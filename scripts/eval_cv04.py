@@ -236,6 +236,13 @@ def evaluate_session(
     f1 = (2.0 * precision * recall / (precision + recall)) if (precision + recall) > 0.0 else 0.0
 
     fps_stats = compute_detection_fps(dets_path)
+    miss_rate = (1.0 - recall) if (total_tp + total_fn) > 0 else 0.0
+    fp_per_frame = (total_fp / frames_evaluated) if frames_evaluated > 0 else 0.0
+    sim_noise_params = {
+        "miss_rate": round(miss_rate, 4),
+        "fp_per_frame": round(fp_per_frame, 4),
+        "false_alarm_rate_est": round(min(1.0, fp_per_frame), 4),
+    }
     out: Dict[str, Any] = {
         "session_dir": str(session_dir),
         "gt_path": str(gt_path),
@@ -251,6 +258,7 @@ def evaluate_session(
         "recall": round(recall, 4),
         "f1": round(f1, 4),
         "fps": fps_stats,
+        "sim_noise_params": sim_noise_params,
     }
     if tegrastats_path is not None and tegrastats_path.is_file():
         out["tegrastats"] = parse_tegrastats(tegrastats_path)
@@ -311,7 +319,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         f"[METRIC] cv04: frames={res['frames_evaluated']}/{res['frames_in_gt']} | "
         f"TP={res['tp']} FP={res['fp']} FN={res['fn']} | "
         f"precision={res['precision']:.4f} recall={res['recall']:.4f} f1={res['f1']:.4f} | "
-        f"yolo_fps_mean={res['fps']['mean_fps']:.2f} median={res['fps']['median_fps']:.2f}"
+        f"yolo_fps_mean={res['fps']['mean_fps']:.2f} median={res['fps']['median_fps']:.2f} | "
+        f"sim_miss_rate={res['sim_noise_params']['miss_rate']:.4f} "
+        f"sim_fa_est={res['sim_noise_params']['false_alarm_rate_est']:.4f}"
     )
     if "tegrastats" in res:
         tg = res["tegrastats"]

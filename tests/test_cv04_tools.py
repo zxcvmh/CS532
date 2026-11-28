@@ -98,6 +98,9 @@ class TestCV04Tools(unittest.TestCase):
             self.assertAlmostEqual(res["fps"]["mean_fps"], 10.0)
             self.assertEqual(res["tegrastats"]["ram_max_mb"], 1600)
             self.assertEqual(res["tegrastats"]["swap_max_mb"], 0)
+            self.assertEqual(res["sim_noise_params"]["miss_rate"], 0.0)
+            self.assertEqual(res["sim_noise_params"]["fp_per_frame"], 0.0)
+            self.assertEqual(res["sim_noise_params"]["false_alarm_rate_est"], 0.0)
 
             out_json = sess / "out_res.json"
             proc_pass = subprocess.run(
@@ -171,6 +174,60 @@ class TestCV04Tools(unittest.TestCase):
             label_cv04.save_gt_labels(manifest, gt_file)
             reloaded = label_cv04.load_gt_labels(gt_file)
             self.assertEqual(reloaded["frames"][0]["persons"], accepted)
+
+    def test_04_sim_noise_params_nonzero(self):
+        with tempfile.TemporaryDirectory() as td:
+            sess = Path(td)
+            # 4 frames: 4 GT persons total -> 3 TP, 1 FN (recall=0.75, miss_rate=0.25), 1 FP (fp_per_frame=0.25)
+            idx_rows = [
+                {
+                    "frame_idx": 0,
+                    "filename": "frames/f0.jpg",
+                    "scan_seq": 1,
+                    "detections": [{"class_name": "person", "confidence": 0.9, "bbox": [10, 10, 50, 90]}],
+                },
+                {
+                    "frame_idx": 1,
+                    "filename": "frames/f1.jpg",
+                    "scan_seq": 2,
+                    "detections": [{"class_name": "person", "confidence": 0.9, "bbox": [10, 10, 50, 90]}],
+                },
+                {
+                    "frame_idx": 2,
+                    "filename": "frames/f2.jpg",
+                    "scan_seq": 3,
+                    "detections": [
+                        {"class_name": "person", "confidence": 0.9, "bbox": [10, 10, 50, 90]},
+                        {"class_name": "person", "confidence": 0.8, "bbox": [200, 10, 240, 90]},
+                    ],
+                },
+                {
+                    "frame_idx": 3,
+                    "filename": "frames/f3.jpg",
+                    "scan_seq": 4,
+                    "detections": [],
+                },
+            ]
+            (sess / "frames_index.jsonl").write_text(
+                "\n".join(json.dumps(r) for r in idx_rows) + "\n", encoding="utf-8"
+            )
+            gt_path = sess / "gt_labels.json"
+            gt_path.write_text(
+                json.dumps(
+                    {
+                        "frames": [
+                            {"filename": f"frames/f{i}.jpg", "scan_seq": i + 1, "persons": [{"bbox": [10, 10, 50, 90]}]}
+                            for i in range(4)
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            res = eval_cv04.evaluate_session(sess, gt_path)
+            self.assertEqual((res["tp"], res["fp"], res["fn"]), (3, 1, 1))
+            self.assertAlmostEqual(res["sim_noise_params"]["miss_rate"], 0.25)
+            self.assertAlmostEqual(res["sim_noise_params"]["fp_per_frame"], 0.25)
+            self.assertAlmostEqual(res["sim_noise_params"]["false_alarm_rate_est"], 0.25)
 
 
 if __name__ == "__main__":
